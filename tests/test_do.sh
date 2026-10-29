@@ -137,7 +137,7 @@ t_plain_text_output_is_filed_for_provost_to_read() {
     assert_contains "$out" "hello world"
     assert_contains "$(qd log latest)" "stdout"
     # the output itself, exactly, is provost's to show
-    assert_contains "$(pv source c0001)" "hello world"
+    assert_contains "$(pv source 1)" "hello world"
 }
 
 t_missing_tool_says_how_to_get_it() {

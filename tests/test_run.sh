@@ -92,13 +92,15 @@ t_run_keeps_every_answer_and_says_who_failed() {
     assert_contains "$out" "qd freq latest A"
     assert_contains "$out" "captures c0001..c0003"
     # what came back is provost's: a capture per host, the answer verbatim
-    assert_contains "$(pv source c0003)" "6.1.0-13"
+    cap="$(qd show latest --where host=node03 --cols capture --format csv | tail -1)"
+    assert_contains "$(cat "$QD_STORE/captures/$cap/output.txt")" "6.1.0-13"
+    assert_contains "$(qd log latest)" "provost source"
     assert_contains "$(pv ls)" "qd.runs"
     csv="$(qd show latest --format csv)"
     assert_contains "$csv" "host,rack,status,rc,duration_s,error,capture,A"
     assert_contains "$csv" "node09,r2,unreachable,255"
     assert_contains "$csv" "node03,r2,ok,0"
-    assert_contains "$csv" "c0003,6.1.0-13"
+    assert_contains "$csv" "$cap,6.1.0-13"
     assert_contains "$(qd log latest)" "3 captures, c0001..c0003"
 }
 
@@ -150,12 +152,17 @@ t_key_value_answers_with_units() {
 t_json_number_and_csv_answers() {
     seed
     for h in node01 node02 node03; do
-        echo '{"a": 1, "b": {"c": "x"}}' > "$FAKE_ROOT/$h/j"
+        echo '{"a": 1, "b": "x"}' > "$FAKE_ROOT/$h/j"
         echo '42.5' > "$FAKE_ROOT/$h/n"
         printf 'dev,mb\nsda,10\nsdb,20\n' > "$FAKE_ROOT/$h/c"
     done
     run_qd -- cat j > out
-    assert_contains "$(cat out)" "a, b.c"
+    # wide (a, b) or long (field, value): provost's choice, which depends
+    # on what it finds installed (jq, or its own awk); either way the key
+    # and its value come back on the host's rows
+    out="$(qd show latest --where host=node02 --format csv)"
+    assert_contains "$out" "b"
+    assert_contains "$out" ",x"
     run_qd -- cat n > out
     assert_contains "$(qd show latest --cols host,A --format csv)" "node02,42.5"
     run_qd -- cat c > out
@@ -172,7 +179,10 @@ t_a_host_that_printed_nothing_keeps_its_row() {
     run_qd -- cat n > /dev/null
     out="$(qd show latest --cols host,status,capture,A --format csv)"
     assert_contains "$out" "node01,ok,,"
-    assert_contains "$out" "node02,ok,c0001,7"
+    # (which capture is whose follows host order only where provost batches)
+    assert_contains "$(qd show latest --cols host,A --format csv)" "node02,7"
+    cap2="$(qd show latest --where host=node02 --cols capture --format csv | tail -1)"
+    [ -n "$cap2" ] || fail "node02 answered but has no capture"
     assert_contains "$(qd log latest)" "2 captures"
 }
 

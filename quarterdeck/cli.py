@@ -412,7 +412,7 @@ def report_run(args, command, hs, results, t, entry, passes, interrupted):
         lines.append("  interrupted: kept the %s that finished"
                      % plural(passes, "pass", "passes"))
     if entry is not None:
-        caps = entry.captures()
+        caps = sorted(entry.captures(), key=storemod.cnum)
         lines.append("  stored   %s in %s  (%s%s)" % (
             entry.id, entry.store.shown(), plural(len(t.rows), "row"),
             (", captures %s..%s" % (caps[0], caps[-1])) if len(caps) > 1
@@ -489,8 +489,9 @@ def run_next_steps(t, dcols, entry, bad, passes):
             tips.append(("%s diff %s" % (PROG, ref),
                          "against the last time this ran (%s)" % prev.id))
         caps = entry.captures()
-        if caps:
-            tips.append(("provost source %s" % caps[0],
+        n = storemod.first_row(entry.store.meta(caps[0])) if caps else None
+        if n is not None:
+            tips.append(("provost source %d" % n,
                          "one host's answer exactly as it came back"))
     tips.append(("%s view %s" % (PROG, ref), "explore it full-screen"))
     return next_steps(tips)
@@ -571,7 +572,7 @@ def add_tables(b, rid, label, tables):
         taken.add(name)
         ds = filing.dataset_name(label if name == tablemod.slug(label)
                                  else "%s.%s" % (label, name))
-        info = {"name": name, "from": origin}
+        info = {"name": name, "from": origin, "index": len(added)}
         if t.notes:
             info["notes"] = list(t.notes)
         if t.tests:
@@ -656,7 +657,8 @@ def _do(args, cmd, st, prov, name, label, cmdline, work):
         # what it printed is provost's to read, as any captured output is
         ds = filing.dataset_name("%s.stdout" % label)
         b.add(ds, filing.prologue([("run", rid)], [storemod.table_line(
-            {"name": "stdout", "from": "stdout"})]) + filing.body(stdout))
+            {"name": "stdout", "from": "stdout", "index": len(added)})]) +
+            filing.body(stdout))
         added.append(("stdout", ds, None, "stdout"))
     ver = tools.tool_version(plan.argv[:len(plan.argv) - len(
         tools.tool_of(plan.argv)[1])]) if name in tools.TOOL_NAMES else ""

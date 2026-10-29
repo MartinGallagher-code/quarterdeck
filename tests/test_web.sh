@@ -104,7 +104,9 @@ t_raw_export_and_overlay() {
     start_web
     out="$(get '/api/raw?e=latest&host=e')"
     assert_contains "$out" '"out": "9.0\n"'
-    assert_contains "$out" "provost source c00"
+    # which capture it is, and the row provost source takes in any provost
+    assert_contains "$out" '"label": "raw answer: capture c00'
+    assert_contains "$out" "provost source "
     out="$(get '/api/export?e=latest&format=csv&where=rack=r1')"
     assert_contains "$out" "host,rack,status"
     assert_not_contains "$out" "r2"

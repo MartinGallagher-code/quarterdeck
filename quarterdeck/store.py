@@ -137,6 +137,13 @@ def row_count(meta):
     return int(m.group(2)) - int(m.group(1)) + 1 if m else 0
 
 
+def first_row(meta):
+    """The first row number a capture filed, or None: what `provost source
+    N` takes in every provost (a capture id only in newer ones)."""
+    m = re.match(r"^(\d+)-\d+$", meta.get("row_ids", ""))
+    return int(m.group(1)) if m else None
+
+
 def context_columns(meta):
     """The dataset columns a capture's context became (provost records
     them as context_columns key=column,...)."""
@@ -554,10 +561,13 @@ class Run(object):
             info = read_table_line(self.store.context_text(cid))
             m = self.store.meta(cid)
             out.append({"name": info.get("name") or cid,
+                        "index": info.get("index", len(out)),
                         "rows": row_count(m), "from": info.get("from", ""),
                         "capture": cid, "notes": info.get("notes") or [],
                         "datasets": [n for n in m.get("dataset", "")
                                      .split(",") if n]})
+        # in the order qd read them, whatever order provost filed them in
+        out.sort(key=lambda t: t["index"])
         return out
 
     def load(self, name=None):
@@ -710,7 +720,7 @@ class Run(object):
         if capture:
             text = self.store.output(capture)
             if text is not None:
-                out.append(("raw answer, provost source %s" % capture, text))
+                out.append((source_label(self.store, capture), text))
         if host is not None and self.meta.get("kind") == "run":
             for h in self.store.host_rows(self.id):
                 if h.get("host") == host and \
@@ -767,8 +777,14 @@ class Dataset(object):
         if capture:
             text = self.store.output(capture)
             if text is not None:
-                return [("raw answer, provost source %s" % capture, text)]
+                return [(source_label(self.store, capture), text)]
         return []
+
+
+def source_label(store, cid):
+    n = first_row(store.meta(cid))
+    return "raw answer: capture %s%s" % (
+        cid, (", provost source %d" % n) if n is not None else "")
 
 
 def split_ref(ref):
@@ -829,9 +845,14 @@ def describe_entry(e):
         out.append("  tool      %s" % v)
     caps = e.captures() if hasattr(e, "captures") else []
     if caps:
-        out.append("  filed     %s, %s%s  (provost source ID)" % (
+        lo, hi = min(caps, key=cnum), max(caps, key=cnum)
+        out.append("  filed     %s, %s%s" % (
             "%d capture%s" % (len(caps), "" if len(caps) == 1 else "s"),
-            caps[0], (".." + caps[-1]) if len(caps) > 1 else ""))
+            lo, (".." + hi) if len(caps) > 1 else ""))
+        n = first_row(e.store.meta(caps[0]))
+        if n is not None:
+            out.append("  answers   provost source %d  (one per row: qd show "
+                       "%s --cols host,capture)" % (n, e.id))
     out.append("  store     %s" % e.store.shown())
     out.append("  tables")
     for t in e.tables:
