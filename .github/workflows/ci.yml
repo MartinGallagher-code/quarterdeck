@@ -29,8 +29,13 @@ jobs:
         with:
           python-version: "${{ matrix.python-version }}"
 
-      # Nothing to install: ssh and scp are faked, the toolchain is played by
-      # stand-ins, and the web suite's server listens on loopback.
+      # qd files everything through provost, so the suites need a real one:
+      # PyPI's, which has no `batch` yet -- the one-capture-at-a-time path.
+      # ssh and scp are faked, the toolchain is played by stand-ins, and the
+      # web suite's server listens on loopback.
+      - name: Install provost
+        run: python -m pip install provost
+
       - name: Run the test suite
         run: bash tests/run_tests.sh
 
@@ -56,9 +61,18 @@ jobs:
           bash tests/check_python_compat.sh
           vermin --eval-annotations --violations --target=3.6- quarterdeck/*.py qd
 
+      # provost's launcher wants 3.8, but provost itself is bash and git: its
+      # bundle runs under any Python.  The full image has git; -slim has not.
+      - name: Fetch provost's bundle
+        run: |
+          python -m pip download --no-deps --only-binary=:all: -d .pv provost
+          python -m zipfile -e .pv/provost-*.whl .pv/x
+
       - name: Run the suite under real Python 3.6
         run: |
-          docker run --rm -v "$PWD:/w" -w /w python:3.6-slim \
+          docker run --rm -v "$PWD:/w" -w /w \
+            -e QD_PROVOST="bash /w/.pv/x/provost_data/_bundle/provost" \
+            python:3.6 \
             bash -euxc 'bash tests/check_python_compat.sh && bash tests/run_tests.sh'
 
   web:
@@ -129,7 +143,8 @@ jobs:
       # with nothing to serve, so prove it is there and answers.
       - name: Install the wheel and smoke-test it
         run: |
-          python -m pip install dist/*.whl
+          python -m pip install dist/*.whl provost
+          export QD_STORE="$RUNNER_TEMP/store"
           qd --version
           quarterdeck --version
           qd hints > /dev/null

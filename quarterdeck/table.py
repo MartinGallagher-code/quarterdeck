@@ -33,23 +33,77 @@ from .common import die, read_text
 VERDICTS = ("PASS", "WARN", "FAIL")
 
 
-def to_num(text):
-    """A cell as a number, or None.  `37%` reads as 37 (df's Use%, the
-    viewer's `loss %`); nan and inf are not measurements."""
+# A number and the unit after it: `16384 kB` (/proc/meminfo), `50G` (df
+# -h), `0.42 ms`, `37%`.  Only a unit made of letters, `%` or `/` counts, so
+# `5.15.0-91-generic` and `2:01,` are words.
+UNIT_RE = re.compile(r"^([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)"
+                     r"\s*([A-Za-z%/]{1,8})$")
+
+# Size units, as systems tools mean them: binary, whatever the spelling.
+SIZE_UNITS = {"b": 1}
+for _i, _p in enumerate("kmgtpe", 1):
+    for _sfx in ("", "b", "ib"):
+        SIZE_UNITS[_p + _sfx] = 1024 ** _i
+
+# The other units a measurement arrives in.  A list, not any word: `3com`
+# and `2nd` are names.  Anything per second (`12/s`, `req/s`) counts too.
+UNITS = set(SIZE_UNITS) | {
+    "%", "s", "sec", "ms", "us", "ns", "min", "h", "hz", "khz", "mhz", "ghz",
+    "bps", "kbps", "mbps", "gbps", "pps", "kpps", "mpps", "iops", "ops", "c",
+    "w", "kw", "v", "mv", "a", "ma", "rpm", "x", "kbit", "mbit", "gbit"}
+
+
+def split_unit(text):
+    """(number, unit) for a cell: (37.0, "%"), (16384.0, "kB"), (3.0, "");
+    (None, None) when it is not a number at all."""
     if text is None:
-        return None
+        return None, None
     s = text.strip()
     if not s:
-        return None
-    if s.endswith("%"):
-        s = s[:-1].rstrip()
+        return None, None
     try:
-        v = float(s)
+        v, unit = float(s), ""
     except ValueError:
-        return None
+        m = UNIT_RE.match(s)
+        if not m or not (m.group(2).lower() in UNITS or
+                         m.group(2).endswith("/s")):
+            return None, None
+        try:
+            v, unit = float(m.group(1)), m.group(2)
+        except ValueError:
+            return None, None
     if math.isnan(v) or math.isinf(v):
-        return None
-    return v
+        return None, None
+    return v, unit
+
+
+def to_num(text):
+    """A cell as a number, or None.  `37%` reads as 37 (df's Use%, the
+    viewer's `loss %`), `16384 kB` as 16384; nan and inf are not
+    measurements.  A column that mixes units is put on one scale by
+    Table.numbers, which sees the whole column."""
+    return split_unit(text)[0]
+
+
+def column_numbers(cells):
+    """A column's cells as numbers on one scale, and that scale's unit.
+
+    One unit throughout (or none) is kept as it is.  Sizes in different
+    units (df -h's 512M beside 50G) become bytes.  Anything else mixed
+    keeps the commonest unit's cells and drops the rest to blank, rather
+    than adding milliseconds to seconds."""
+    pairs = [split_unit(c) for c in cells]
+    units = {}
+    for v, u in pairs:
+        if v is not None and u:
+            units[u] = units.get(u, 0) + 1
+    if len(units) <= 1:
+        return [v for v, _ in pairs], (list(units) or [""])[0]
+    if all(u.lower() in SIZE_UNITS for u in units):
+        return [None if v is None else v * SIZE_UNITS.get(u.lower(), 1)
+                for v, u in pairs], "B"
+    common = max(units, key=lambda u: units[u])
+    return [v if u in (common, "") else None for v, u in pairs], common
 
 
 def slug(name):
@@ -60,7 +114,7 @@ class Table(object):
     """Columns, rows of strings, and where they came from.
 
     `tests` carries the results format's `!test` display metadata so a
-    round trip through the logbook paints the same on the floor plan;
+    round trip through the store paints the same on the floor plan;
     `notes` carries the comment header a tool wrote above its data (mx and
     iperf say there what the run was and what they left out).
     """
@@ -150,8 +204,14 @@ class Table(object):
     def numbers(self, name):
         i = self.index(name)
         if i not in self._num:
-            self._num[i] = [to_num(r[i]) for r in self.rows]
-        return self._num[i]
+            self._num[i] = column_numbers([r[i] for r in self.rows])
+        return self._num[i][0]
+
+    def unit(self, name):
+        """The unit a column's numbers are in, from its cells ("kB", "%",
+        "B" for sizes put on one scale), or ""."""
+        self.numbers(name)
+        return self._num[self.index(name)][1]
 
     def kind(self, name):
         """num: every filled cell is a number.  mixed: some are.  text:

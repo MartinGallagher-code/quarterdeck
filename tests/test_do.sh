@@ -131,11 +131,13 @@ t_stdout_table_and_explicit_import() {
     assert_contains "$out" "y,2"
 }
 
-t_plain_text_output_is_kept_as_lines() {
+t_plain_text_output_is_filed_for_provost_to_read() {
     qd "do" -- echo hello world > /dev/null 2>&1
     out="$(qd show latest --format csv)"
-    assert_contains "$out" "line_no,line"
-    assert_contains "$out" "1,hello world"
+    assert_contains "$out" "hello world"
+    assert_contains "$(qd log latest)" "stdout"
+    # the output itself, exactly, is provost's to show
+    assert_contains "$(pv source c0001)" "hello world"
 }
 
 t_missing_tool_says_how_to_get_it() {
@@ -161,7 +163,7 @@ run_test "mx export to stdout is read"                  t_mx_export_to_stdout_is
 run_test "iperf-orchestrator: results/latest read"      t_iperf_reads_the_latest_run
 run_test "agree: --csv added, exit status passed on"    t_agree_gets_csv_added_and_its_status_passes_through
 run_test "stdout table and --import"                    t_stdout_table_and_explicit_import
-run_test "plain text output kept as lines"              t_plain_text_output_is_kept_as_lines
+run_test "plain text output is filed for provost"       t_plain_text_output_is_filed_for_provost_to_read
 run_test "a missing tool says how to get it"            t_missing_tool_says_how_to_get_it
 run_test "QD_MX names the tool"                         t_qd_tool_variable_names_the_tool
 finish

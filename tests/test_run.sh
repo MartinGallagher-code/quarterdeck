@@ -29,7 +29,7 @@ t_version_and_help() {
     assert_contains "$out" "Full manual:"
     out="$(qd help)"
     assert_contains "$out" "qd web"
-    assert_contains "$out" "--extract"
+    assert_contains "$out" "--store"
 }
 
 t_hosts_ranges_attrs_and_order() {
@@ -89,15 +89,30 @@ t_run_keeps_every_answer_and_says_who_failed() {
     assert_contains "$out" "4 hosts, 3 ok, 1 unreachable"
     assert_contains "$out" "DID NOT ANSWER"
     assert_contains "$out" "node09"
-    assert_contains "$out" "qd freq latest stdout"
-    e="$(ls logbook)"
-    assert_file_exists "logbook/$e/entry.json"
-    assert_file_exists "logbook/$e/raw/node03.out"
-    assert_eq "$(cat "logbook/$e/raw/node03.out")" "6.1.0-13"
-    csv="$(cat "logbook/$e/data.csv")"
-    assert_contains "$csv" "host,rack,status,rc,duration_s,error,stdout"
+    assert_contains "$out" "qd freq latest A"
+    assert_contains "$out" "captures c0001..c0003"
+    # what came back is provost's: a capture per host, the answer verbatim
+    assert_contains "$(pv source c0003)" "6.1.0-13"
+    assert_contains "$(pv ls)" "qd.runs"
+    csv="$(qd show latest --format csv)"
+    assert_contains "$csv" "host,rack,status,rc,duration_s,error,capture,A"
     assert_contains "$csv" "node09,r2,unreachable,255"
     assert_contains "$csv" "node03,r2,ok,0"
+    assert_contains "$csv" "c0003,6.1.0-13"
+    assert_contains "$(qd log latest)" "3 captures, c0001..c0003"
+}
+
+t_provost_rows_name_their_host() {
+    seed
+    run_qd -q -- cat kernel > /dev/null
+    if has_batch; then
+        # one commit for the whole fleet, and every row says whose it is
+        assert_contains "$(git -C "$QD_STORE" log -1 --format=%s)" "batch:"
+        assert_contains "$(pv show cat | tr -s ' \t' ' ')" "node03 r2"
+    else
+        echo "  (this provost has no batch: host columns not checked)"
+    fi
+    assert_contains "$(qd show ds:cat --format csv)" "6.1.0-13"
 }
 
 t_run_all_ok_exits_zero() {
@@ -114,20 +129,25 @@ t_failed_command_is_failed_not_unreachable() {
     out="$(qd show latest --cols host,status,rc --format csv)"
     assert_contains "$out" "node01,failed,1"
     assert_contains "$out" "node09,unreachable,255"
+    out="$(qd show latest:hosts --cols host,stderr --format csv)"
+    assert_contains "$out" "No such file"
 }
 
-t_parse_auto_kv_with_units() {
+t_key_value_answers_with_units() {
     seed
     for h in node01 node02 node03; do
-        printf 'MemTotal:  16384 kB\nvm.swappiness = 60\n' > "$FAKE_ROOT/$h/m"
+        printf 'MemTotal:  16384 kB\nMemFree:   2048 kB\n' > "$FAKE_ROOT/$h/m"
     done
+    printf 'MemTotal:  32768 kB\nMemFree:   4096 kB\n' > "$FAKE_ROOT/node03/m"
     run_qd -- cat m > out
-    assert_contains "$(cat out)" "parsed as kv: memtotal_kb, vm_swappiness"
-    out="$(qd show latest --cols host,memtotal_kb --format csv)"
-    assert_contains "$out" "node01,16384"
+    assert_contains "$(cat out)" "MemTotal, MemFree"
+    out="$(qd show latest --cols host,MemTotal --format csv)"
+    assert_contains "$out" "node03,32768 kB"
+    out="$(qd stats latest MemTotal --where status=ok)"
+    assert_contains "$out" "max 32768"
 }
 
-t_parse_auto_json_number_csv() {
+t_json_number_and_csv_answers() {
     seed
     for h in node01 node02 node03; do
         echo '{"a": 1, "b": {"c": "x"}}' > "$FAKE_ROOT/$h/j"
@@ -135,66 +155,50 @@ t_parse_auto_json_number_csv() {
         printf 'dev,mb\nsda,10\nsdb,20\n' > "$FAKE_ROOT/$h/c"
     done
     run_qd -- cat j > out
-    assert_contains "$(cat out)" "parsed as json: a, b.c"
+    assert_contains "$(cat out)" "a, b.c"
     run_qd -- cat n > out
-    assert_contains "$(cat out)" "parsed as number: value"
+    assert_contains "$(qd show latest --cols host,A --format csv)" "node02,42.5"
     run_qd -- cat c > out
-    assert_contains "$(cat out)" "parsed as csv: dev, mb"
-    # one row per CSV row, the host repeated on each
-    out="$(qd show latest --where status=ok --cols host,dev,mb --format csv)"
-    assert_contains "$out" "node02,sdb,20"
+    # one row per CSV row, the host repeated on each, n numbering them
+    out="$(qd show latest --where status=ok --cols host,n,dev,mb --format csv)"
+    assert_contains "$out" "node02,2,sdb,20"
 }
 
-t_extract_named_and_numbered_groups() {
+t_a_host_that_printed_nothing_keeps_its_row() {
     seed
-    for h in node01 node02 node03; do
-        echo "0.52 0.40 0.31 1/234 5678" > "$FAKE_ROOT/$h/loadavg"
-    done
-    run_qd --extract 'load1=^(\S+)' --extract '(?P<l5>\S+) (?P<l15>\S+) \d+/' \
-        -- cat loadavg > out
-    assert_contains "$(cat out)" "parsed as extract: load1, l5, l15"
-    out="$(qd show latest --where status=ok --cols host,load1,l5,l15 --format csv)"
-    assert_contains "$out" "node01,0.52,0.40,0.31"
-    qdf_rc run -s hosts.txt --parse kv --extract 'a=(x)' -- true 2> err
-    assert_status "$QD_RC" 2
-    assert_contains "$(cat err)" "cannot be combined"
-}
-
-t_parse_error_is_a_column_not_a_silence() {
-    seed
-    echo "no digits here" > "$FAKE_ROOT/node01/n"
+    : > "$FAKE_ROOT/node01/n"
     echo "7" > "$FAKE_ROOT/node02/n"
     echo "8" > "$FAKE_ROOT/node03/n"
-    run_qd --parse number -- cat n > /dev/null
-    out="$(qd show latest --cols host,parse_error,value --format csv)"
-    assert_contains "$out" "node01,no number in the output,"
-    assert_contains "$out" "node02,,7"
+    run_qd -- cat n > /dev/null
+    out="$(qd show latest --cols host,status,capture,A --format csv)"
+    assert_contains "$out" "node01,ok,,"
+    assert_contains "$out" "node02,ok,c0001,7"
+    assert_contains "$(qd log latest)" "2 captures"
 }
 
-t_parse_table_folds_a_two_word_heading() {
+t_df_table_is_one_row_per_filesystem() {
     seed
     for h in node01 node02 node03; do
         printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 37 63 37%% /\n' \
             > "$FAKE_ROOT/$h/df"
     done
-    run_qd --parse table -- cat df > /dev/null
-    out="$(qd show latest --where status=ok --cols host,capacity,mounted_on --format csv)"
+    run_qd -- cat df > /dev/null
+    out="$(qd show latest --where status=ok --cols host,Capacity,Mounted_on --format csv)"
     assert_contains "$out" "node01,37%,/"
-    out="$(qd stats latest capacity --where status=ok)"
+    out="$(qd stats latest Capacity --where status=ok)"
     assert_contains "$out" "mean      37"
 }
 
 t_repeated_passes_make_a_time_series() {
     seed
     # shellcheck disable=SC2016  # expanded on the far side, not here
-    run_qd --every 0.2 --count 3 --parse number -- 'echo $RANDOM' > out
+    run_qd --every 0.2 --count 3 -- 'echo $RANDOM' > out
     assert_contains "$(cat out)" "3 passes"
     out="$(qd show latest --cols host,pass --format csv)"
     assert_contains "$out" "node01,3"
-    out="$(qd trend latest value)"
+    out="$(qd trend latest A)"
     assert_contains "$out" "by host over ts"
-    e="$(ls logbook)"
-    assert_file_exists "logbook/$e/raw/node02.3.out"
+    assert_contains "$(qd log latest)" "9 captures"
 }
 
 t_dry_run_and_sudo_contact_nothing() {
@@ -202,7 +206,7 @@ t_dry_run_and_sudo_contact_nothing() {
     out="$(qdf run -s hosts.txt --dry-run --sudo -- 'uptime | cut -c1-5')"
     assert_contains "$out" "sudo -n sh -c"
     assert_eq "$(ssh_calls)" "0"
-    assert_no_file logbook
+    assert_no_file "$QD_STORE"
 }
 
 t_script_is_pushed_run_and_cleaned_up() {
@@ -210,7 +214,7 @@ t_script_is_pushed_run_and_cleaned_up() {
     # shellcheck disable=SC2016  # a script for the far side to expand
     printf '#!/bin/sh\necho "args:$1:$FAKE_HOST"\n' > probe.sh
     run_qd --script probe.sh --remote-dir rd -- hello > /dev/null
-    out="$(qd show latest --where status=ok --cols host,stdout --format csv)"
+    out="$(qd show latest --where status=ok --cols host,A --format csv)"
     assert_contains "$out" "node02,args:hello:node02"
     assert_no_file "$FAKE_ROOT/node02/rd"
     run_qd --script probe.sh --remote-dir rd --keep-remote -- x > /dev/null
@@ -230,11 +234,29 @@ t_mutation_guard_and_limit() {
     assert_status "$QD_RC" 2
 }
 
-t_no_log_keeps_nothing() {
+t_no_store_keeps_nothing() {
     seed
-    run_qd --no-log -- cat kernel > out
+    run_qd --no-store -- cat kernel > out
     assert_contains "$(cat out)" "6.1.0-13"
-    assert_no_file logbook
+    assert_no_file "$QD_STORE"
+}
+
+t_no_provost_is_refused_before_any_host() {
+    seed
+    QD_PROVOST=/nonexistent/provost qdf_rc run -s hosts.txt -- cat kernel 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "pip install provost"
+    assert_eq "$(ssh_calls)" "0"
+}
+
+t_store_follows_provost_rules() {
+    seed
+    # no --store and no QD_STORE: PROVOST_WORKSPACE, as provost itself
+    unset QD_STORE
+    PROVOST_WORKSPACE="$TEST_TMPDIR/elsewhere" qdf_rc run -q -s hosts.txt -- cat kernel > /dev/null
+    assert_file_exists "$TEST_TMPDIR/elsewhere/qd.runs.tsv" 2>/dev/null ||         assert_file_exists "$TEST_TMPDIR/elsewhere/datasets/qd.runs.tsv"
+    out="$(qd log --store "$TEST_TMPDIR/elsewhere")"
+    assert_contains "$out" "cat kernel"
 }
 
 t_names_and_refs_resolve() {
@@ -267,18 +289,20 @@ run_test "hosts: ranges, attributes, order"           t_hosts_ranges_attrs_and_o
 run_test "hosts: warn on an attribute that is a host" t_hosts_warn_when_an_attribute_looks_like_a_host
 run_test "hosts: --layout asks manifest"              t_hosts_layout_asks_manifest
 run_test "run keeps every answer, names failures"     t_run_keeps_every_answer_and_says_who_failed
+run_test "provost's rows name their host"            t_provost_rows_name_their_host
 run_test "run exits 0 when every host answers"        t_run_all_ok_exits_zero
 run_test "a failed command is not unreachable"        t_failed_command_is_failed_not_unreachable
-run_test "parse auto: kv, units into the name"        t_parse_auto_kv_with_units
-run_test "parse auto: json, number, csv"              t_parse_auto_json_number_csv
-run_test "extract: numbered and named groups"         t_extract_named_and_numbered_groups
-run_test "a parse failure is a column"                t_parse_error_is_a_column_not_a_silence
-run_test "parse table: df's two-word heading"         t_parse_table_folds_a_two_word_heading
+run_test "key: value answers, numbers with units"     t_key_value_answers_with_units
+run_test "json, number and csv answers"               t_json_number_and_csv_answers
+run_test "a host that printed nothing keeps its row"  t_a_host_that_printed_nothing_keeps_its_row
+run_test "df: one row per filesystem"                 t_df_table_is_one_row_per_filesystem
 run_test "--every/--count: a time series"             t_repeated_passes_make_a_time_series
 run_test "--dry-run and --sudo contact nothing"       t_dry_run_and_sudo_contact_nothing
 run_test "--script: pushed, run, cleaned up"          t_script_is_pushed_run_and_cleaned_up
 run_test "mutation guard, --limit, --first 0"         t_mutation_guard_and_limit
-run_test "--no-log keeps nothing"                     t_no_log_keeps_nothing
+run_test "--no-store keeps nothing"                   t_no_store_keeps_nothing
+run_test "no provost: refused before any host"        t_no_provost_is_refused_before_any_host
+run_test "the store follows provost's rules"          t_store_follows_provost_rules
 run_test "latest, latest~N and names resolve"         t_names_and_refs_resolve
 run_test "LANG=C survives non-ASCII answers"          t_lang_c_and_utf8_output_survive
 finish

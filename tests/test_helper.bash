@@ -11,6 +11,8 @@
 #   install_fake_ssh        an ssh+scp pair that run "remote" commands locally
 #   fake_host NAME          a sandbox root for one fake host
 #   fake_host_unreachable NAME
+#   pv ARGS...              provost itself, on the case's store
+#   has_batch               whether that provost files a run as one batch
 #
 # The harness is binnacle's (tests/test_helper.bash there), trimmed to what
 # these suites use: every case runs in a subshell, so one failed assertion
@@ -20,6 +22,10 @@ QD_DIR="${QD_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # Resolved once, to a path: a case that narrows PATH must still find the
 # interpreter, which the python:3.6 image keeps in /usr/local/bin.
 PY="$(command -v "${PY:-python3}")"
+# qd keeps everything in provost's store, so the suites need a provost:
+# QD_PROVOST (a path, or a command line), else the one on PATH.
+PROVOST_CMD="${QD_PROVOST:-$(command -v provost 2>/dev/null || true)}"
+export QD_PROVOST="$PROVOST_CMD"
 
 TESTS_RUN=0
 TESTS_FAILED=0
@@ -34,10 +40,15 @@ setup_env() {
     mkdir -p "$FAKE_BIN" "$FAKE_ROOT"
     : > "$FAKE_SSH_LOG"
     # A stray variable from the caller's shell must never change a result.
-    unset QD_LOGBOOK QD_SERVERS QD_JOBS QD_TIMEOUT QD_SSH QD_SCP QD_SSH_USER
-    unset QD_REMOTE_DIR QD_PARSE QD_MAX_OUTPUT QD_Z QD_ASCII QD_MANIFEST
+    unset QD_STORE QD_SERVERS QD_JOBS QD_TIMEOUT QD_SSH QD_SCP QD_SSH_USER
+    unset QD_REMOTE_DIR QD_MAX_OUTPUT QD_Z QD_ASCII QD_MANIFEST QD_CACHE
     unset QD_MX QD_IPERF_ORCHESTRATOR QD_AGREE QD_DCVIZ QD_WEB_HOST
-    unset QD_WEB_PORT QD_TEST_KEYS QD_TEST_SCREEN
+    unset QD_WEB_PORT QD_TEST_KEYS QD_TEST_SCREEN QD_FILE_JOBS
+    unset PROVOST_WORKSPACE PROVOST_HOME PROVOST_CONTEXT_COLUMNS PROVOST_QUIET
+    # Every case files into a store of its own; QD_PROVOST_BATCH=0 from
+    # the caller runs the suites on the one-capture-at-a-time path.
+    export QD_STORE="$TEST_TMPDIR/store"
+    export XDG_CACHE_HOME="$TEST_TMPDIR/cache"
     export LANG=C
     cd "$TEST_TMPDIR" || return 1
 }
@@ -81,6 +92,16 @@ finish() {
 }
 
 qd() { "$PY" "$QD_DIR/qd" "$@"; }
+
+# provost on the case's store, as qd files into it
+# shellcheck disable=SC2086  # QD_PROVOST may be a command line
+pv() { PROVOST_WORKSPACE="$QD_STORE" PROVOST_ASYNC=0 $PROVOST_CMD "$@"; }
+
+# Whether this provost has `batch` (and --context-columns with it), and qd
+# is using it.
+has_batch() {
+    [ "${QD_PROVOST_BATCH:-1}" != 0 ] && pv batch --help > /dev/null 2>&1
+}
 
 # Run qd and keep its exit status, for a case that expects a non-zero one
 # under `set -e`.

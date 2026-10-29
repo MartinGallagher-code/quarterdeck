@@ -45,9 +45,9 @@ seed() {
     for h in a b c d; do echo "0.5" > "$FAKE_ROOT/$h/load"; done
     echo "9.0" > "$FAKE_ROOT/e/load"
     printf 'a rack=r1\nb rack=r1\nc rack=r2\nd rack=r2\ne rack=r2\n' > hosts.txt
-    qdf run -s hosts.txt -q --parse number -- cat load > /dev/null
+    qdf run -s hosts.txt -q -- cat load > /dev/null || true
     echo "0.6" > "$FAKE_ROOT/a/load"
-    qdf run -s hosts.txt -q --parse number -- cat load > /dev/null
+    qdf run -s hosts.txt -q -- cat load > /dev/null || true
 }
 
 t_entries_rows_and_filters() {
@@ -56,7 +56,7 @@ t_entries_rows_and_filters() {
     out="$(get /api/entries)"
     assert_contains "$out" "200"
     assert_contains "$out" '"kind": "run"'
-    out="$(get '/api/rows?e=latest&where=value>1&sort=-value')"
+    out="$(get '/api/rows?e=latest&where=A>1&sort=-A')"
     assert_contains "$out" '"matched": 1'
     assert_contains "$out" '"e"'
     out="$(get '/api/rows?e=latest&where=nosuch>1')"
@@ -67,11 +67,11 @@ t_entries_rows_and_filters() {
 t_column_figures_match_the_cli() {
     seed
     start_web
-    out="$(get '/api/column?e=latest&c=value')"
+    out="$(get '/api/column?e=latest&c=A')"
     assert_contains "$out" '"median": 0.5'
     assert_contains "$out" '"outliers"'
     assert_contains "$out" '"e", 9.0'
-    cli="$(qd stats latest value)"
+    cli="$(qd stats latest A)"
     assert_contains "$cli" "median 0.5"
 }
 
@@ -79,11 +79,11 @@ t_group_pivot_trend() {
     seed
     start_web
     out="$(get '/api/group?e=latest&by=rack')"
-    assert_contains "$out" '"value_mean"'
+    assert_contains "$out" '"A_mean"'
     assert_contains "$out" '"r2", "3"'
     out="$(get '/api/pivot?e=latest&rows=rack&cols=status')"
     assert_contains "$out" '"rack", "ok"'
-    out="$(get '/api/trend?e=latest&c=value&over=')"
+    out="$(get '/api/trend?e=latest&c=A&over=')"
     assert_contains "$out" '"over": null'
     assert_contains "$out" '"group": "e"'
 }
@@ -104,14 +104,17 @@ t_raw_export_and_overlay() {
     start_web
     out="$(get '/api/raw?e=latest&host=e')"
     assert_contains "$out" '"out": "9.0\n"'
+    assert_contains "$out" "provost source c00"
     out="$(get '/api/export?e=latest&format=csv&where=rack=r1')"
     assert_contains "$out" "host,rack,status"
     assert_not_contains "$out" "r2"
     out="$(get '/api/overlay?e=latest')"
     assert_contains "$out" '"samples"'
     e="$(qd log latest | head -1 | cut -d' ' -f1)"
-    assert_file_exists "logbook/$e/overlay.tsv"
-    assert_contains "$(cat "logbook/$e/overlay.tsv")" "qd_value	e	9.0"
+    # written to qd's cache, never into the store provost commits
+    assert_file_exists "$XDG_CACHE_HOME/quarterdeck/floor/$e/overlay.tsv"
+    assert_contains "$(cat "$XDG_CACHE_HOME/quarterdeck/floor/$e/overlay.tsv")" "qd_a	e	9.0"
+    assert_eq "$(git -C "$QD_STORE" status --porcelain)" ""
 }
 
 t_static_page_and_no_escape() {
@@ -126,6 +129,8 @@ t_static_page_and_no_escape() {
     out="$(get '/floor/files/../../../etc/passwd')"
     assert_not_contains "$out" "root:"
     out="$(get '/api/raw?e=latest&host=../../../etc/passwd')"
+    assert_not_contains "$out" "root:"
+    out="$(get '/api/raw?e=latest&capture=../../etc/passwd')"
     assert_not_contains "$out" "root:"
     out="$(get /api/nope)"
     assert_contains "$out" "404"
@@ -149,7 +154,7 @@ t_floor_writes_the_overlay_and_names_the_viewer() {
     PATH="/usr/bin:/bin" QD_DCVIZ="" qd floor latest --layout floor.dc \
         --dry-run > out 2> err || true
     e="$(qd log latest | head -1 | cut -d' ' -f1)"
-    assert_file_exists "logbook/$e/overlay.tsv"
+    assert_file_exists "$XDG_CACHE_HOME/quarterdeck/floor/$e/overlay.tsv"
     assert_contains "$(cat err)" "10 samples"
     # with one: the command it would run
     printf '#!/bin/sh\necho dcviz "$@"\n' > "$FAKE_BIN/dcviz"
@@ -158,13 +163,13 @@ t_floor_writes_the_overlay_and_names_the_viewer() {
     assert_contains "$out" "serve -d"
     assert_contains "$out" "--results files/overlay.tsv"
     assert_contains "$out" "--layout files/floor.dc"
-    assert_file_exists "logbook/$e/floor.dc"
+    assert_file_exists "$XDG_CACHE_HOME/quarterdeck/floor/$e/floor.dc"
 }
 
-t_empty_logbook_is_refused() {
+t_empty_store_is_refused() {
     qd_rc web -n 2> err
     assert_status "$QD_RC" 2
-    assert_contains "$(cat err)" "no logbook"
+    assert_contains "$(cat err)" "no store at"
 }
 
 run_test "entries, rows, --where, a bad filter"     t_entries_rows_and_filters
@@ -175,5 +180,5 @@ run_test "raw answers, export, overlay"             t_raw_export_and_overlay
 run_test "static page; nothing escapes its root"    t_static_page_and_no_escape
 run_test "app.js parses"                            t_app_js_parses
 run_test "floor: overlay written, viewer named"       t_floor_writes_the_overlay_and_names_the_viewer
-run_test "no logbook: refused"                      t_empty_logbook_is_refused
+run_test "no store yet: refused"                    t_empty_store_is_refused
 finish

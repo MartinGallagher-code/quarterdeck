@@ -5,29 +5,31 @@
 Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
        qd do  [OPTIONS] -- TOOL ARGS...        mx, iperf, agree, reckon, ...
        qd import PATH...                       output already on disk
-       qd log [ENTRY]                          what the logbook holds
-       qd view [ENTRY]                         full-screen explorer
-       qd show|stats|freq|hist|outliers|pivot|trend ENTRY ...
+       qd log [RUN]                            what the store holds
+       qd view [RUN]                           full-screen explorer
+       qd show|stats|freq|hist|outliers|pivot|trend RUN ...
        qd diff [OLD] NEW                       what changed between two
-       qd export ENTRY [--format overlay]      CSV, JSON, the viewer's TSV
-       qd web                                  the logbook in a browser
-       qd floor ENTRY --layout floor.dc        paint it on the floor plan
+       qd export RUN [--format overlay]        CSV, JSON, the viewer's TSV
+       qd web                                  the store in a browser
+       qd floor RUN --layout   floor.dc        paint it on the floor plan
        qd hosts | doctor | hints | help
 
 Examples:
   qd run --servers hosts.txt -- uname -r
-  qd run -S 'node[01-24]' --parse kv -- 'sysctl net.core.somaxconn'
-  qd run --layout floor.dc --select 'rack[1-3]' \\
-         --extract load1='^(\\S+)' -- cat /proc/loadavg
+  qd run -S 'node[01-24]' -- 'sysctl net.core.somaxconn vm.swappiness'
+  qd run --layout floor.dc --select 'rack[1-3]' -- cat /proc/loadavg
   qd do -- mx run --for 60
   qd do -- agree script why-slow --servers hosts.txt --fleet-csv -- --csv
-  qd stats latest load1 --by rack       qd freq latest stdout
+  qd stats latest A --by rack           qd freq latest A
   qd outliers latest mbps               qd diff latest
   qd view latest                        qd web
 
-ENTRY is latest, latest~1, an id or a unique part of one, an entry's
---name, or a file or directory to read without importing it.  Add :TABLE
-to pick one of an entry's tables (latest:reports).
+RUN is latest, latest~1, a run id or a unique part of one, a run's
+--name, ds:NAME for a whole provost dataset, or a file or directory to read
+without filing it.  Add :TABLE to pick one of a run's tables (latest:hosts).
+
+Everything is kept in provost's store (provost ls, provost source cNNNN):
+--store, QD_STORE, else provost's own choice.
 
 Exit status
   0   done, and every host answered
@@ -43,14 +45,16 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 
+from . import VERSION
 from .common import (PROG, VERSION_TEXT, QdError, _stdio_safe, die, env,
                      env_float, env_int, plural, warn, write_text)
 from . import diff as diffmod
-from . import fleet, hosts as hostmod, importers, parse as parsemod, query
-from . import render, stats, table as tablemod, tools
-from .logbook import Logbook, describe_entry, load_ref, now_iso, split_ref
+from . import filing, fleet, hosts as hostmod, importers, query
+from . import render, stats, store as storemod, table as tablemod, tools
+from .store import describe_entry, load_ref, now_iso, split_ref
 
 # ---------------------------------------------------------------------------
 # Safety: the same typo guard as agree's, for the same 3am reason
@@ -98,8 +102,8 @@ def out(text=""):
     sys.stdout.write(text + "\n")
 
 
-def book_of(args):
-    return Logbook(getattr(args, "logbook", None))
+def store_of(args):
+    return storemod.Store(getattr(args, "store", None))
 
 
 def manifest_argv():
@@ -196,34 +200,9 @@ def cmd_hosts(args):
 # run
 # ---------------------------------------------------------------------------
 
-def build_run_table(hs, parsed, pcols, passes):
-    """The dataset a run makes: one row per host (or per parsed row), with
-    the host's attributes, how it answered, and the parsed columns."""
-    attrs = hostmod.attr_columns(hs)
-    show_addr = any(h.addr != h.name or h.port for h in hs)
-    cols = ["host"] + (["addr"] if show_addr else []) + attrs
-    if passes > 1:
-        cols += ["pass", "ts"]
-    cols += ["status", "rc", "duration_s", "error"]
-    errs = any(err for _, _, err in parsed)
-    if errs:
-        cols.append("parse_error")
-    cols += [c for c in pcols if c not in cols]
-    rows = []
-    for r, prow_list, err in parsed:
-        h = r.host
-        ad = dict(h.attrs)
-        base = [h.name] + ([h.addr + (":%d" % h.port if h.port else "")]
-                           if show_addr else []) + [ad.get(a, "")
-                                                     for a in attrs]
-        if passes > 1:
-            base += [str(r.pass_no), "%d" % int(r.started)]
-        base += [r.outcome, str(r.rc), "%.2f" % r.duration, r.error()]
-        if errs:
-            base.append(err or "")
-        for prow in prow_list:
-            rows.append(base + [prow.get(c, "") for c in cols[len(base):]])
-    return tablemod.Table(cols, rows, "data")
+# A host's stderr is kept in qd.hosts up to this much; the first line of it
+# is the `error` column either way.
+STDERR_KEEP = 16384
 
 
 def outcome_counts(results):
@@ -233,14 +212,58 @@ def outcome_counts(results):
     return counts
 
 
-def write_raw(entry, results, passes):
-    d = os.path.join(entry.path, "raw")
-    for r in results:
-        safe = re.sub(r"[^\w.@-]+", "_", r.host.name)
-        stem = safe if passes == 1 else "%s.%d" % (safe, r.pass_no)
-        write_text(os.path.join(d, stem + ".out"), r.stdout)
-        if r.stderr:
-            write_text(os.path.join(d, stem + ".err"), r.stderr)
+def new_run_id(st, label):
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    base = "%s-%s" % (stamp, tablemod.slug(label or "")[:32].strip("_")
+                      or "run")
+    taken = st.run_ids()
+    rid, k = base, 2
+    while rid in taken:
+        rid = "%s-%d" % (base, k)
+        k += 1
+    return rid
+
+
+def run_row(rid, kind, name, command, created, **kw):
+    """The qd.runs row: what ran, where, when, how it went."""
+    d = {"run": rid, "kind": kind, "name": name, "command": command,
+         "created": created, "finished": now_iso(), "cwd": os.getcwd(),
+         "qd": VERSION}
+    d.update(kw)
+    return ["" if d.get(c) is None else str(d[c])
+            for c in storemod.RUN_COLUMNS]
+
+
+def host_row(rid, r):
+    h = r.host
+    addr = h.addr + (":%d" % h.port if h.port else "")
+    return [rid, h.name, addr if (h.addr != h.name or h.port) else "",
+            str(r.pass_no), "%d" % int(r.started), r.outcome, str(r.rc),
+            "%.2f" % r.duration, str(len(r.stdout.encode("utf-8"))),
+            r.error(), " ".join("%s=%s" % kv for kv in h.attrs),
+            r.stderr[:STDERR_KEEP]]
+
+
+def filed(st, rid, notes, batch):
+    """The run just filed, read back from the store -- proof it is there.
+    If it is not, the answers are still on disk, and how to file them is
+    said: a fleet's answers are never thrown away for want of a store."""
+    st.reset()
+    for e in reversed(st.entries()):
+        if e.id == rid:
+            batch.cleanup()
+            if notes:
+                e.meta.setdefault("notes", []).extend(notes)
+            return e
+    die("provost did not file this run%s\n  what came back is kept in %s"
+        % ((": " + notes[-1]) if notes else "", batch.dir))
+
+
+def file_batch(prov, batch, what):
+    try:
+        return filing.notes_of(prov, batch, what)
+    except QdError as exc:
+        die("%s\n  what came back is kept in %s" % (exc, batch.dir), exc.code)
 
 
 def cmd_run(args):
@@ -281,50 +304,90 @@ def cmd_run(args):
             out(" ".join(shlex.quote(a) for a in runner.ssh_argv(
                 h, runner.wrap(command))))
         return 0
+    st = prov = None
+    if not args.no_store:
+        # before the fleet, not after: answers with nowhere to go are lost
+        st = store_of(args)
+        prov = filing.Provost(st)
+        prov.require("keep the answers")
     count = args.count if args.count else 10 ** 9
     t0 = time.time()
+    created = now_iso()
     results, interrupted = fleet.run_passes(
         hs, lambda h, k: runner.run_one(h, command, push or None,
                                         not args.keep_remote, k),
         args.jobs, count, args.every or 0)
     if not results:
         die("interrupted before any pass finished; nothing was kept", 130)
+    took = round(time.time() - t0, 2)
     passes = max(r.pass_no for r in results)
-    mode, parsed, pcols = parsemod.parse_all(results, args.parse,
-                                             args.extract)
-    t = build_run_table(hs, parsed, pcols, passes)
-    counts = outcome_counts(results)
+    last = [r for r in results if r.pass_no == passes]
     entry = None
-    if not args.no_log:
+    if st is not None:
         label = args.name or (os.path.basename(args.script) if args.script
                               else os.path.basename(command.split()[0])
                               if command.split() else "run")
-        entry = book_of(args).create("run", label, command,
-                                     sys.argv[1:])
-        if args.name:
-            entry.meta["name"] = args.name
-        write_raw(entry, results, passes)
-        entry.add_table(t, origin="ssh")
-        entry.meta.update({
-            "hosts": dict({"total": len(hs)}, **{
-                k: sum(1 for r in results if r.outcome == k and
-                       r.pass_no == passes) for k in counts}),
-            "parse": mode, "passes": passes, "every": args.every,
-            "finished": now_iso(), "duration_s": round(time.time() - t0, 2),
-            "host_list": [h.token() for h in hs]})
-        if interrupted:
-            entry.meta.setdefault("notes", []).append(
-                "interrupted after %d pass(es)" % passes)
-        entry.save()
-        t.entry = entry
-    report_run(args, command, hs, results, t, mode, pcols, entry, passes,
-               interrupted)
-    last = [r for r in results if r.pass_no == passes]
+        rid = new_run_id(st, label)
+        ds = filing.dataset_name(label)
+        b = filing.Batch()
+        for r in results:
+            if r.stdout.strip():
+                pairs = [("run", rid), ("host", r.host.name)] + (
+                    [("pass", str(r.pass_no))] if passes > 1 else []) + \
+                    list(r.host.attrs)
+                b.add(ds, filing.prologue(pairs) + filing.body(r.stdout))
+        ncap = len(b.inputs)
+        b.add(storemod.HOSTS, filing.own_tsv(
+            storemod.HOST_COLUMNS, [host_row(rid, r) for r in results]))
+        counts = outcome_counts(last)
+        b.add(storemod.RUNS, filing.own_tsv(storemod.RUN_COLUMNS, [run_row(
+            rid, "run", label, command, created, duration_s=took,
+            hosts=len(hs), ok=counts.get(fleet.OK, 0),
+            failed=counts.get(fleet.FAILED, 0),
+            timeout=counts.get(fleet.TIMEOUT, 0),
+            unreachable=counts.get(fleet.UNREACHABLE, 0),
+            push_failed=counts.get(fleet.PUSH_FAILED, 0), passes=passes,
+            every=args.every, captures=ncap,
+            notes=("interrupted after %s" % plural(passes, "pass", "passes"))
+            if interrupted else None)]))
+        if ncap > 8 and sys.stderr.isatty():
+            sys.stderr.write("%s run: filing %s through provost ...\n"
+                             % (PROG, plural(ncap, "answer")))
+        notes = file_batch(prov, b, "answers")
+        entry = filed(st, rid, notes, b)
+        t = entry.load("data")
+    else:
+        t = unfiled_table(results, passes)
+    report_run(args, command, hs, results, t, entry, passes, interrupted)
     return 0 if all(r.outcome == fleet.OK for r in last) else 1
 
 
-def report_run(args, command, hs, results, t, mode, pcols, entry, passes,
-               interrupted):
+def unfiled_table(results, passes):
+    """--no-store: what came back, with nothing parsed and nothing kept."""
+    cols = ["host"] + (["pass"] if passes > 1 else []) + [
+        "status", "rc", "duration_s", "error", "stdout"]
+    rows = []
+    for r in results:
+        rows.append([r.host.name] + ([str(r.pass_no)] if passes > 1
+                                     else []) +
+                    [r.outcome, str(r.rc), "%.2f" % r.duration, r.error(),
+                     r.stdout.rstrip("\n")])
+    return tablemod.Table(cols, rows, "data")
+
+
+def data_columns(t):
+    """What the hosts said, as provost read it: the columns after qd's own
+    (host ... status, rc, duration_s, error, capture, and dataset)."""
+    if "capture" in t.columns:
+        rest = t.columns[t.columns.index("capture") + 1:]
+    elif "stdout" in t.columns:
+        rest = ["stdout"]
+    else:
+        rest = []
+    return [c for c in rest if c != "dataset"]
+
+
+def report_run(args, command, hs, results, t, entry, passes, interrupted):
     last = [r for r in results if r.pass_no == passes]
     counts = outcome_counts(last)
     parts = ["%d ok" % counts.get(fleet.OK, 0)] + [
@@ -332,10 +395,15 @@ def report_run(args, command, hs, results, t, mode, pcols, entry, passes,
                                            fleet.UNREACHABLE,
                                            fleet.PUSH_FAILED)
         if counts.get(k)]
-    shape = "parsed as %s" % mode
-    if mode != "text" and pcols:
-        shape += ": " + ", ".join(pcols[:6]) + (" ..." if len(pcols) > 6
-                                                 else "")
+    dcols = data_columns(t)
+    if entry is None:
+        shape = "not kept (--no-store)"
+    else:
+        names = entry.tables[0].get("datasets") or []
+        shape = "provost: %s" % (", ".join(names) or "nothing to file")
+        if dcols:
+            shape += ": " + ", ".join(dcols[:6]) + (" ..." if len(dcols) > 6
+                                                     else "")
     lines = ["%s run -- %s: %s, %s%s   [%s]" % (
         PROG, command if len(command) < 60 else command[:57] + "...",
         plural(len(hs), "host"), ", ".join(parts),
@@ -343,9 +411,14 @@ def report_run(args, command, hs, results, t, mode, pcols, entry, passes,
     if interrupted:
         lines.append("  interrupted: kept the %s that finished"
                      % plural(passes, "pass", "passes"))
-    if entry:
-        lines.append("  logbook  %s  (%s)" % (entry.path,
-                                             plural(len(t.rows), "row")))
+    if entry is not None:
+        caps = entry.captures()
+        lines.append("  stored   %s in %s  (%s%s)" % (
+            entry.id, entry.store.shown(), plural(len(t.rows), "row"),
+            (", captures %s..%s" % (caps[0], caps[-1])) if len(caps) > 1
+            else (", capture %s" % caps[0]) if caps else ""))
+        for n in entry.meta.get("notes", []):
+            lines.append("  note     %s" % n)
     if args.quiet:
         sys.stdout.write(render.page(lines))
         return
@@ -361,10 +434,8 @@ def report_run(args, command, hs, results, t, mode, pcols, entry, passes,
                                                  r.error()))
     ok_rows = [row for row in t.rows if row[t.index("status")] == fleet.OK]
     if args.preview and ok_rows:
-        show = ["host"] + (["pass"] if passes > 1 else []) + [
-            c for c in pcols][:8]
-        if mode == "text":
-            show = ["host"] + (["pass"] if passes > 1 else []) + ["stdout"]
+        show = ["host"] + (["pass"] if passes > 1 else []) + (
+            ["dataset"] if "dataset" in t.columns else []) + dcols[:8]
         sub = t.derive(rows=ok_rows[:args.preview], columns=show)
         lines.append("")
         lines.extend(render.render_table(sub, max_cell=48,
@@ -373,12 +444,12 @@ def report_run(args, command, hs, results, t, mode, pcols, entry, passes,
             lines.append("  ... %d more row(s): %s show %s" % (
                 len(ok_rows) - args.preview, PROG,
                 entry.id if entry else "..."))
-    lines.extend(run_next_steps(t, mode, pcols, entry, bad, passes))
+    lines.extend(run_next_steps(t, dcols, entry, bad, passes))
     sys.stdout.write(render.page(lines))
 
 
-def run_next_steps(t, mode, pcols, entry, bad, passes):
-    ref = "latest" if entry else "<entry>"
+def run_next_steps(t, dcols, entry, bad, passes):
+    ref = "latest" if entry else "<run>"
     tips = []
     if bad:
         tips.append(("%s show %s --where status!=ok" % (PROG, ref),
@@ -387,15 +458,15 @@ def run_next_steps(t, mode, pcols, entry, bad, passes):
         tips.append(("reachable hosts.txt -i",
                      "binnacle: comment dead entries out of the list"))
     ok = t.derive(rows=query.where(t, ["status=ok"]))
-    if mode == "text" and ok.rows:
-        distinct = len(set(ok.values("stdout")))
+    filled = [c for c in dcols if ok.has(c) and ok.kind(c) != "empty"]
+    if ok.rows and len(filled) == 1 and ok.kind(filled[0]) != "num":
+        distinct = len(set(ok.values(filled[0])))
         if distinct > 1:
-            tips.append(("%s freq %s stdout" % (PROG, ref),
-                         "%d different answers: who said which"
-                         % distinct))
+            tips.append(("%s freq %s %s" % (PROG, ref, filled[0]),
+                         "%d different answers: who said which" % distinct))
         else:
             tips.append(("", "every host that answered said the same thing"))
-    nums = [c for c in pcols if ok.has(c) and ok.kind(c) == "num"]
+    nums = [c for c in filled if ok.kind(c) == "num" and c != "n"]
     if nums:
         c = nums[0]
         if passes > 1:
@@ -409,11 +480,18 @@ def run_next_steps(t, mode, pcols, entry, bad, passes):
                                           else ""),
                      "centre and spread" + (" per " + attrs[0]
                                             if attrs else "")))
+    if "dataset" in t.columns and "unsorted" in set(t.values("dataset")):
+        tips.append(("provost triage",
+                     "answers provost could not read as a table, and why"))
     if entry is not None:
-        prev = Logbook(os.path.dirname(entry.path)).previous_like(entry)
+        prev = entry.store.previous_like(entry)
         if prev is not None:
             tips.append(("%s diff %s" % (PROG, ref),
                          "against the last time this ran (%s)" % prev.id))
+        caps = entry.captures()
+        if caps:
+            tips.append(("provost source %s" % caps[0],
+                         "one host's answer exactly as it came back"))
     tips.append(("%s view %s" % (PROG, ref), "explore it full-screen"))
     return next_steps(tips)
 
@@ -432,10 +510,10 @@ def next_steps(tips):
 
 
 # ---------------------------------------------------------------------------
-# do: a tool from the toolchain, run here and logged
+# do: a tool from the toolchain, run here and filed
 # ---------------------------------------------------------------------------
 
-def run_teed(argv, path):
+def run_teed(argv):
     """Run argv with stdout shown live and kept; stderr and stdin stay the
     terminal's, so progress lines and prompts work as they always do."""
     try:
@@ -461,9 +539,7 @@ def run_teed(argv, path):
     except KeyboardInterrupt:
         p.wait()
     rc = p.wait()
-    text = b"".join(chunks).decode("utf-8-sig", "replace")
-    write_text(path, text)
-    return rc, text
+    return rc, b"".join(chunks).decode("utf-8-sig", "replace")
 
 
 def resolve_argv(cmd):
@@ -479,18 +555,55 @@ def resolve_argv(cmd):
     return cmd
 
 
+def add_tables(b, rid, label, tables):
+    """File each table qd read as a capture of its own: '#% run=RUN', a
+    qd-table line with its name, notes and display metadata, then the
+    table as plain TSV.  Returns [(table name, dataset, rows, origin)]."""
+    added, taken = [], set()
+    for origin, t in tables:
+        if not t.columns or not t.rows:
+            continue
+        base = tablemod.slug(t.name) or "data"
+        name, k = base, 2
+        while name in taken:
+            name = "%s_%d" % (base, k)
+            k += 1
+        taken.add(name)
+        ds = filing.dataset_name(label if name == tablemod.slug(label)
+                                 else "%s.%s" % (label, name))
+        info = {"name": name, "from": origin}
+        if t.notes:
+            info["notes"] = list(t.notes)
+        if t.tests:
+            info["tests"] = t.tests
+        b.add(ds, filing.prologue([("run", rid)], [storemod.table_line(info)])
+              + filing.table_tsv(t))
+        added.append((name, ds, len(t.rows), origin))
+    return added
+
+
 def cmd_do(args):
     cmd = strip_dashes(args.command)
     if not cmd:
         die("nothing to do: put the tool and its arguments after --, e.g.\n"
             "  %s do -- mx run --for 60" % PROG)
     cmd = resolve_argv(cmd)
-    book = book_of(args)
+    st = store_of(args)
+    prov = filing.Provost(st)
+    prov.require("keep what it leaves")
     name, _ = tools.tool_of(cmd)
     label = args.name or name or "do"
     cmdline = " ".join(shlex.quote(a) for a in strip_dashes(args.command))
-    entry = book.create("do", label, cmdline, sys.argv[1:])
-    plan = tools.plan(cmd, entry.path)
+    work = tempfile.mkdtemp(prefix="qd-do-")
+    try:
+        return _do(args, cmd, st, prov, name, label, cmdline, work)
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _do(args, cmd, st, prov, name, label, cmdline, work):
+    plan = tools.plan(cmd, work)
     if args.no_import:
         plan.imports, plan.after = [], []
     for path in args.import_ or []:
@@ -499,8 +612,9 @@ def cmd_do(args):
     sys.stderr.write("%s do: %s\n" % (PROG, shown))
     for n in plan.notes:
         sys.stderr.write("%s do: %s\n" % (PROG, n))
+    created = now_iso()
     t0 = time.time()
-    rc, stdout = run_teed(plan.argv, os.path.join(entry.path, "stdout.txt"))
+    rc, stdout = run_teed(plan.argv)
     took = round(time.time() - t0, 2)
     log = []
     for argv, outpath, tname in plan.after:
@@ -518,48 +632,53 @@ def cmd_do(args):
                                             first[-1] if first else ""))
         if os.path.exists(outpath):
             plan.imports.append((outpath, tname))
-    added = []
+    tables = []
     for path, tname in plan.imports:
         if not os.path.exists(path):
             log.append("  - %s: not there, nothing read" % path)
             continue
         try:
-            tables = importers.read_path(path)
+            got = importers.read_path(path)
         except QdError as exc:
             log.append("  - %s: %s" % (path, exc))
             continue
-        for t in tables:
-            if tname and len(tables) == 1:
+        for t in got:
+            if tname and len(got) == 1:
                 t.name = tname
-            n = entry.add_table(t, origin=os.path.abspath(path))
-            added.append(n)
-            log.append("  + %-16s %6d rows  <- %s" % (n, len(t.rows), path))
+            origin = "qd" if os.path.abspath(path).startswith(work + os.sep) \
+                else os.path.abspath(path)
+            tables.append((origin, t))
+    rid = new_run_id(st, label)
+    b = filing.Batch()
+    added = add_tables(b, rid, label, tables)
     fmt = tablemod.detect(stdout)
     if stdout.strip() and (fmt not in ("lines", "empty") or not added):
-        got = tablemod.parse_text(stdout, "stdout", "stdout")
-        if not any(t.rows for t in got):
-            got = tablemod.parse_text(stdout, "stdout", "stdout", "lines")
-        for t in got:
-            if t.columns:
-                n = entry.add_table(t, origin="stdout")
-                added.append(n)
-                log.append("  + %-16s %6d rows  <- stdout" % (n, len(t.rows)))
-    entry.meta.update({"rc": rc, "duration_s": took, "finished": now_iso(),
-                       "tool": name, "ran": shown})
+        # what it printed is provost's to read, as any captured output is
+        ds = filing.dataset_name("%s.stdout" % label)
+        b.add(ds, filing.prologue([("run", rid)], [storemod.table_line(
+            {"name": "stdout", "from": "stdout"})]) + filing.body(stdout))
+        added.append(("stdout", ds, None, "stdout"))
     ver = tools.tool_version(plan.argv[:len(plan.argv) - len(
         tools.tool_of(plan.argv)[1])]) if name in tools.TOOL_NAMES else ""
-    if ver:
-        entry.meta["tools"] = {name: ver}
-    entry.save()
+    b.add(storemod.RUNS, filing.own_tsv(storemod.RUN_COLUMNS, [run_row(
+        rid, "do", label, cmdline, created, duration_s=took, rc=rc,
+        captures=len(b.inputs), tool=name, ran=shown, version=ver)]))
+    notes = file_batch(prov, b, "tables")
+    entry = filed(st, rid, notes, b)
+    rows = dict((t["name"], t.get("rows", 0)) for t in entry.tables)
+    for tname, ds, _, origin in added:
+        log.append("  + %-16s %6d rows  %s  <- %s" % (
+            tname, rows.get(tname, 0), ds, origin))
     lines = ["", "%s do -- %s exited %d after %ss" % (PROG, name or cmd[0],
                                                      rc, took),
-             "  logbook  %s" % entry.path] + log
+             "  stored   %s in %s" % (entry.id, st.shown())] + log + [
+        "  note     %s" % n for n in notes]
     tips = []
     if added:
         tips.append(("%s view latest" % PROG, "explore what it left"))
         tips.append(("%s log latest" % PROG, "what was run and kept"))
         if len(added) > 1:
-            tips.append(("%s stats latest:%s" % (PROG, added[0]),
+            tips.append(("%s stats latest:%s" % (PROG, added[0][0]),
                          "one table of several"))
     else:
         tips.append(("%s do --import PATH -- ..." % PROG,
@@ -574,7 +693,9 @@ def cmd_do(args):
 # ---------------------------------------------------------------------------
 
 def cmd_import(args):
-    book = book_of(args)
+    st = store_of(args)
+    prov = filing.Provost(st)
+    prov.require("file it")
     label = args.name or os.path.basename(os.path.abspath(args.paths[0]))
     for p in args.paths:
         if not os.path.exists(p):
@@ -582,14 +703,28 @@ def cmd_import(args):
     tables = []
     for p in args.paths:
         for t in importers.read_path(p, args.as_):
-            tables.append((p, t))
-    entry = book.create("import", label, " ".join(args.paths), sys.argv[1:])
-    lines = ["%s import -- %s" % (PROG, entry.path)]
-    for p, t in tables:
-        n = entry.add_table(t, origin=os.path.abspath(p))
-        lines.append("  + %-18s %6d rows  %s  <- %s" % (
-            n, len(t.rows), "results" if t.is_results() else
-            plural(len(t.columns), "column"), p))
+            tables.append((os.path.abspath(p), t))
+    created = now_iso()
+    rid = new_run_id(st, label)
+    b = filing.Batch()
+    added = add_tables(b, rid, label, tables)
+    if not added:
+        b.cleanup()
+        die("nothing to file: no table with rows in %s" % " ".join(args.paths))
+    b.add(storemod.RUNS, filing.own_tsv(storemod.RUN_COLUMNS, [run_row(
+        rid, "import", label, " ".join(args.paths), created,
+        captures=len(b.inputs))]))
+    notes = file_batch(prov, b, "tables")
+    entry = filed(st, rid, notes, b)
+    rows = dict((t["name"], t.get("rows", 0)) for t in entry.tables)
+    lines = ["%s import -- %s in %s" % (PROG, entry.id, st.shown())]
+    for (origin, t), (tname, ds, _, _) in zip(
+            [x for x in tables if x[1].columns and x[1].rows], added):
+        lines.append("  + %-18s %6d rows  %s  %s  <- %s" % (
+            tname, rows.get(tname, 0), ds, "results" if t.is_results() else
+            plural(len(t.columns), "column"), origin))
+    for n in notes:
+        lines.append("  note     %s" % n)
     lines.extend(next_steps([("%s view latest" % PROG, "explore it"),
                              ("%s stats latest" % PROG, "describe it")]))
     sys.stdout.write(render.page(lines))
@@ -597,23 +732,25 @@ def cmd_import(args):
 
 
 def cmd_log(args):
-    book = book_of(args)
+    st = store_of(args)
     if args.ref:
-        e = book.resolve(args.ref)
+        e = st.resolve(args.ref)
         sys.stdout.write(render.page(describe_entry(e)))
         return 0
-    entries = book.entries()
+    entries = st.entries()
     if not entries:
-        out("no logbook entries in %s yet" % book.root)
+        out("no runs in the store %s yet%s" % (
+            st.shown(), " (provost ls lists its datasets)"
+            if st.dataset_names() else ""))
         return 0
     shown = entries if args.all else entries[-args.n:]
     rows = []
-    for i, e in enumerate(shown):
+    for e in shown:
         cmdline = e.meta.get("command") or ""
         rows.append([e.id, e.meta.get("kind", ""),
-                     str(len(e.tables)), e.summary(),
+                     str(e.table_count()), e.summary(),
                      cmdline if len(cmdline) <= 50 else cmdline[:47] + "..."])
-    lines = render.render_rows(["entry", "kind", "tables", "size",
+    lines = render.render_rows(["run", "kind", "tables", "size",
                                 "command"], rows, numeric=[2], max_cell=64,
                                width=width_of(args))
     if len(shown) < len(entries):
@@ -628,7 +765,7 @@ def cmd_log(args):
 # ---------------------------------------------------------------------------
 
 def load(args, ref=None):
-    return load_ref(book_of(args), ref or args.ref or "latest",
+    return load_ref(store_of(args), ref or args.ref or "latest",
                     getattr(args, "as_", None))
 
 
@@ -966,7 +1103,7 @@ def report_trend(args, t, s):
 # ---------------------------------------------------------------------------
 
 def cmd_diff(args):
-    book = book_of(args)
+    book = store_of(args)
     if len(args.refs) == 1:
         ref, tname = split_ref(args.refs[0])
         if os.path.exists(ref):
@@ -974,14 +1111,14 @@ def cmd_diff(args):
         new_e = book.resolve(ref)
         old_e = book.previous_like(new_e)
         if old_e is None:
-            die("nothing earlier in the logbook ran what %s ran; name two "
-                "entries: %s diff OLD NEW" % (new_e.id, PROG))
+            die("nothing earlier in the store ran what %s ran; name two "
+                "runs: %s diff OLD NEW" % (new_e.id, PROG))
         a, b = old_e.load(tname), new_e.load(tname)
     elif len(args.refs) == 2:
         a = load_ref(book, args.refs[0])
         b = load_ref(book, args.refs[1])
     else:
-        die("diff wants one entry (against its previous run) or two")
+        die("diff wants one run (against the one before it) or two")
     if args.where:
         a = a.derive(rows=query.where(a, args.where))
         b = b.derive(rows=query.where(b, args.where))
@@ -1096,12 +1233,19 @@ def cmd_export(args):
     return 0
 
 
+def floor_dir(e):
+    """Where a run's overlay is written: qd's cache, never the store
+    (provost commits everything in it)."""
+    return os.path.join(storemod.cache_root(), "floor",
+                        re.sub(r"[^\w.@-]+", "_", e.id))
+
+
 def cmd_floor(args):
     t = load(args)
     s = subset(args, t)
     o = tools.to_overlay(s, run_label(t), args.prefix, args.target)
     e = getattr(t, "entry", None)
-    d = e.path if e is not None else os.getcwd()
+    d = floor_dir(e) if e is not None else os.getcwd()
     path = os.path.join(d, "overlay.tsv" if e is not None
                         else "qd-overlay.tsv")
     write_text(path, tablemod.to_results(o))
@@ -1155,21 +1299,21 @@ def cmd_floor(args):
 
 def cmd_view(args):
     from . import explore
-    book = book_of(args)
+    book = store_of(args)
     ref = args.ref
     if ref is None and not book.entries():
-        die("nothing to view: the logbook in %s is empty -- give a file, "
-            "or make an entry with qd run / qd do / qd import" % book.root)
+        die("nothing to view: no runs in the store %s yet -- give a file, "
+            "or make one with qd run / qd do / qd import" % book.shown())
     t = load_ref(book, ref or "latest", args.as_)
     return explore.run(t, book, where=args.where, sort=args.sort)
 
 
 def cmd_web(args):
     from . import web
-    book = book_of(args)
+    book = store_of(args)
     if not book.exists():
-        die("no logbook in %s yet -- qd run, qd do or qd import makes one "
-            "(or point --logbook at another)" % book.root)
+        die("no store at %s yet -- qd run, qd do or qd import makes one "
+            "(or point --store at another)" % book.shown())
     return web.serve(book, host=args.host, port=args.port,
                      layout=args.layout, open_browser=not args.no_browser,
                      quiet=args.quiet)
@@ -1182,12 +1326,21 @@ def cmd_doctor(args):
                                      "for"], rows, max_cell=44,
                                     width=width_of(args), indent="  "))
     missing = [r[0] for r in rows if r[1] != "ok"]
-    book = book_of(args)
+    book = store_of(args)
     lines.append("")
-    lines.append("  logbook   %s (%s)" % (
-        os.path.abspath(book.root), plural(len(book.entries()), "entry",
-                                           "entries")
-        if book.exists() else "not made yet; the first run makes it"))
+    if book.exists():
+        what = "%s, %s" % (plural(len(book.entries()), "run"),
+                           plural(len(book.dataset_names()), "dataset"))
+    else:
+        what = "not made yet; the first run makes it"
+    lines.append("  store     %s (%s)" % (book.shown(), what))
+    prov = filing.Provost(book)
+    if prov.argv:
+        lines.append("  filing    %s" % (
+            "provost batch: a run is one commit, its answers parsed in "
+            "parallel" if prov.has_batch() else
+            "one capture at a time (this provost has no batch; a newer "
+            "one files a run as one commit)"))
     hints = sorted(set(tools.install_hint(m) for m in missing
                        if tools.install_hint(m)))
     if "ssh" in missing:
@@ -1202,13 +1355,11 @@ HINTS = [
     ("Is my host list even real?",
      "qd run --servers hosts.txt -- true            (then: reachable hosts.txt -i)"),
     ("What does every host say about X?",
-     "qd run --servers hosts.txt -- uname -r   ->   qd freq latest stdout"),
-    ("Pull a number off every host",
-     "qd run -s hosts.txt --extract load1='^(\\S+)' -- cat /proc/loadavg"),
-    ("Watch it over time",
-     "qd run -s hosts.txt --every 10 --count 30 --parse number -- 'cat /proc/loadavg'"),
+     "qd run --servers hosts.txt -- uname -r   ->   qd freq latest A"),
     ("Settings as columns",
-     "qd run -s hosts.txt --parse kv -- 'sysctl net.core.somaxconn vm.swappiness'"),
+     "qd run -s hosts.txt -- 'sysctl net.core.somaxconn vm.swappiness'"),
+    ("Watch it over time",
+     "qd run -s hosts.txt --every 10 --count 30 -- cat /proc/loadavg"),
     ("The servers in racks 1-3",
      "qd run --layout floor.dc --select 'rack[1-3]' -- ...   (needs binnacle)"),
     ("Why is the fleet slow?",
@@ -1224,6 +1375,8 @@ HINTS = [
     ("Who is far from the rest?", "qd outliers latest COLUMN"),
     ("Centre and spread, per rack", "qd stats latest COLUMN --by rack"),
     ("What changed since last time?", "qd diff latest"),
+    ("One host's answer, exactly", "provost source cNNNN   (qd log latest names them)"),
+    ("Every run of it, ever", "qd show ds:NAME   or   provost show NAME"),
     ("Look around", "qd view latest"),
     ("On the floor plan", "qd floor latest --layout floor.dc"),
 ]
@@ -1243,9 +1396,10 @@ def cmd_hints(args):
 # ---------------------------------------------------------------------------
 
 def add_common(p):
-    p.add_argument("--logbook", metavar="DIR",
-                   help="where datasets are kept (QD_LOGBOOK, default "
-                   "./logbook)")
+    p.add_argument("--store", metavar="DIR",
+                   help="the provost store to file into and read (QD_STORE; "
+                   "default provost's own: PROVOST_WORKSPACE, the controlled "
+                   "directory you are in, PROVOST_HOME, ~/.provost)")
     p.add_argument("--width", type=int, metavar="N",
                    help="cut tables to N columns of text (default: the "
                    "terminal's, none when piped)")
@@ -1380,18 +1534,13 @@ def build_parser():
     g.add_argument("--keep-remote", action="store_true",
                    help="leave pushed files on the hosts")
     g = sp.add_argument_group("what comes back")
-    g.add_argument("--parse", default=env("PARSE", "auto"),
-                   choices=parsemod.MODES,
-                   help="how answers become columns (QD_PARSE, auto)")
-    g.add_argument("--extract", action="append", metavar="NAME=REGEX",
-                   help="a column from a regular expression: group 1, or "
-                   "named groups; repeatable")
     g.add_argument("--every", type=seconds, metavar="S",
                    help="repeat: a pass every S seconds")
     g.add_argument("--count", type=nonneg, default=None, metavar="N",
                    help="passes to run (1; 0 with --every runs until Ctrl-C)")
-    g.add_argument("--name", help="label for the logbook entry")
-    g.add_argument("--no-log", action="store_true",
+    g.add_argument("--name", help="the run's name: the provost dataset its "
+                   "answers go to, and what `qd show NAME` finds")
+    g.add_argument("--no-store", action="store_true",
                    help="print the answers but keep nothing")
     g.add_argument("--preview", type=nonneg, default=20, metavar="N",
                    help="rows of the dataset to print (20; 0 for none)")
@@ -1409,7 +1558,7 @@ def build_parser():
     sp.set_defaults(fn=cmd_run)
 
     sp = verb("do", "run a toolchain command here and keep what it left")
-    sp.add_argument("--name", help="label for the logbook entry")
+    sp.add_argument("--name", help="the run's name (default the tool's)")
     sp.add_argument("--import", dest="import_", action="append",
                     metavar="PATH", help="also read this file or directory "
                     "afterwards; repeatable")
@@ -1419,22 +1568,23 @@ def build_parser():
                     help="-- TOOL ARGS...")
     sp.set_defaults(fn=cmd_do)
 
-    sp = verb("import", "bring output already on disk into the logbook")
+    sp = verb("import", "file output already on disk into the store")
     sp.add_argument("paths", nargs="+", metavar="PATH")
-    sp.add_argument("--name", help="label for the logbook entry")
+    sp.add_argument("--name", help="the run's name (default the first "
+                    "path's)")
     sp.add_argument("--as", dest="as_", metavar="FORMAT",
                     help="read as this format rather than detecting it")
     sp.set_defaults(fn=cmd_import)
 
-    sp = verb("log", "list the logbook, or describe one entry")
-    sp.add_argument("ref", nargs="?", metavar="ENTRY")
+    sp = verb("log", "list the runs in the store, or describe one")
+    sp.add_argument("ref", nargs="?", metavar="RUN")
     sp.add_argument("-n", type=positive, default=20,
-                    help="the last N entries (20)")
-    sp.add_argument("--all", action="store_true", help="every entry")
+                    help="the last N runs (20)")
+    sp.add_argument("--all", action="store_true", help="every run")
     sp.set_defaults(fn=cmd_log)
 
     sp = verb("show", "print a dataset as a table")
-    sp.add_argument("ref", nargs="?", metavar="ENTRY")
+    sp.add_argument("ref", nargs="?", metavar="RUN")
     add_query(sp)
     sp.add_argument("--cols", metavar="A,B", help="only these columns")
     sp.add_argument("--limit", type=nonneg, metavar="N",
@@ -1447,7 +1597,7 @@ def build_parser():
     sp.set_defaults(fn=cmd_show)
 
     sp = verb("stats", "describe columns, or one in depth, or per group")
-    sp.add_argument("ref", nargs="?", metavar="ENTRY")
+    sp.add_argument("ref", nargs="?", metavar="RUN")
     sp.add_argument("columns", nargs="*", metavar="COL")
     sp.add_argument("--by", action="append", metavar="COL",
                     help="one row per value of COL (repeatable, or a,b)")
@@ -1459,7 +1609,7 @@ def build_parser():
     sp.set_defaults(fn=cmd_stats)
 
     sp = verb("freq", "how often each value occurs, and who holds it")
-    sp.add_argument("ref", metavar="ENTRY")
+    sp.add_argument("ref", metavar="RUN")
     sp.add_argument("column", metavar="COL")
     sp.add_argument("--top", type=nonneg, default=20,
                     help="the N most common (20; 0 for all)")
@@ -1477,7 +1627,7 @@ def build_parser():
     sp.set_defaults(fn=cmd_freq)
 
     sp = verb("hist", "a histogram of a numeric column")
-    sp.add_argument("ref", metavar="ENTRY")
+    sp.add_argument("ref", metavar="RUN")
     sp.add_argument("column", metavar="COL")
     sp.add_argument("--bins", type=positive, help="number of bins")
     sp.add_argument("--bar-width", type=positive, default=40,
@@ -1487,7 +1637,7 @@ def build_parser():
     sp.set_defaults(fn=cmd_hist)
 
     sp = verb("outliers", "who sits far from the rest (median and MAD)")
-    sp.add_argument("ref", metavar="ENTRY")
+    sp.add_argument("ref", metavar="RUN")
     sp.add_argument("column", metavar="COL")
     sp.add_argument("--per", metavar="COL",
                     help="one value per COL first, its median (default: per "
@@ -1502,7 +1652,7 @@ def build_parser():
     sp.set_defaults(fn=cmd_outliers)
 
     sp = verb("pivot", "long to wide: rows by columns")
-    sp.add_argument("ref", metavar="ENTRY")
+    sp.add_argument("ref", metavar="RUN")
     sp.add_argument("--rows", metavar="COL")
     sp.add_argument("--cols", dest="cols_", metavar="COL")
     sp.add_argument("--values", metavar="COL",
@@ -1515,7 +1665,7 @@ def build_parser():
     sp.set_defaults(fn=cmd_pivot)
 
     sp = verb("trend", "a sparkline per host over time")
-    sp.add_argument("ref", metavar="ENTRY")
+    sp.add_argument("ref", metavar="RUN")
     sp.add_argument("column", metavar="COL")
     sp.add_argument("--by", metavar="COL",
                     help="one line per value (default host)")
@@ -1528,8 +1678,8 @@ def build_parser():
     sp.set_defaults(fn=cmd_trend)
 
     sp = verb("diff", "what changed between two datasets")
-    sp.add_argument("refs", nargs="+", metavar="ENTRY",
-                    help="OLD NEW, or one entry against the last run of the "
+    sp.add_argument("refs", nargs="+", metavar="RUN",
+                    help="OLD NEW, or one run against the last run of the "
                     "same thing")
     sp.add_argument("--key", metavar="COLS",
                     help="match rows on these (default: host, test+target, "
@@ -1550,7 +1700,7 @@ def build_parser():
 
     sp = verb("export", "write a dataset out: csv, tsv, json, ndjson, md, "
               "overlay")
-    sp.add_argument("ref", nargs="?", metavar="ENTRY")
+    sp.add_argument("ref", nargs="?", metavar="RUN")
     add_query(sp)
     sp.add_argument("--cols", metavar="A,B", help="only these columns")
     sp.add_argument("--format", metavar="FMT",
@@ -1564,11 +1714,11 @@ def build_parser():
                     help="overlay: the column naming hosts (default host)")
     sp.add_argument("--run", metavar="LABEL",
                     help="overlay: tag samples run=LABEL (default the "
-                    "entry id)")
+                    "run id)")
     sp.set_defaults(fn=cmd_export)
 
     sp = verb("floor", "paint a dataset on the floor plan (dcviz serve)")
-    sp.add_argument("ref", nargs="?", metavar="ENTRY")
+    sp.add_argument("ref", nargs="?", metavar="RUN")
     add_query(sp)
     sp.add_argument("--layout", metavar="FILE", help="the .dc floor plan")
     sp.add_argument("--prefix", default="qd_",
@@ -1582,11 +1732,11 @@ def build_parser():
     sp.set_defaults(fn=cmd_floor)
 
     sp = verb("view", "explore a dataset full-screen")
-    sp.add_argument("ref", nargs="?", metavar="ENTRY")
+    sp.add_argument("ref", nargs="?", metavar="RUN")
     add_query(sp)
     sp.set_defaults(fn=cmd_view)
 
-    sp = verb("web", "the logbook in a browser: tables, charts, diffs")
+    sp = verb("web", "the store in a browser: tables, charts, diffs")
     sp.add_argument("--host", default=env("WEB_HOST", "127.0.0.1"),
                     help="address to listen on (QD_WEB_HOST, 127.0.0.1 -- "
                     "this machine only; 0.0.0.0 shares it)")

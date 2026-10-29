@@ -23,7 +23,8 @@ SEVERITY = {"pass": 0, "ok": 0, "tested": 0, "reporting": 0,
             "fail": 3, "failed": 3, "timeout": 3, "push-failed": 3,
             "no-data": 3, "unreachable": 4}
 
-BOOKKEEPING = ("rc", "duration_s", "pass", "ts", "line_no")
+BOOKKEEPING = ("rc", "duration_s", "pass", "ts", "line_no", "n", "#",
+               "capture", "bytes")
 
 TIME_COLUMNS = ("ts", "timestamp", "time", "pass", "at", "test_start",
                 "started", "date")

@@ -1,19 +1,21 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Martin J. Gallagher
-"""qd web: the logbook in a browser.
+"""qd web: the store in a browser.
 
 A small server, standard library only, on 127.0.0.1 unless told otherwise:
-one static page (quarterdeck/web/) and a JSON API over the logbook.  The
+one static page (quarterdeck/web/) and a JSON API over provost's store.  The
 page does no arithmetic of its own -- every figure, filter, group, diff and
 outlier comes back from the same functions `qd stats`, `qd diff` and the
 rest print, so the browser and the terminal cannot disagree about a number.
 
 When datacenter_visualization is installed its viewer is served beside it at
-/floor/, with the logbook at /floor/files/, so "Floor plan" on any dataset
+/floor/, with qd's overlays at /floor/files/, so "Floor plan" on any dataset
 paints it on the layout without a second server.
 
-Read-only, apart from one thing: a floor-plan overlay is written into the
-entry it was made from, as `qd floor` writes it.
+Read-only, apart from one thing: a floor-plan overlay is written into qd's
+cache (never the store, which provost commits whole), as `qd floor` does.
+Requests are answered one at a time, and the store is re-read whenever
+provost has filed something since the last one.
 """
 
 import json
@@ -31,7 +33,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from . import VERSION
 from . import diff as diffmod, query, stats, table as tablemod, tools
 from .common import PROG, QdError, die, write_text
-from .logbook import describe_entry, split_ref
+from .store import cache_root, describe_entry, split_ref
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 
@@ -80,6 +82,7 @@ class Api(object):
         self.book = book
         self.layout = layout
         self.cache = Cache()
+        self.lock = threading.Lock()
 
     # -- loading -------------------------------------------------------------
 
@@ -96,13 +99,9 @@ class Api(object):
                 info = t
                 break
         if info is None:
-            die("entry %s has no table %r" % (e.id, tname))
-        path = os.path.join(e.path, info["file"])
-        try:
-            mtime = os.path.getmtime(path)
-        except OSError:
-            mtime = 0
-        return self.cache.get((path, mtime), lambda: e.load(info["name"]))
+            die("%s has no table %r" % (e.id, tname))
+        return self.cache.get((e.id, info["name"], self.book.stamp()),
+                              lambda: e.load(info["name"]))
 
     def subset(self, q, t=None):
         t = t or self.table(one(q, "e"), one(q, "t"))
@@ -129,11 +128,7 @@ class Api(object):
                                     "rows": t.get("rows", 0),
                                     "from": t.get("from", "")}
                                    for t in e.tables]})
-        root = os.path.abspath(self.book.root)
-        home = os.path.expanduser("~")
-        if home not in ("", "/") and (root + "/").startswith(home + "/"):
-            root = "~" + root[len(home):]
-        return {"root": root, "entries": out,
+        return {"root": self.book.shown(), "entries": out,
                 "version": VERSION, "floor": self.floor_available(),
                 "layout": os.path.basename(self.layout) if self.layout
                 else None}
@@ -160,8 +155,8 @@ class Api(object):
 
     def has_raw(self, t):
         e = getattr(t, "entry", None)
-        return bool(e is not None and t.has("host") and os.path.isdir(
-            os.path.join(e.path, "raw")))
+        return bool(e is not None and ("capture" in t.columns or (
+            e.meta.get("kind") == "run" and "host" in t.columns)))
 
     def column(self, q):
         t, s = self.subset(q)
@@ -318,19 +313,18 @@ class Api(object):
     def raw(self, q):
         t = self.table(one(q, "e"), one(q, "t"))
         e = getattr(t, "entry", None)
-        host = one(q, "host") or ""
-        if e is None or not host:
+        host = one(q, "host") or None
+        cap = one(q, "capture") or None
+        if e is None or not (host or cap):
             die("no raw answers for this")
-        safe = re.sub(r"[^\w.@-]+", "_", host)
-        pas = one(q, "pass")
-        if pas and (e.meta.get("passes") or 1) > 1:
-            safe += "." + re.sub(r"\D", "", pas)
+        if cap and not re.match(r"^c\d+$", cap):
+            die("no capture %r" % cap)
         out = {}
-        for ext in ("out", "err"):
-            p = os.path.join(e.path, "raw", "%s.%s" % (safe, ext))
-            if os.path.isfile(p):
-                with open(p, encoding="utf-8", errors="replace") as fh:
-                    out[ext] = fh.read(1 << 20)
+        for label, text in e.raw(host=host, pas=one(q, "pass"), capture=cap):
+            if label == "stderr":
+                out["err"] = text[:1 << 20]
+            elif "out" not in out:
+                out["out"], out["label"] = text[:1 << 20], label
         return out
 
     def export(self, q):
@@ -353,20 +347,22 @@ class Api(object):
         t, s = self.subset(q)
         e = getattr(t, "entry", None)
         if e is None:
-            die("only a logbook entry can be put on the floor plan")
+            die("only a run in the store can be put on the floor plan")
         o = tools.to_overlay(s, e.id)
         name = "overlay.tsv" if t.name == "data" else \
             "overlay-%s.tsv" % t.name
-        write_text(os.path.join(e.path, name), tablemod.to_results(o))
+        sub = re.sub(r"[^\w.@-]+", "_", e.id)
+        path = os.path.join(floor_root(), sub, name)
+        write_text(path, tablemod.to_results(o))
         url = None
         if self.floor_available():
-            url = "/floor/?results=%s" % quote("files/%s/%s" % (e.id, name))
+            url = "/floor/?results=%s" % quote("files/%s/%s" % (sub, name))
             if self.layout:
                 url += "&layout=%s" % quote(
                     "files/_layout/" + os.path.basename(self.layout))
             else:
                 url += "&build=1"
-        return {"file": os.path.join(e.path, name), "url": url,
+        return {"file": path, "url": url,
                 "samples": len(o.rows),
                 "overlays": sorted(set(o.values("test")))}
 
@@ -384,6 +380,11 @@ class Api(object):
 
     def floor_available(self):
         return self.floor_root() is not None
+
+
+def floor_root():
+    """qd's overlays, one directory per run: what /floor/files/ serves."""
+    return os.path.join(cache_root(), "floor")
 
 
 def one(q, k):
@@ -447,9 +448,14 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(url.query, keep_blank_values=True)
         try:
             if path in ROUTES:
-                self.send_json(200, getattr(self.api, ROUTES[path])(q))
+                with self.api.lock:
+                    self.api.book.refresh()
+                    obj = getattr(self.api, ROUTES[path])(q)
+                self.send_json(200, obj)
             elif path == "/api/export":
-                name, text = self.api.export(q)
+                with self.api.lock:
+                    self.api.book.refresh()
+                    name, text = self.api.export(q)
                 self.send(200, text, "text/plain; charset=utf-8", {
                     "Content-Disposition": 'attachment; filename="%s"'
                     % re.sub(r'[^\w.@-]', "_", name)})
@@ -490,7 +496,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self.send(404, "not found\n", "text/plain")
                 return
-            self.static(os.path.abspath(self.api.book.root), sub)
+            self.static(floor_root(), sub)
             return
         if root is None:
             self.send(404, "the floor-plan viewer is not installed here: "
@@ -544,15 +550,14 @@ def serve(book, host="127.0.0.1", port=8100, layout=None, open_browser=True,
     httpd = ThreadingServer((host, port), Bound)
     shown = "[%s]" % host if ":" in host else host
     url = "http://%s:%d/" % (shown, port)
-    sys.stderr.write("%s web: the logbook in %s\n" % (
-        PROG, os.path.abspath(book.root)))
+    sys.stderr.write("%s web: the store in %s\n" % (PROG, book.shown()))
     if api.floor_available():
         sys.stderr.write("%s web: the floor-plan viewer is at %sfloor/\n"
                          % (PROG, url))
     sys.stderr.write("%s web: %s   (Ctrl+C to stop)\n" % (PROG, url))
     if host not in ("127.0.0.1", "localhost", "::1"):
         sys.stderr.write("%s web: listening beyond this machine: anyone who "
-                         "can reach %s:%d can read the logbook\n"
+                         "can reach %s:%d can read the store\n"
                          % (PROG, host, port))
     if ready is not None:
         ready(url)

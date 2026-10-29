@@ -19,6 +19,21 @@ QD_DIR="$(cd .. && pwd)"
 export QD_DIR
 export PY="${PY:-python3}"
 
+# qd files everything through provost: the suites need a real one
+QD_PROVOST="${QD_PROVOST:-$(command -v provost 2>/dev/null || true)}"
+export QD_PROVOST
+if [ -z "$QD_PROVOST" ]; then
+    echo "no provost: pip install provost, or point QD_PROVOST at one" >&2
+    exit 2
+fi
+# shellcheck disable=SC2086  # QD_PROVOST may be a command line
+if [ "${QD_PROVOST_BATCH:-1}" != 0 ] && $QD_PROVOST batch --help > /dev/null 2>&1; then
+    echo "provost: $QD_PROVOST (batch: a run is one commit)"
+else
+    echo "provost: $QD_PROVOST (one capture at a time)"
+fi
+echo
+
 if [ $# -gt 0 ]; then
     files=()
     for name in "$@"; do

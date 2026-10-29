@@ -42,7 +42,7 @@ qd view -- keys
                   p  pivot: rows,cols[,values]
                   x  diff against another entry (default: its last run)
   rows            Enter  every field of this row, and the host's raw answer
-  elsewhere       T  another table of this entry   L  the logbook
+  elsewhere       T  another table of this run     L  the runs in the store
                   e  export this view to a file    r  reload from disk
   leaving         q or Esc  back one view   Q  quit
 
@@ -192,7 +192,7 @@ class TextView(View):
 
 
 class ListView(View):
-    """Lines to choose from: value counts, tables, logbook entries."""
+    """Lines to choose from: value counts, tables, runs."""
 
     def __init__(self, app, title, head, items, on_enter, hint="Enter picks"):
         View.__init__(self, app)
@@ -430,7 +430,7 @@ class TableView(View):
     def reload(self):
         e = getattr(self.base, "entry", None)
         if e is None:
-            from .logbook import load_ref
+            from .store import load_ref
             src = self.base.source
             if not src or not os.path.exists(src):
                 die("nothing to reload this from")
@@ -452,33 +452,26 @@ class TableView(View):
             lines.append("%-*s  %s" % (w, c, vl[0]))
             for more in vl[1:]:
                 lines.append("%-*s  %s" % (w, "", more))
-        raw = self.raw_files(row)
-        for label, path in raw:
+        for label, text in self.raw_answers(row):
             lines.append("")
-            lines.append("-- %s (%s)" % (label, path))
-            try:
-                with open(path, encoding="utf-8", errors="replace") as fh:
-                    lines.extend(fh.read().splitlines()[:2000])
-            except OSError as exc:
-                lines.append("cannot read it: %s" % exc)
+            lines.append("-- %s" % label)
+            lines.extend(text.splitlines()[:2000])
         self.app.push(TextView(self.app, "row %d of %s" % (
             self.r + 1, self.title), lines))
 
-    def raw_files(self, row):
+    def raw_answers(self, row):
+        """[(label, text)]: the answer this row came from, and stderr."""
         e = getattr(self.base, "entry", None)
-        if e is None or not self.base.has("host"):
+        if e is None:
             return []
-        host = row[self.base.index("host")]
-        safe = re.sub(r"[^\w.@-]+", "_", host)
-        pas = ""
-        if self.base.has("pass") and (e.meta.get("passes") or 1) > 1:
-            pas = "." + row[self.base.index("pass")]
-        out = []
-        for ext, label in ((".out", "raw answer"), (".err", "stderr")):
-            p = os.path.join(e.path, "raw", safe + pas + ext)
-            if os.path.isfile(p):
-                out.append((label, p))
-        return out
+        cols = self.base.columns
+
+        def get(c):
+            return row[cols.index(c)] if c in cols else None
+        if get("capture") is None and get("host") is None:
+            return []
+        return e.raw(host=get("host"), pas=get("pass"),
+                     capture=get("capture"))
 
     def ask_of(self, k):
         from . import cli
@@ -578,9 +571,9 @@ class TableView(View):
 
     def diff(self, ref):
         from . import cli, diff as diffmod
-        from .logbook import load_ref
+        from .store import load_ref
         if not ref:
-            die("diff against what? an entry, or a file")
+            die("diff against what? a run, or a file")
         other = load_ref(self.app.book, ref)
         exprs = [f for f in self.filters if isinstance(f, str)]
         if exprs:
@@ -825,7 +818,7 @@ class App(object):
         base = getattr(top, "base", None)
         e = getattr(base, "entry", None)
         if e is None:
-            self.message = "not a logbook entry: it has no other tables"
+            self.message = "not a run in the store: it has no other tables"
             return
         items = [("%-20s %8d rows  %s" % (t["name"], t.get("rows", 0),
                                           t.get("from", "")), t["name"])
@@ -836,14 +829,14 @@ class App(object):
     def pick_entry(self):
         entries = list(reversed(self.book.entries()))
         if not entries:
-            self.message = "the logbook in %s is empty" % self.book.root
+            self.message = "no runs in the store %s yet" % self.book.shown()
             return
         items = []
         for e in entries:
             cmd = e.meta.get("command") or ""
             items.append(("%-32s %-7s %-12s %s" % (
                 e.id, e.meta.get("kind", ""), e.summary(), cmd[:60]), e))
-        self.push(ListView(self, "logbook %s" % self.book.root,
+        self.push(ListView(self, "runs in %s" % self.book.shown(),
                            ["newest first"], items,
                            lambda e: self.open_entry(e, None)))
 

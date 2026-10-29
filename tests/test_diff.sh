@@ -74,7 +74,9 @@ t_one_ref_compares_with_the_last_run_of_the_same_thing() {
     echo two > "$FAKE_ROOT/b/f"
     qdf run -S a,b -q -- cat f > /dev/null
     out="$(qd diff latest)" || true
-    assert_contains "$out" "b  stdout one -> two"
+    assert_contains "$out" "b  A one -> two"
+    # what is compared is what the hosts said; the capture id is bookkeeping
+    assert_contains "$out" "ignored   duration_s, capture"
     qd_rc diff latest~1 2> err
     assert_status "$QD_RC" 2
     assert_contains "$(cat err)" "nothing earlier"

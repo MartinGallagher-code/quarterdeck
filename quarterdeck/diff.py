@@ -24,10 +24,12 @@ from .table import Table, to_num
 
 VOLATILE = ("ts", "timestamp", "time", "date", "at", "run", "duration_s",
             "test_start", "started", "finished", "filename", "pass",
-            "meta_run", "source_file")
+            "meta_run", "source_file", "capture", "#", "bytes")
 
+# `n` is provost's record number within a capture: a host that answered
+# with three rows is matched row by row.
 SECONDARY = ("dir", "peer", "layer", "rule_id", "line_no", "test", "probe",
-             "flow", "column", "group")
+             "flow", "column", "group", "n")
 
 
 def auto_key(a, b):

@@ -32,15 +32,20 @@ t_results_format_with_meta() {
     assert_contains "$out" "(%)"
 }
 
-t_results_round_trip_through_the_logbook() {
+t_results_round_trip_through_the_store() {
     mx_export
     qd import mx.tsv --name mx > /dev/null
-    e="$(ls logbook)"
-    assert_file_exists "logbook/$e/mx.tsv"
-    body="$(cat "logbook/$e/mx.tsv")"
+    # filed by provost, and read back as the same results, display
+    # metadata and the tool's own header included
+    assert_contains "$(pv ls)" "mx"
+    out="$(qd show latest --format csv)"
+    assert_contains "$out" "test,target,value,run,peer"
+    assert_contains "$out" "mx_loss,wr01r01u02,1.5,demo-01,wr01r01u01"
+    body="$(qd export latest --format results)"
     assert_contains "$body" '!test	mx_pps	unit=pps	higher=good	decimals=0	short=PPS	label="Requests sent"'
     assert_contains "$body" "mx_loss	wr01r01u02	1.5	run=demo-01	peer=wr01r01u01"
-    assert_contains "$body" "# mx 1.7.0 export"
+    assert_contains "$(qd log latest)" "mx 1.7.0 export"
+    assert_contains "$(qd stats latest value --where test=mx_loss)" "(%)"
 }
 
 t_results_without_meta_lines_are_detected() {
@@ -183,7 +188,7 @@ t_as_overrides_detection() {
 }
 
 run_test "results format, !test lines, meta"            t_results_format_with_meta
-run_test "results round-trip through the logbook"       t_results_round_trip_through_the_logbook
+run_test "results round-trip through the store"         t_results_round_trip_through_the_store
 run_test "results without !test lines are detected"     t_results_without_meta_lines_are_detected
 run_test "NDJSON samples, JSON documents and lists"     t_ndjson_samples_and_documents
 run_test "agree --json: groups and hosts"               t_agree_json_becomes_two_tables

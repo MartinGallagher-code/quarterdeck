@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 //
-// quarterdeck web: the logbook in a browser.
+// quarterdeck web: the store in a browser.
 //
 // The page draws and asks; it never computes a figure itself.  Filters,
 // sorts, statistics, groups, pivots, trends and diffs all come back from
@@ -191,7 +191,7 @@
   }
 
   // -------------------------------------------------------------------------
-  // The logbook list
+  // The runs in the store
   // -------------------------------------------------------------------------
 
   async function loadEntries() {
@@ -216,9 +216,9 @@
     const shown = S.entries.filter((e) => !f ||
       (e.id + " " + e.name + " " + e.command).toLowerCase().includes(f));
     if (!S.entries.length) {
-      ol.append(h("li", { class: "empty" }, "The logbook is empty. ",
+      ol.append(h("li", { class: "empty" }, "No runs in this store yet. ",
         h("code", { text: "qd run" }), ", ", h("code", { text: "qd do" }), " or ",
-        h("code", { text: "qd import" }), " makes the first entry."));
+        h("code", { text: "qd import" }), " files the first."));
       return;
     }
     for (const e of shown) {
@@ -542,11 +542,13 @@
     dlg.append(h("div", { class: "d-head" }, h("strong", { text: title }),
       h("button", { type: "button", onclick: () => dlg.close(), text: "Close" })), body);
     if (typeof dlg.showModal === "function") dlg.showModal(); else dlg.setAttribute("open", "");
-    if (d.raw && hi >= 0) {
+    const ci = d.columns.indexOf("capture");
+    if (d.raw && (hi >= 0 || ci >= 0)) {
       const pi = d.columns.indexOf("pass");
       try {
-        const raw = await api("/api/raw", tableParams({ host: row[hi], pass: pi >= 0 ? row[pi] : null }));
-        if (raw.out !== undefined) body.append(h("h3", { text: "Raw answer" }), h("pre", { text: raw.out || "(nothing)" }));
+        const raw = await api("/api/raw", tableParams({ host: hi >= 0 ? row[hi] : null,
+          pass: pi >= 0 ? row[pi] : null, capture: ci >= 0 ? row[ci] : null }));
+        if (raw.out !== undefined) body.append(h("h3", { text: raw.label || "Raw answer" }), h("pre", { text: raw.out || "(nothing)" }));
         if (raw.err) body.append(h("h3", { text: "stderr" }), h("pre", { text: raw.err }));
       } catch (err) { body.append(h("p", { class: "count", text: String(err.message) })); }
     }
@@ -1041,7 +1043,7 @@
       select("Compare against (A, older)", against, opts.filter((o, i) => i > 0 || !against), (v) => { S.p.a = v; renderView(); }),
       h("label", null, "Match rows on", keyIn), h("label", null, "Ignore changes within %", tolIn), run));
     if (!against) {
-      view.append(h("p", { class: "empty", text: "Nothing earlier in the logbook ran what this ran. Pick an entry to compare against." }));
+      view.append(h("p", { class: "empty", text: "Nothing earlier in the store ran what this ran. Pick a run to compare against." }));
       renderCli("");
       return;
     }
@@ -1103,7 +1105,7 @@
   }
 
   // -------------------------------------------------------------------------
-  // About: what the logbook says about this entry
+  // About: what the store says about this run
   // -------------------------------------------------------------------------
 
   async function viewAbout(view) {

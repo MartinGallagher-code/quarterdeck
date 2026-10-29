@@ -55,6 +55,8 @@ TOOLS = [
          "grade a run against the hardware", "plumb": "page cache vs disk",
      }[b]) for b in BINNACLE
 ] + [
+    ("provost", ("provost",), "provost_data",
+     "the store: every answer filed, parsed and kept in git"),
     ("dcviz", ("dcviz",), "dcviz", "floor-plan viewer: dcviz serve"),
     ("dcprobe", ("dcprobe",), "dcviz.dcprobe", "how every host is doing"),
     ("dcadd", ("dcadd",), "dcviz.dcadd", "append to a results file"),
@@ -126,6 +128,7 @@ def doctor_rows():
 
 
 INSTALL = {
+    "provost": "pip install provost (qd keeps everything in its store)",
     "mx": "pip install matrix-orchestrator",
     "iperf-orchestrator": "pip install iperf-orchestrator",
     "dcviz": "pip install datacenter-layout-viewer",
@@ -252,7 +255,7 @@ def plan(argv, entry_dir):
             p.imports.append((add[1], "agree_hosts"))
             if verb == "script":
                 p.imports.append((add[3], "merged"))
-            p.notes.append("added %s so the groups land in the logbook"
+            p.notes.append("added %s so the groups are filed with the run"
                            % " ".join(add[::2]))
     elif tool == "dcprobe":
         for names, tname in ((["-o", "--output"], None),
