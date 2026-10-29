@@ -118,9 +118,10 @@ nojq_path() {
         for p in $PATH; do
             for f in "$p"/*; do
                 b="${f##*/}"
-                [ -x "$f" ] && [ ! -d "$f" ] && [ "$b" != jq ] && \
-                    [ ! -e "$d/$b" ] || continue
-                ln -s "$f" "$d/$b"
+                if [ -x "$f" ] && [ ! -d "$f" ] && [ "$b" != jq ] && \
+                        [ ! -e "$d/$b" ]; then
+                    ln -s "$f" "$d/$b"
+                fi
             done
         done
         _NOJQ_PATH="$d"
