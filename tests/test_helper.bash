@@ -17,7 +17,9 @@
 # cannot abort the rest of the file, and each gets its own $TEST_TMPDIR.
 
 QD_DIR="${QD_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-PY="${PY:-python3}"
+# Resolved once, to a path: a case that narrows PATH must still find the
+# interpreter, which the python:3.6 image keeps in /usr/local/bin.
+PY="$(command -v "${PY:-python3}")"
 
 TESTS_RUN=0
 TESTS_FAILED=0

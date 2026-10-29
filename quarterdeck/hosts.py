@@ -261,14 +261,23 @@ def layout_hosts(layout, selectors, manifest_argv):
     if p.returncode != 0:
         die("manifest failed on %s: %s" % (layout, err or "exit %d"
                                             % p.returncode))
+    rdr = csv.DictReader(io.StringIO(out))
+    if "name" not in (rdr.fieldnames or []):
+        # Something else called `manifest` can be first on PATH; reading
+        # its output as an empty fleet would be a wrong answer, not an error.
+        die("%s did not answer the way binnacle's manifest does (its --csv "
+            "output has no name column); point QD_MANIFEST at binnacle's "
+            "manifest" % " ".join(manifest_argv))
     hosts = []
-    for row in csv.DictReader(io.StringIO(out)):
+    for row in rdr:
         name = (row.get("name") or "").strip()
         if not name:
             continue
         attrs = [(k, row[k]) for k in ("room", "row", "rack", "slot", "role",
                                        "path") if row.get(k)]
         hosts.append(Host(name, name, None, attrs))
+    if not hosts:
+        die("the selectors matched no servers in %s" % layout, 1)
     return hosts
 
 

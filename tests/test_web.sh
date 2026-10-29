@@ -30,12 +30,12 @@ import json, sys, urllib.request, urllib.error
 base, path = sys.argv[1], sys.argv[2]
 try:
     with urllib.request.urlopen(base.rstrip("/") + path) as r:
-        body = r.read().decode("utf-8")
-        print(r.status)
-        print(body)
+        status, body = r.status, r.read()
 except urllib.error.HTTPError as e:
-    print(e.code)
-    print(e.read().decode("utf-8"))
+    status, body = e.code, e.read()
+# bytes, not text: under LANG=C a 3.6 stdout is ASCII, and the page has
+# characters that are not
+sys.stdout.buffer.write(b"%d\n" % status + body + b"\n")
 EOF
 }
 
@@ -144,8 +144,10 @@ t_floor_writes_the_overlay_and_names_the_viewer() {
     seed
     printf 'dc A\n' > floor.dc
     # without the viewer: the overlay is written and the way to open it said
+    # --dry-run either way: where dcviz is installed it would otherwise start
+    # serving and never return
     PATH="/usr/bin:/bin" QD_DCVIZ="" qd floor latest --layout floor.dc \
-        > out 2> err || true
+        --dry-run > out 2> err || true
     e="$(qd log latest | head -1 | cut -d' ' -f1)"
     assert_file_exists "logbook/$e/overlay.tsv"
     assert_contains "$(cat err)" "10 samples"

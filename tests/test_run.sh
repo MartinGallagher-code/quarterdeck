@@ -56,13 +56,29 @@ t_hosts_warn_when_an_attribute_looks_like_a_host() {
     assert_not_contains "$out" "attribute"
 }
 
-t_hosts_layout_needs_manifest() {
+t_hosts_layout_asks_manifest() {
     printf 'dc A\n' > floor.dc
-    PATH="/usr/bin:/bin" QD_MANIFEST="" qd_rc hosts --layout floor.dc 'rack[1]' 2> err
-    # Either manifest is installed here and ran, or it is not and says so.
-    if [ "$QD_RC" -ne 0 ]; then
-        assert_contains "$(cat err)" "manifest"
-    fi
+    # binnacle's manifest, played by a stand-in that answers its --csv
+    printf '%s\n' '#!/bin/sh' \
+        'echo "name,path,kind,role,room,row,rack,slot"' \
+        'echo "wr01r01u01,A/wr01/A/r01/u01,node,server,wr01,A,r01,u01"' \
+        > "$FAKE_BIN/manifest-ok"
+    printf '#!/bin/sh\necho "usage: manifest [an unrelated tool]"\n' \
+        > "$FAKE_BIN/manifest-other"
+    printf '#!/bin/sh\necho "manifest: nothing matched" >&2\nexit 1\n' \
+        > "$FAKE_BIN/manifest-none"
+    chmod +x "$FAKE_BIN"/manifest-*
+    out="$(QD_MANIFEST="$FAKE_BIN/manifest-ok" qd hosts --layout floor.dc 'rack[1]')"
+    assert_eq "$out" "wr01r01u01 room=wr01 row=A rack=r01 slot=u01 role=server path=A/wr01/A/r01/u01"
+    # something else called manifest: refused by name, not read as no hosts
+    QD_MANIFEST="$FAKE_BIN/manifest-other" qd_rc hosts --layout floor.dc x 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "binnacle's manifest"
+    QD_MANIFEST="$FAKE_BIN/manifest-none" qd_rc hosts --layout floor.dc x 2> err
+    assert_status "$QD_RC" 1
+    assert_contains "$(cat err)" "matched no servers"
+    qd_rc hosts --select 'rack[1]' 2> err
+    assert_contains "$(cat err)" "--select needs --layout"
 }
 
 t_run_keeps_every_answer_and_says_who_failed() {
@@ -249,7 +265,7 @@ t_lang_c_and_utf8_output_survive() {
 run_test "version, --help and help"                 t_version_and_help
 run_test "hosts: ranges, attributes, order"           t_hosts_ranges_attrs_and_order
 run_test "hosts: warn on an attribute that is a host" t_hosts_warn_when_an_attribute_looks_like_a_host
-run_test "hosts: --layout asks manifest"              t_hosts_layout_needs_manifest
+run_test "hosts: --layout asks manifest"              t_hosts_layout_asks_manifest
 run_test "run keeps every answer, names failures"     t_run_keeps_every_answer_and_says_who_failed
 run_test "run exits 0 when every host answers"        t_run_all_ok_exits_zero
 run_test "a failed command is not unreachable"        t_failed_command_is_failed_not_unreachable
