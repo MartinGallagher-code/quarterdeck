@@ -14,6 +14,7 @@
 #   pv ARGS...              provost itself, on the case's store
 #   has_batch               whether that provost files a run as one batch
 #   stand_in_doe            a doe that designs and analyses as the real one
+#   nojq_path               this PATH without jq, for provost's own readers
 #
 # The harness is binnacle's (tests/test_helper.bash there), trimmed to what
 # these suites use: every case runs in a subshell, so one failed assertion
@@ -102,6 +103,29 @@ pv() { PROVOST_WORKSPACE="$QD_STORE" PROVOST_ASYNC=0 $PROVOST_CMD "$@"; }
 # is using it.
 has_batch() {
     [ "${QD_PROVOST_BATCH:-1}" != 0 ] && pv batch --help > /dev/null 2>&1
+}
+
+# This PATH without jq: a directory of links to everything else on it, made
+# once per suite. provost reads JSON with jq where it finds one and its own
+# awk where it does not; `command -v jq` sees functions as well as files, so
+# jq cannot be hidden any other way.
+_NOJQ_PATH=""
+nojq_path() {
+    if [ -z "$_NOJQ_PATH" ]; then
+        local d p f b
+        d="$(mktemp -d "${TMPDIR:-/tmp}/qd-nojq.XXXXXX")"
+        local IFS=:
+        for p in $PATH; do
+            for f in "$p"/*; do
+                b="${f##*/}"
+                [ -x "$f" ] && [ ! -d "$f" ] && [ "$b" != jq ] && \
+                    [ ! -e "$d/$b" ] || continue
+                ln -s "$f" "$d/$b"
+            done
+        done
+        _NOJQ_PATH="$d"
+    fi
+    echo "$_NOJQ_PATH"
 }
 
 # Run qd and keep its exit status, for a case that expects a non-zero one

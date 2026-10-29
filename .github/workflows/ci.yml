@@ -30,11 +30,12 @@ jobs:
           python-version: "${{ matrix.python-version }}"
 
       # qd files everything through provost, so the suites need a real one:
-      # PyPI's, which has no `batch` yet -- the one-capture-at-a-time path.
-      # binnacle's muster, reachable and the scripts probes push are the
-      # real ones too, and so is doe for designs.  ssh and scp are faked,
-      # the rest of the toolchain is played by stand-ins, and the web
-      # suite's server listens on loopback.
+      # PyPI's newest -- one capture at a time until a release has `batch`,
+      # the batch path from then on (the provost-2-1 job below keeps the
+      # older path tested).  binnacle's muster, reachable and the scripts
+      # probes push are the real ones too, and so is doe for designs.  ssh
+      # and scp are faked, the rest of the toolchain is played by
+      # stand-ins, and the web suite's server listens on loopback.
       - name: Install provost and binnacle
         run: python -m pip install provost binnacle
 
@@ -82,6 +83,29 @@ jobs:
             -e QD_PROVOST="bash /w/.pv/x/provost_data/_bundle/provost" \
             python:3.6 \
             bash -euxc 'pip install -q binnacle && bash tests/check_python_compat.sh && bash tests/run_tests.sh'
+
+  provost-2-1:
+    # PyPI's provost 2.1.0 has no `batch`: it files a run one capture at a
+    # time, strips quotes inside TSV cells, and drops nested JSON keys where
+    # there is no jq.  The jobs above take PyPI's newest provost, so this
+    # one keeps the oldest qd supports under the whole suite.
+    name: test (provost 2.1.0, one capture at a time)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install provost 2.1.0, binnacle and doe
+        run: python -m pip install "provost==2.1.0" binnacle doehelper
+
+      - name: Run the test suite
+        run: bash tests/run_tests.sh
 
   web:
     name: web page syntax

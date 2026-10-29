@@ -178,7 +178,12 @@ without running anything.
 
 provost reads each host's answer: CSV and TSV, JSON, `key: value` and
 `key = value` lines, aligned tables like `df -P` and `ss`, a lone number,
-and two hundred tool-specific formats besides. `MemTotal: 16384 kB` stays
+and two hundred tool-specific formats besides. A provost that has `batch`
+also reads the floor-plan viewer's results format (`!test` lines over
+`test target value` samples) and JSON Lines under `#` comment lines, keeps
+quotes inside TSV cells, and reads nested JSON the same with or without
+`jq`; PyPI's 2.1.0 drops those quotes, and nested JSON keys where there is
+no `jq`. `MemTotal: 16384 kB` stays
 `16384 kB`, and qd reads it as the number 16384 in kB; sizes in mixed
 units (`512M` beside `50G`) are put on one scale before any statistic. A
 host whose answer provost could not read as a table is held in its

@@ -45,11 +45,11 @@ bash tests/run_tests.sh
 
 No network: a fake ssh/scp, stand-in tools, `QD_TEST_KEYS` for the
 explorer, and a real server on loopback for the web API -- but a real
-provost (`QD_PROVOST` or `provost` on PATH; CI installs PyPI's), and the
-real binnacle and doe where installed. Run them on both of provost's paths
-before pushing: with a provost that has `batch`, and with
-`QD_PROVOST_BATCH=0` (or PyPI's 2.1.0), which files one capture at a time. The page's look
-is checked by hand in a browser; there is deliberately no browser-driving
+provost (`QD_PROVOST` or `provost` on PATH; CI installs PyPI's newest, and
+2.1.0 in one job), and the real binnacle and doe where installed. Run them
+on both of provost's paths before pushing: with a provost that has `batch`,
+and with `QD_PROVOST_BATCH=0` (or PyPI's 2.1.0), which files one capture at
+a time. The page's look is checked by hand in a browser; there is deliberately no browser-driving
 test in the tree. A test that starts a server, spawns a process and drives
 a browser is the shape upload scanners refuse in a handover --
 datacenter_visualization's `tests/browser.mjs` was refused for exactly that,

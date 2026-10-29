@@ -52,8 +52,9 @@ HOST_COLUMNS = ("run", "host", "addr", "pass", "ts", "status", "rc",
                 "duration_s", "bytes", "error", "attrs", "stderr")
 OUTCOMES = ("ok", "failed", "timeout", "unreachable", "push-failed")
 
-# Free text is escaped in qd's own tables: provost's TSV reader drops
-# double quotes, and a tab or a newline would end the cell.
+# Free text is escaped in qd's own tables: a tab or a newline would end the
+# cell, and provost's TSV reader dropped double quotes until the release
+# with `batch` (PyPI's 2.1.0 still does), so they are escaped too.
 TEXT_COLUMNS = ("command", "ran", "version", "cwd", "notes", "error",
                 "stderr", "attrs", "factors")
 

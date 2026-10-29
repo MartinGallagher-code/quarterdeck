@@ -171,9 +171,9 @@ t_json_number_and_csv_answers() {
         printf 'dev,mb\nsda,10\nsdb,20\n' > "$FAKE_ROOT/$h/c"
     done
     run_qd -- cat j > out
-    # wide (a, b) or long (field, value): provost's choice, which depends
-    # on what it finds installed (jq, or its own awk); either way the key
-    # and its value come back on the host's rows
+    # wide (a, b) or long (field, value): provost's choice -- 2.1.0 reads
+    # it long without jq -- and either way the key and its value come back
+    # on the host's rows
     out="$(qd show latest --where host=node02 --format csv)"
     assert_contains "$out" "b"
     assert_contains "$out" ",x"
@@ -183,6 +183,37 @@ t_json_number_and_csv_answers() {
     # one row per CSV row, the host repeated on each, n numbering them
     out="$(qd show latest --where status=ok --cols host,n,dev,mb --format csv)"
     assert_contains "$out" "node02,2,sdb,20"
+}
+
+# What a provost with `batch` reads as written and PyPI's 2.1.0 did not:
+# quotes inside TSV cells, nested JSON with no jq, JSON Lines under `#`
+# comments, and the floor-plan viewer's results format.
+t_answers_a_newer_provost_reads() {
+    if ! pv batch --help > /dev/null 2>&1; then
+        echo "  (this provost predates batch, and these readers)"
+        return 0
+    fi
+    seed
+    for h in node01 node02 node03; do
+        printf 'dev\tnote\nsda\tsaid "hi"\n' > "$FAKE_ROOT/$h/t"
+        echo '{"host": "x", "cpu": {"count": 64, "model": "EPYC"}}' \
+            > "$FAKE_ROOT/$h/j"
+        printf '# scan of 2 records\n{"k": 1}\n{"k": 2}\n' > "$FAKE_ROOT/$h/l"
+        printf '!test\tmbps\tunit=Mbit/s\nmbps\tpeer1\t940\tnote=fine\n' \
+            > "$FAKE_ROOT/$h/r"
+    done
+    run_qd -- cat t > out
+    assert_contains "$(qd show latest --cols host,note --format json)" \
+        'said \"hi\"'
+    PATH="$(nojq_path)" run_qd -- cat j > out
+    assert_contains "$(qd show latest --cols host,cpu.count,cpu.model --format csv)" \
+        "node02,64,EPYC"
+    run_qd -- cat l > out
+    assert_contains "$(qd show latest --cols host,k --format csv)" "node02,2"
+    assert_not_contains "$(qd show latest --format csv | head -1)" "scan"
+    run_qd -- cat r > out
+    assert_contains "$(qd show latest --cols host,test,value,unit,note --format csv)" \
+        "node02,mbps,940,Mbit/s,fine"
 }
 
 t_a_host_that_printed_nothing_keeps_its_row() {
@@ -319,6 +350,7 @@ run_test "a failed command is not unreachable"        t_failed_command_is_failed
 run_test "key: value answers, numbers with units"     t_key_value_answers_with_units
 run_test "a key: with no value stays blank"           t_a_blank_value_stays_blank
 run_test "json, number and csv answers"               t_json_number_and_csv_answers
+run_test "answers a provost with batch reads"        t_answers_a_newer_provost_reads
 run_test "a host that printed nothing keeps its row"  t_a_host_that_printed_nothing_keeps_its_row
 run_test "df: one row per filesystem"                 t_df_table_is_one_row_per_filesystem
 run_test "--every/--count: a time series"             t_repeated_passes_make_a_time_series
