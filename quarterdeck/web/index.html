@@ -1,0 +1,40 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- SPDX-FileCopyrightText: 2026 Martin J. Gallagher -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>quarterdeck</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <span class="brand">quarterdeck</span>
+  <span class="where-root" id="root"></span>
+  <button type="button" id="refresh" title="Read the logbook again">Refresh</button>
+  <button type="button" id="theme" title="Light, dark, or follow the system">Theme: auto</button>
+</header>
+<div class="shell" id="shell">
+  <nav class="side" aria-label="Logbook">
+    <label class="sr-only" for="entry-filter">Filter entries</label>
+    <input type="search" id="entry-filter" placeholder="Filter entries">
+    <ol class="entries" id="entries"></ol>
+  </nav>
+  <main class="main" id="main">
+    <div id="banner"></div>
+    <section class="head" id="head"></section>
+    <div class="tabs" role="tablist" id="tabs"></div>
+    <div class="filterbar" id="filterbar"></div>
+    <div class="cli" id="cli"></div>
+    <section id="view"></section>
+  </main>
+  <aside class="panel" id="panel" hidden aria-label="Column"></aside>
+</div>
+<dialog id="detail"></dialog>
+<div class="tip" id="tip" hidden></div>
+<noscript><p class="empty">This page needs JavaScript; <code>qd show</code>,
+<code>qd stats</code> and <code>qd view</code> read the same logbook without it.</p></noscript>
+<script src="app.js"></script>
+</body>
+</html>
