@@ -46,7 +46,7 @@ git clone https://github.com/MartinGallagher-code/quarterdeck
 pip install provost binnacle             # the store, and the instruments
 ./quarterdeck/qd hints                   # runs from the clone
 pip install ./quarterdeck                # or put qd (and quarterdeck) on PATH
-pip install doehelper                    # for qd doe (Python 3.9+)
+pip install doehelper                    # for qd doe (Python 3.10+)
 ```
 
 qd itself is Python 3.6+, standard library only. It needs provost to keep
@@ -355,7 +355,7 @@ again (an interrupted design carries on), and `--count N` measures each
 point N times. `qd doe analyze` reduces each point to one response (the
 median of the column over the hosts that answered, or `--agg`), writes it
 as doe reads results (`run_<id>.json` beside the design's
-`design_matrix.json`) and runs `doe analyze`. doe wants Python 3.9 and
+`design_matrix.json`) and runs `doe analyze`. doe wants Python 3.10 and
 numpy; qd runs it as a command, so qd keeps its 3.6 floor.
 
 ---

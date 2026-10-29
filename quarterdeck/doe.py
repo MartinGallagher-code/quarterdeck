@@ -25,7 +25,7 @@ interrupted design carries on where it stopped.
 `qd doe analyze` reduces each point's runs to one response (the median of
 COLUMN over the hosts, or --agg), writes them the way doe reads results --
 run_<id>.json beside the design's design_matrix.json -- and hands them to
-`doe analyze` (and `doe optimize` with --optimize).  doe needs Python 3.9
+`doe analyze` (and `doe optimize` with --optimize).  doe needs Python 3.10
 and numpy; qd runs it as a command, so qd itself keeps its 3.6 floor.
 """
 
@@ -49,7 +49,7 @@ def doe_argv():
     argv = tools.find_tool("doe")
     if not argv:
         die("designs come from design_of_experiments' doe, which is not "
-            "installed here: pip install doehelper (it needs Python 3.9+)")
+            "installed here: pip install doehelper (it needs Python 3.10+)")
     return argv
 
 

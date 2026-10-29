@@ -5,7 +5,7 @@
 # qd doe: designs from design_of_experiments' doe, measured on the fleet,
 # analysed by doe.  doe is played by a stand-in that writes what the real
 # one writes (design_matrix.json; run_<id>.json read back) -- the real one
-# needs Python 3.9 and numpy -- and the real one is used too where it is
+# needs Python 3.10 and numpy -- and the real one is used too where it is
 # installed.
 
 set -u

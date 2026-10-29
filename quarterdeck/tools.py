@@ -57,7 +57,8 @@ TOOLS = [
 ] + [
     ("provost", ("provost",), "provost_data",
      "the store: every answer filed, parsed and kept in git"),
-    # no module fallback: doe has no __main__, and wants Python 3.9+
+    # no module fallback: doe has no __main__, and PyPI's doehelper wants
+    # Python 3.10+
     ("doe", ("doe",), None, "design of experiments: designs and their "
      "analysis (qd doe)"),
     ("dcviz", ("dcviz",), "dcviz", "floor-plan viewer: dcviz serve"),
@@ -137,7 +138,7 @@ def doctor_rows():
 
 INSTALL = {
     "provost": "pip install provost (qd keeps everything in its store)",
-    "doe": "pip install doehelper (Python 3.9+)",
+    "doe": "pip install doehelper (Python 3.10+)",
     "mx": "pip install matrix-orchestrator",
     "iperf-orchestrator": "pip install iperf-orchestrator",
     "dcviz": "pip install datacenter-layout-viewer",
