@@ -337,10 +337,10 @@ def cmd_run(args):
                     list(r.host.attrs)
                 b.add(ds, filing.prologue(pairs) + filing.body(r.stdout))
         ncap = len(b.inputs)
-        b.add(storemod.HOSTS, filing.own_tsv(
+        b.add_own(storemod.HOSTS, filing.own_tsv(
             storemod.HOST_COLUMNS, [host_row(rid, r) for r in results]))
         counts = outcome_counts(last)
-        b.add(storemod.RUNS, filing.own_tsv(storemod.RUN_COLUMNS, [run_row(
+        b.add_own(storemod.RUNS, filing.own_tsv(storemod.RUN_COLUMNS, [run_row(
             rid, "run", label, command, created, duration_s=took,
             hosts=len(hs), ok=counts.get(fleet.OK, 0),
             failed=counts.get(fleet.FAILED, 0),
@@ -415,8 +415,9 @@ def report_run(args, command, hs, results, t, entry, passes, interrupted):
         caps = sorted(entry.captures(), key=storemod.cnum)
         lines.append("  stored   %s in %s  (%s%s)" % (
             entry.id, entry.store.shown(), plural(len(t.rows), "row"),
-            (", captures %s..%s" % (caps[0], caps[-1])) if len(caps) > 1
-            else (", capture %s" % caps[0]) if caps else ""))
+            (", %d captures %s..%s" % (len(caps), caps[0], caps[-1]))
+            if len(caps) > 1 else (", capture %s" % caps[0]) if caps
+            else ""))
         for n in entry.meta.get("notes", []):
             lines.append("  note     %s" % n)
     if args.quiet:
@@ -662,7 +663,7 @@ def _do(args, cmd, st, prov, name, label, cmdline, work):
         added.append(("stdout", ds, None, "stdout"))
     ver = tools.tool_version(plan.argv[:len(plan.argv) - len(
         tools.tool_of(plan.argv)[1])]) if name in tools.TOOL_NAMES else ""
-    b.add(storemod.RUNS, filing.own_tsv(storemod.RUN_COLUMNS, [run_row(
+    b.add_own(storemod.RUNS, filing.own_tsv(storemod.RUN_COLUMNS, [run_row(
         rid, "do", label, cmdline, created, duration_s=took, rc=rc,
         captures=len(b.inputs), tool=name, ran=shown, version=ver)]))
     notes = file_batch(prov, b, "tables")
@@ -713,7 +714,7 @@ def cmd_import(args):
     if not added:
         b.cleanup()
         die("nothing to file: no table with rows in %s" % " ".join(args.paths))
-    b.add(storemod.RUNS, filing.own_tsv(storemod.RUN_COLUMNS, [run_row(
+    b.add_own(storemod.RUNS, filing.own_tsv(storemod.RUN_COLUMNS, [run_row(
         rid, "import", label, " ".join(args.paths), created,
         captures=len(b.inputs))]))
     notes = file_batch(prov, b, "tables")

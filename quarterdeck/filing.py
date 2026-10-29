@@ -89,17 +89,27 @@ def body(text):
 
 class Batch(object):
     """The inputs of one filing, written to a scratch directory, in the
-    order their captures are to take ids."""
+    order their captures are to take ids.  qd's own tables are added with
+    own=True, after what they describe: filed one at a time, the answers
+    go first, a few in parallel, and qd's tables after them in order, so
+    a run's answers take consecutive ids and its qd.runs row comes last."""
 
     def __init__(self):
         self.dir = tempfile.mkdtemp(prefix="qd-file-")
         self.inputs = []
+        self.own = 0
 
-    def add(self, dataset, text):
+    def add(self, dataset, text, own=False):
+        if not own and self.own:
+            raise ValueError("an answer added after qd's own tables")
         path = os.path.join(self.dir, "%05d.txt" % len(self.inputs))
         write_text(path, text)
         self.inputs.append((dataset, path))
+        self.own += 1 if own else 0
         return path
+
+    def add_own(self, dataset, text):
+        return self.add(dataset, text, own=True)
 
     def cleanup(self):
         shutil.rmtree(self.dir, ignore_errors=True)
@@ -169,8 +179,10 @@ class Provost(object):
                 die("provost batch failed (exit %d)" % rc)
             return problems
         # One capture at a time: the answers a few in parallel (provost
-        # parses outside its lock), the run's own row last, alone.
-        head, last = batch.inputs[:-1], batch.inputs[-1]
+        # parses outside its lock), then qd's own tables in order, the
+        # run's row last.
+        cut = len(batch.inputs) - max(1, batch.own)
+        head, tail = batch.inputs[:cut], batch.inputs[cut:]
         problems = []
 
         def one(item):
@@ -184,10 +196,11 @@ class Provost(object):
                     problems.append("%s: %s" % (
                         os.path.basename(path),
                         errs[-1] if errs else "exit %d" % rc))
-        _, rc, errs = one(last)
-        if rc != 0:
-            die("provost did not file the run itself: %s"
-                % (errs[-1] if errs else "exit %d" % rc))
+        for item in tail:
+            _, rc, errs = one(item)
+            if rc != 0:
+                die("provost did not file the run itself (%s): %s"
+                    % (item[0], errs[-1] if errs else "exit %d" % rc))
         return problems
 
 
