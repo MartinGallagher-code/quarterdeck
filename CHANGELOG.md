@@ -53,8 +53,9 @@ The first release.
 - `qd compare`: N stored runs side by side (`--last N`, `--group NAME`,
   or named): one row per run (hosts that answered, median, spread, change
   from the baseline), then host by host every run's value, flagged where a
-  median moved past `--drift` percent or a status was not ok. Exit 1 when
-  anything changed.
+  median moved past `--drift` percent or a status was not ok. With no
+  column, every numeric column's median, a design's factors and the hosts'
+  attributes left out. Exit 1 when anything changed.
 - `qd doe plan|run|status|analyze`: designed experiments.
   design_of_experiments' `doe` makes the design from its config; qd runs
   each point on the fleet with every `{factor}` in the command replaced by
@@ -79,8 +80,9 @@ The first release.
   `dcviz serve` on it.
 - `qd web`: the store in a browser. It has tables, a column's figures,
   histogram, outliers and values, plus group, pivot, trend chart, diff,
-  floor-plan hand-off and export. The page computes nothing; every figure
-  comes from the same functions the terminal verbs print.
+  compare, floor-plan hand-off and export, and the campaigns and designs
+  with their progress, parts and points. The page computes nothing; every
+  figure comes from the same functions the terminal verbs print.
 - `qd view`: the same, full-screen in a terminal, driven by keys.
 - `qd log`, `qd hosts` (`--plain` for the tools without attributes),
   `qd doctor` (provost, and whether it batches), `qd hints`, `qd help`.

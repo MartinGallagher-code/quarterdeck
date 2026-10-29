@@ -3,63 +3,13 @@
 # SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # qd doe: designs from design_of_experiments' doe, measured on the fleet,
-# analysed by doe.  doe is played by a stand-in that writes what the real
-# one writes (design_matrix.json; run_<id>.json read back) -- the real one
-# needs Python 3.10 and numpy -- and the real one is used too where it is
-# installed.
+# analysed by doe.  doe is played by the helper's stand_in_doe, which writes
+# what the real one writes (design_matrix.json; run_<id>.json read back) --
+# the real one needs Python 3.10 and numpy -- and the real one is used too
+# where it is installed.
 
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/test_helper.bash"
-
-stand_in_doe() {
-    cat > "$FAKE_BIN/doe" <<'EOF'
-#!/usr/bin/env python3
-# doe, for the suite: full factorial designs, block_count copies of them,
-# and two-level main effects -- the files and headings the real one has.
-import itertools, json, os, sys
-a = sys.argv[1:]
-def opt(n):
-    return a[a.index(n) + 1] if n in a else None
-cfg = json.load(open(opt("--config")))
-out = cfg["settings"]["out_directory"]
-if a[0] == "generate":
-    names = [f["name"] for f in cfg["factors"]]
-    base = list(itertools.product(*[f["levels"] for f in cfg["factors"]]))
-    runs = []
-    for b in range(int(cfg["settings"].get("block_count", 1))):
-        for combo in base:
-            runs.append({"run_id": len(runs) + 1, "block_id": b + 1,
-                         "factor_values": dict(zip(names, combo)),
-                         "whole_plot_id": 0})
-    if not os.path.isdir(out):
-        os.makedirs(out)
-    json.dump({"factor_names": names, "operation": "full_factorial",
-               "metadata": {}, "runs": runs},
-              open(os.path.join(out, "design_matrix.json"), "w"))
-    open(opt("--output"), "w").write("#!/bin/sh\n")
-    print("Generated %d runs" % len(runs))
-elif a[0] == "analyze":
-    d = opt("--results-dir")
-    m = json.load(open(os.path.join(d, "design_matrix.json")))
-    resp = cfg["responses"][0]["name"]
-    vals = {}
-    for r in m["runs"]:
-        p = os.path.join(d, "run_%d.json" % r["run_id"])
-        if os.path.exists(p):
-            vals[r["run_id"]] = json.load(open(p))[resp]
-    print("=== Main Effects: %s ===" % resp)
-    for f in m["factor_names"]:
-        lv = sorted(set(r["factor_values"][f] for r in m["runs"]), key=float)
-        mean = []
-        for l in lv:
-            xs = [vals[r["run_id"]] for r in m["runs"]
-                  if r["factor_values"][f] == l and r["run_id"] in vals]
-            mean.append(sum(xs) / len(xs))
-        print("%-20s %10.4f" % (f, mean[-1] - mean[0]))
-EOF
-    chmod +x "$FAKE_BIN/doe"
-    export QD_DOE="$FAKE_BIN/doe"
-}
 
 config() {
     cat > bench.json <<EOF
@@ -120,6 +70,10 @@ t_analyze_hands_doe_the_responses() {
     assert_contains "$out" "window                 120.0000"
     out="$(qd compare --group stream-test -c mbps)" || true
     assert_contains "$out" "factors streams=4"
+    # every numeric column: the response, not the factors that set it
+    out="$(qd compare --group stream-test | sed -n '/medians/,/keys changed/p')" || true
+    assert_contains "$out" "mbps"
+    assert_not_contains "$out" "window"
 }
 
 t_blocks_run_on_host_groups() {

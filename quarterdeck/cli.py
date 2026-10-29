@@ -1347,48 +1347,12 @@ def cmd_floor(args):
 # compare: N runs side by side
 # ---------------------------------------------------------------------------
 
-def compare_entries(st, args):
-    """The runs to compare, oldest first: those named; --group NAME, a
-    campaign's parts or a design's points; or the last N runs like REF."""
-    if args.group:
-        es = [e for e in st.entries() if e.meta.get("group") == args.group]
-        if not es:
-            die("no runs in group %r (a campaign or a design's name)"
-                % args.group)
-        return es[-args.last:] if args.last else es
-    refs = args.refs or ["latest"]
-    if len(refs) == 1 or args.last:
-        e = st.resolve(refs[-1])
-        if not hasattr(e, "captures"):
-            die("%s is a whole dataset, not a run: compare runs of it "
-                "(qd compare NAME --last N)" % e.id)
-        like = [x for x in st.entries() if (x.meta.get("kind"),
-                x.meta.get("command"), x.meta.get("name")) ==
-                (e.meta.get("kind"), e.meta.get("command"),
-                 e.meta.get("name"))]
-        ids = [x.id for x in like]
-        upto = like[:ids.index(e.id) + 1]
-        es = upto[-(args.last or 5):]
-        if len(es) < 2:
-            die("%s is the only run of %r: compare needs another (or name "
-                "the runs to compare)" % (e.id, e.meta.get("name") or
-                                          e.meta.get("command")))
-        return es
-    return [st.resolve(r) for r in refs]
-
-
 def cmd_compare(args):
     from . import compare as comparemod
     st = store_of(args)
-    entries = compare_entries(st, args)
-    baseline = 0
-    if args.baseline:
-        b = st.resolve(args.baseline)
-        ids = [e.id for e in entries]
-        if b.id in ids:
-            baseline = ids.index(b.id)
-        else:
-            entries = [b] + entries
+    entries, baseline = comparemod.with_baseline(
+        st, comparemod.pick(st, args.refs, args.group, args.last),
+        args.baseline)
     tables = [e.load(args.table) for e in entries]
     if args.where:
         tables = [t.derive(rows=query.where(t, args.where)) for t in tables]
@@ -1432,8 +1396,7 @@ def compare_report(res, args):
     elif res.columns:
         cols = ["column"] + [r["label"] for r in res.runs] + ["change_pct"]
         rows = []
-        for c, meds in res.columns:
-            d = comparemod.pct(meds[res.baseline], meds[-1])
+        for c, meds, d in comparemod.column_changes(res):
             rows.append([c] + [comparemod.num(m) for m in meds] +
                         [("%.1f" % d) if d not in (None, float("inf"),
                                                    float("-inf")) else ""])
@@ -1746,9 +1709,8 @@ def cmd_campaign(args):
         lines = ["%s campaign -- %s: %s, %s" % (
             PROG, c.name, plural(len(c.parts), "part"), c.split),
             "  command  %s" % c.command,
-            camp.progress_line(summ, len(c.parts)), ""]
-        t = tablemod.Table(["part", "hosts", "state", "runs", "last_run",
-                            "ok", "verdict", "finished"], rows, "parts")
+            "  PROGRESS   " + camp.progress(c, summ), ""]
+        t = tablemod.Table(camp.STATUS_COLUMNS, rows, "parts")
         lines.extend(render.render_table(t, width=width_of(args),
                                          indent="  "))
         failed = [r[0] for r in rows if r[6] == "hosts failed"]
@@ -1803,7 +1765,7 @@ def cmd_campaign(args):
             if job.entry else "not kept"))
     st.reset()
     summ, _ = camp.describe(st, c)
-    out(camp.progress_line(summ, len(c.parts)).strip())
+    out("PROGRESS   " + camp.progress(c, summ))
     if not done:
         out("  nothing was left to take: `%s campaign status %s`"
             % (PROG, c.name))
@@ -1841,24 +1803,12 @@ def cmd_doe(args):
     if what == "run":
         return doe_run(args, st, doemod)
     if what == "status":
-        row, cfg, matrix = doemod.load(st, args.target)
-        runs = doemod.point_runs(st, args.target)
-        rows = []
-        for rid, blk, lv in doemod.points(matrix):
-            rs = runs.get(rid, [])
-            last = rs[-1] if rs else None
-            h = (last.meta.get("hosts") or {}) if last else {}
-            rows.append([str(rid), str(blk), " ".join(
-                "%s=%s" % kv for kv in lv), str(len(rs)),
-                last.id if last else "",
-                ("%d/%d" % (h.get("ok", 0), h.get("total", 0))) if h
-                else ""])
-        done = sum(1 for r in rows if r[3] != "0")
+        row, rows, done = doemod.status_rows(st, args.target)
         lines = ["%s doe -- %s: %d of %s measured" % (
             PROG, args.target, done, plural(len(rows), "point")),
             "  command  %s" % row.get("command", "")]
         lines.extend(render.render_rows(
-            ["point", "block", "factors", "runs", "last_run", "ok"], rows,
+            doemod.STATUS_COLUMNS, rows,
             numeric=[0, 1, 3], width=width_of(args), indent="  "))
         tips = []
         if done < len(rows):

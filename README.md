@@ -327,8 +327,11 @@ the change from the baseline), then host by host every run's value side by
 side, flagged where a median moved more than `--drift` percent (5) from the
 baseline or the host's status was not ok. The baseline is the first run, or
 `--baseline RUN`. Runs over different hosts (a campaign's parts) are
-compared as wholes. `--format csv` is the host-by-run table. The exit status
-is 1 when anything changed, as with `diff`.
+compared as wholes. With no column, every numeric column the runs share is
+compared by its median, leaving out what the runs *were* rather than what
+they measured: a design's factors and the hosts' attributes. `--format csv`
+is the host-by-run table. The exit status is 1 when anything changed, as
+with `diff`. `qd web` shows the same comparison on its Compare tab.
 
 ---
 
@@ -523,6 +526,10 @@ qd web --layout floor.dc       # with the floor plan behind "Floor plan"
 
 - **The runs in the store** on the left; the run's command, how many hosts
   answered, and its tables at the top.
+- **Campaigns and designs** above the runs, with how far each has got
+  (muster's count of parts done, or points measured). One opens its parts
+  or points, each with its last run, and **Compare its parts** lines them
+  up.
 - **Table**: sort on any column and filter with the same `--where`
   language. Click a row for every field and that host's raw answer.
 - **A column**: its figures, histogram, outliers and value counts (with who
@@ -532,6 +539,11 @@ qd web --layout floor.dc       # with the floor plan behind "Floor plan"
   it's one metric), **Trend** (a line per host, with a crosshair and
   tooltip; past eight hosts they're drawn grey and the one you point at
   lifts), **Diff** against any other run, **About** the run.
+- **Compare**: `qd compare` on the page. The last runs like this one, or
+  every run of its campaign or design; a row per run with where the column
+  sat and how far it moved from the baseline, then every host's value per
+  run, flagged where it drifted or its status went from ok. Click a host
+  to open the latest run filtered to it.
 - **Floor plan** writes the view as an overlay and opens it in the
   datacenter viewer, served by the same server at `/floor/` when
   `datacenter-layout-viewer` is installed. Without `--layout`, use
@@ -544,8 +556,11 @@ qd web --layout floor.dc       # with the floor plan behind "Floor plan"
 
 ![qd web: load1 by host over time, dark theme](docs/qd-web-trend.png)
 
-The page does no arithmetic of its own. Every figure, group, diff and
-outlier comes from the same functions the terminal verbs print, so the
+![qd web: four runs of a bandwidth test compared, one host drifted and one unreachable](docs/qd-web-compare.png)
+
+The page does no arithmetic of its own. Every figure, group, diff,
+comparison and outlier comes from the same functions the terminal verbs
+print, so the
 browser and the terminal can't disagree about a number. There's no build
 step and no dependency, just three static files and a JSON API served by
 the standard library. It listens on 127.0.0.1 unless you pass `--host`

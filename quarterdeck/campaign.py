@@ -190,10 +190,11 @@ def _rm(ticket, tmp):
         pass
 
 
-def pool_states(c):
+def pool_states(c, quiet=False):
     """{part: muster state} and the summary row (total, done, held,
-    available, done_pct, stuck)."""
-    if not os.path.isfile(c.pool):
+    available, done_pct, stuck).  quiet: nothing, rather than a refusal,
+    where muster is not installed (the web page shows the runs anyway)."""
+    if not os.path.isfile(c.pool) or (quiet and not tools.find_tool("muster")):
         return {}, {}
     _, out, _ = muster(["list", "--state", "any", "--quiet"], c.pool)
     from .table import parse_delimited
@@ -217,9 +218,13 @@ def part_runs(st, name):
     return out
 
 
-def describe(st, c):
-    """The status page's lines and its table rows."""
-    states, summ = pool_states(c)
+STATUS_COLUMNS = ["part", "hosts", "state", "runs", "last_run", "ok",
+                  "verdict", "finished"]
+
+
+def describe(st, c, quiet=False):
+    """The pool's summary and a STATUS_COLUMNS row per part."""
+    states, summ = pool_states(c, quiet)
     runs = part_runs(st, c.name)
     rows = []
     for part, hs in c.parts:
@@ -238,11 +243,16 @@ def describe(st, c):
     return summ, rows
 
 
-def progress_line(summ, nparts):
+def progress(c, summ):
+    """How far the campaign has got, in words: muster's count where its
+    pool is here, else why not."""
     if not summ:
-        return "  PROGRESS   the pool is not here (another machine's? --pool)"
-    return "  PROGRESS   %s of %s parts done (%s%%), %s held, %s left%s" % (
-        summ.get("done", "?"), summ.get("total", nparts),
+        if not tools.find_tool("muster"):
+            return "progress unknown: muster is not installed here " \
+                "(pip install binnacle)"
+        return "the pool is not here (another machine's? --pool)"
+    return "%s of %s parts done (%s%%), %s held, %s left%s" % (
+        summ.get("done", "?"), summ.get("total", len(c.parts)),
         summ.get("done_pct", "?").split(".")[0], summ.get("held", "?"),
         summ.get("available", "?"),
         (", %s stuck" % summ["stuck"]) if summ.get("stuck", "0") not in

@@ -5,8 +5,9 @@
 //
 // The page draws and asks; it never computes a figure itself.  Filters,
 // sorts, statistics, groups, pivots, trends and diffs all come back from
-// the server, which runs the same functions `qd stats` and `qd diff` print
-// -- so a number here is always the number the terminal would give.
+// the server, which runs the same functions `qd stats`, `qd diff` and
+// `qd compare` print -- so a number here is always the number the terminal
+// would give.
 //
 // Everything that came from a dataset (host names, column names, cell
 // values) goes into the page with textContent, never as markup.
@@ -96,17 +97,21 @@
   // -------------------------------------------------------------------------
 
   const S = {
-    entries: [], root: "", floor: false, layout: null,
+    entries: [], groups: [], g: null, root: "", floor: false, layout: null,
     e: null, t: null, tab: "table", where: [], sort: "", col: null,
     p: {}, info: null, rows: null, busy: 0,
   };
 
   const TABS = [["table", "Table"], ["group", "Group"], ["pivot", "Pivot"],
-    ["trend", "Trend"], ["diff", "Diff"], ["about", "About"]];
+    ["trend", "Trend"], ["diff", "Diff"], ["compare", "Compare"], ["about", "About"]];
+  // The tabs that read the run rather than one table's columns, kept when
+  // another run is picked
+  const RUN_TABS = ["table", "about", "diff", "compare"];
 
   function readHash() {
     const q = new URLSearchParams(location.hash.slice(1));
     S.e = q.get("e") || null;
+    S.g = q.get("g") || null;
     S.t = q.get("t") || null;
     S.tab = q.get("tab") || "table";
     S.where = q.getAll("w");
@@ -119,6 +124,7 @@
   function writeHash() {
     const q = new URLSearchParams();
     if (S.e) q.set("e", S.e);
+    else if (S.g) q.set("g", S.g);
     if (S.t) q.set("t", S.t);
     if (S.tab !== "table") q.set("tab", S.tab);
     for (const w of S.where) q.append("w", w);
@@ -201,6 +207,11 @@
     S.floor = d.floor;
     S.layout = d.layout;
     $("root").textContent = d.root;
+    try {
+      S.groups = (await api("/api/groups")).groups;
+    } catch (err) {
+      S.groups = [];   // the runs are still worth showing
+    }
     renderEntries();
   }
 
@@ -210,11 +221,25 @@
     return e.name && e.name !== e.kind ? e.name : (e.command || e.id);
   }
 
+  function renderGroups() {
+    const ol = clear($("groups"));
+    $("groups-box").hidden = !S.groups.length;
+    for (const g of S.groups) {
+      ol.append(h("li", null, h("button", {
+        type: "button", "aria-current": !S.e && g.name === S.g ? "true" : "false",
+        onclick: () => openGroup(g.name),
+      }, h("span", { class: "e-title", text: g.name }),
+      h("span", { class: "e-sub" }, h("span", { class: "kind", text: g.kind }),
+        h("span", { text: g.done != null ? g.done + "/" + g.total : g.progress })))));
+    }
+  }
+
   function renderEntries() {
+    renderGroups();
     const ol = clear($("entries"));
     const f = $("entry-filter").value.trim().toLowerCase();
     const shown = S.entries.filter((e) => !f ||
-      (e.id + " " + e.name + " " + e.command).toLowerCase().includes(f));
+      (e.id + " " + e.name + " " + e.command + " " + e.factors + " " + e.part).toLowerCase().includes(f));
     if (!S.entries.length) {
       ol.append(h("li", { class: "empty" }, "No runs in this store yet. ",
         h("code", { text: "qd run" }), ", ", h("code", { text: "qd do" }), " or ",
@@ -227,7 +252,8 @@
       if (e.created) sub.push(h("span", { text: e.created.slice(5, 16).replace("T", " ") }));
       ol.append(h("li", null, h("button", {
         type: "button", "aria-current": e.id === S.e ? "true" : "false",
-        title: e.id, onclick: () => openEntry(e.id),
+        title: e.id + (e.factors ? "\n" + e.factors : e.part ? "\npart " + e.part : ""),
+        onclick: () => openEntry(e.id),
       }, h("span", { class: "e-title", text: entryTitle(e) }),
       h("span", { class: "e-sub" }, sub))));
     }
@@ -235,9 +261,10 @@
 
   async function openEntry(id, keep) {
     S.e = id;
+    S.g = null;
     if (!keep) {
       S.t = null; S.where = []; S.sort = ""; S.col = null; S.p = {};
-      if (!["table", "about", "diff"].includes(S.tab)) S.tab = "table";
+      if (!RUN_TABS.includes(S.tab)) S.tab = "table";
     }
     const col = S.col;
     closePanel(true);
@@ -423,7 +450,7 @@
         return;
       }
       const fn = { table: viewTable, group: viewGroup, pivot: viewPivot,
-        trend: viewTrend, diff: viewDiff, about: viewAbout }[S.tab] || viewTable;
+        trend: viewTrend, diff: viewDiff, compare: viewCompare, about: viewAbout }[S.tab] || viewTable;
       await fn(view);
     } catch (err) {
       showError(err);
@@ -1105,6 +1132,179 @@
   }
 
   // -------------------------------------------------------------------------
+  // Compare: N runs side by side, as `qd compare` lines them up
+  // -------------------------------------------------------------------------
+
+  // A change as the terminal prints one: a sign and one decimal
+  function pctText(v) {
+    if (v === null || v === undefined) return "";
+    return (v > 0 ? "+" : "") + v.toFixed(1) + "%";
+  }
+
+  function plainTable(columns, rows, opts) {
+    // rows: [[cell, ...], ...] where a cell is text or a node
+    const o = opts || {};
+    const tbody = h("tbody");
+    rows.forEach((r, i) => {
+      const tr = h("tr", { class: o.rowClass ? o.rowClass(i) : null,
+        tabindex: o.onRow ? "0" : null,
+        onclick: o.onRow ? () => o.onRow(i) : null,
+        onkeydown: o.onRow ? (ev) => { if (ev.key === "Enter") o.onRow(i); } : null });
+      r.forEach((v, j) => {
+        const num = o.numeric && o.numeric.includes(j);
+        tr.append(v instanceof Node ? h("td", null, v) :
+          h("td", { class: num ? "num" : null, text: v == null ? "" : String(v) }));
+      });
+      tbody.append(tr);
+    });
+    return h("div", { class: "grid-wrap" }, h("table", { class: "grid" },
+      h("thead", null, h("tr", null, columns.map((c) =>
+        h("th", null, h("div", { class: "th" }, h("span", { style: { padding: "6px 10px" }, text: c })))))),
+      tbody));
+  }
+
+  function compareCli(group) {
+    const e = entryById(S.e);
+    const parts = ["qd compare", group ? "--group " + shq(group) : shq(refArg())];
+    if (group && S.t && e && e.tables.length > 1 && S.t !== e.tables[0].name) parts.push("--table " + shq(S.t));
+    if (S.p.last) parts.push("--last " + S.p.last);
+    if (S.p.c) parts.push("-c " + shq(S.p.c));
+    if (S.p.baseline) parts.push("--baseline " + shq(S.p.baseline));
+    if (S.p.drift) parts.push("--drift " + S.p.drift);
+    if (S.p.key) parts.push("--key " + shq(S.p.key));
+    parts.push(whereArgs());
+    return parts.filter(Boolean).join(" ");
+  }
+
+  async function viewCompare(view) {
+    renderFilterbar();
+    clear(view);
+    const e = entryById(S.e);
+    const group = S.p.group !== undefined ? S.p.group : (e && e.group) || "";
+    const runsOpts = [["", "the last runs like this one"]];
+    for (const g of [e && e.group, group]) {
+      if (g && !runsOpts.some((o) => o[0] === g)) runsOpts.push([g, "every run of " + g]);
+    }
+    let d = null, refusal = null;
+    try {
+      d = await api("/api/compare", { e: S.e, t: S.t, group: group || null, last: S.p.last || null,
+        c: S.p.c || null, baseline: S.p.baseline || null, drift: S.p.drift || null,
+        key: S.p.key || null, changed: S.p.all ? "0" : null, where: S.where });
+    } catch (err) { refusal = err; }
+
+    const lastIn = h("input", { type: "number", min: "2", step: "1", value: S.p.last || "",
+      placeholder: group ? "all" : "5", "aria-label": "How many runs", style: { width: "6em" } });
+    const driftIn = h("input", { type: "number", min: "0", step: "any", value: S.p.drift || "",
+      placeholder: d ? fmtNum(d.drift) : "5", "aria-label": "Drift percent", style: { width: "6em" } });
+    const keyIn = h("input", { type: "text", value: S.p.key || "", placeholder: d ? d.key.join(",") : "host",
+      "aria-label": "Match rows on" });
+    const go = h("button", { type: "button", class: "primary", text: "Compare", onclick: () => {
+      S.p.last = lastIn.value.trim(); S.p.drift = driftIn.value.trim(); S.p.key = keyIn.value.trim(); renderView();
+    } });
+    const ctl = [select("Runs", group, runsOpts, (v) => { S.p.group = v; delete S.p.baseline; renderView(); }),
+      h("label", null, "How many, latest last", lastIn)];
+    if (d) {
+      ctl.push(select("Column", S.p.c || "", [["", "every numeric column"]].concat(d.numeric.map((c) => [c, c])),
+        (v) => { S.p.c = v; renderView(); }));
+      ctl.push(select("Baseline", S.p.baseline || "", d.runs.map((r, i) => [i === 0 && !S.p.baseline ? "" : r.id,
+        r.label + "  " + r.id]), (v) => { S.p.baseline = v; renderView(); }));
+    }
+    ctl.push(h("label", null, "A change is past %", driftIn), h("label", null, "Match rows on", keyIn), go);
+    view.append(h("div", { class: "controls" }, ctl));
+    renderCli(compareCli(group));
+    if (!d) {
+      view.append(h("p", { class: "empty", text: String(refusal.message || refusal) }));
+      return;
+    }
+
+    const what = (r) => r.factors || (r.part ? "part " + r.part : "");
+    const parts = d.runs.some((r) => what(r));
+    const runRows = d.runs.map((r, i) => [r.label + (i === d.baseline ? " (baseline)" : ""),
+      h("button", { type: "button", class: "link mono", text: r.id, onclick: (ev) => { ev.stopPropagation(); openEntry(r.id); } })]
+      .concat(parts ? [what(r)] : []).concat([r.hosts_ok, String(r.rows), (r.created || "").replace("T", " ").replace("Z", "")]));
+    view.append(h("div", { class: "card" }, h("h3", { text: d.runs.length + " runs" }),
+      plainTable(["run", "id"].concat(parts ? [d.runs.some((r) => r.factors) ? "factors" : "part"] : [])
+        .concat(["hosts ok", "rows", "created"]), runRows, { numeric: [parts ? 4 : 3] })));
+
+    const notes = ["baseline " + d.runs[d.baseline].label + "; a change is a median moving more than " +
+      fmtNum(d.drift) + "% from it, or a status that is not ok; matched on " + d.key.join(", ")];
+    view.append(h("ul", { class: "notes" }, notes.concat(d.notes).map((n) => h("li", { text: n }))));
+
+    if (d.column) {
+      const stat = ["n", "median", "mean", "min", "p95", "max"];
+      const rows = d.runs.map((r, i) => [r.label, r.hosts_ok].concat(stat.map((k) => fmtNum((r.stats || {})[k])))
+        .concat([i === d.baseline ? "baseline" : pctText(r.change_pct)]));
+      view.append(h("div", { class: "card" }, h("h3", { text: d.column + (d.unit ? " (" + d.unit + ")" : "") + ", each run" }),
+        plainTable(["run", "hosts ok"].concat(stat).concat(["change"]), rows, { numeric: [2, 3, 4, 5, 6, 7, 8] })));
+    } else if (d.columns.length) {
+      const rows = d.columns.map((c) => [c.column].concat(c.medians.map(fmtNum)).concat([pctText(c.change_pct)]));
+      view.append(h("div", { class: "card" }, h("h3", { text: "Medians, each run" }),
+        plainTable(["column"].concat(d.runs.map((r) => r.label)).concat(["change"]), rows,
+          { numeric: d.runs.map((r, i) => i + 1).concat([d.runs.length + 1]),
+            onRow: (i) => { S.p.c = d.columns[i].column; renderView(); } })));
+    }
+
+    const all = h("input", { type: "checkbox", checked: S.p.all ? true : null,
+      onchange: () => { S.p.all = all.checked ? "1" : ""; renderView(); } });
+    const card = h("div", { class: "card" },
+      h("h3", { text: d.changed + " of " + d.keys_total + " keys changed" }),
+      h("label", { class: "count" }, all, " every key, not only those that changed"));
+    if (d.keys.length) {
+      const latest = d.runs[d.runs.length - 1].id;
+      const rows = d.keys.map((k) => k.key.concat(k.values.map(fmtNum)).concat([pctText(k.change_pct), k.flags.join("; ")]));
+      card.append(plainTable(d.key.concat(d.runs.map((r) => r.label)).concat(["change", "flags"]), rows, {
+        numeric: d.runs.map((r, i) => d.key.length + i).concat([d.key.length + d.runs.length]),
+        rowClass: (i) => d.keys[i].flags.length ? "flagged" : null,
+        onRow: (i) => {
+          S.e = latest; S.g = null; S.tab = "table"; S.t = null; S.p = {}; S.sort = "";
+          S.where = [quoteCol(d.key[0]) + "=" + quoteVal(d.keys[i].key[0])];
+          openEntry(latest, true);
+        } }));
+      if (d.keys.length < (S.p.all ? d.keys_total : d.changed)) {
+        card.append(h("p", { class: "count", text: "the first " + d.keys.length + "; the terminal lists every one with --limit 0" }));
+      }
+    } else if (!d.changed) {
+      card.append(h("p", { class: "empty", text: d.column ? "Nothing moved past the threshold, and no status changed." :
+        "No status changed. Pick a column to compare its values " + d.key.join(", ") + " by " + d.key.join(", ") + "." }));
+    }
+    view.append(card);
+  }
+
+  // -------------------------------------------------------------------------
+  // A campaign or a design: its parts or points, and how far it has got
+  // -------------------------------------------------------------------------
+
+  function groupByName(name) { return S.groups.find((g) => g.name === name) || null; }
+
+  function openGroup(name) {
+    const g = groupByName(name);
+    if (!g) return;
+    S.e = null; S.g = name; S.t = null; S.where = []; S.sort = ""; S.p = {};
+    closePanel(true);
+    renderEntries();
+    writeHash();
+    clear($("tabs")); clear($("filterbar")); showError(null);
+    const head = clear($("head"));
+    head.append(h("h1", { text: g.name }));
+    head.append(h("div", { class: "meta" }, h("span", { class: "kind", text: g.kind }),
+      g.split ? h("span", { text: g.split }) : null, h("span", { text: g.progress })));
+    if (g.command) head.append(h("pre", { class: "cmd", text: g.command }));
+    const runs = S.entries.filter((e) => e.group === g.name);
+    head.append(h("div", { class: "actions" }, h("button", {
+      type: "button", class: "primary", disabled: runs.length < 2 ? true : null,
+      title: runs.length < 2 ? "comparing needs two runs or more" : null,
+      onclick: () => { S.tab = "compare"; S.p = { group: g.name }; openEntry(runs[0].id, true); },
+    }, "Compare its " + (g.kind === "design" ? "points" : "parts"))));
+    renderCli("qd " + (g.kind === "design" ? "doe" : "campaign") + " status " + shq(g.name));
+    const li = g.columns.indexOf("last_run");
+    const rows = g.rows.map((r) => r.map((v, j) => j === li && v ?
+      h("button", { type: "button", class: "link mono", text: v, onclick: (ev) => { ev.stopPropagation(); openEntry(v); } }) : v));
+    clear($("view")).append(h("div", { class: "card" },
+      h("h3", { text: g.rows.length + " " + (g.kind === "design" ? "points" : "parts") }),
+      plainTable(g.columns, rows, { numeric: g.columns.map((c, j) => ["hosts", "runs", "point", "block"].includes(c) ? j : -1) })));
+  }
+
+  // -------------------------------------------------------------------------
   // About: what the store says about this run
   // -------------------------------------------------------------------------
 
@@ -1146,7 +1346,11 @@
     });
     $("entry-filter").addEventListener("input", renderEntries);
     $("refresh").addEventListener("click", async () => {
-      try { await loadEntries(); if (S.e) await openEntry(S.e, true); } catch (err) { showError(err); }
+      try {
+        await loadEntries();
+        if (S.e) await openEntry(S.e, true);
+        else if (S.g) openGroup(S.g);
+      } catch (err) { showError(err); }
     });
     window.addEventListener("keydown", (ev) => {
       if (ev.key === "Escape" && !$("panel").hidden && !$("detail").open) closePanel();
@@ -1175,6 +1379,7 @@
       }
     }
     if (S.e) await openEntry(S.e, true);
+    else if (S.g && groupByName(S.g)) openGroup(S.g);
     else if (S.entries.length) await openEntry(S.entries[0].id);
     else renderView();
   }

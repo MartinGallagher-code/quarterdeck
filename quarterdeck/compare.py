@@ -44,14 +44,27 @@ def labels(n):
     return ["R%d" % (i + 1) for i in range(n)]
 
 
+def settings(tables):
+    """What the runs were, not what they measured: a design's factors and
+    the hosts' attributes, which differ between runs by intent."""
+    out = set()
+    for t in tables:
+        e = getattr(t, "entry", None)
+        if e is not None and hasattr(e, "setting_columns"):
+            out |= e.setting_columns()
+    return out
+
+
 def common_numeric(tables):
     """The numeric data columns every table has, in the first one's order,
-    bookkeeping left out."""
+    bookkeeping and the runs' settings left out."""
     from .stats import BOOKKEEPING
     first = tables[0]
+    skip = settings(tables)
     out = []
     for c in first.columns:
-        if c in VOLATILE or c in BOOKKEEPING or c in ("status", "error"):
+        if c in VOLATILE or c in BOOKKEEPING or c in ("status", "error") or \
+                c in skip:
             continue
         if all(t.has(c) and t.kind(c) in ("num", "mixed") for t in tables):
             out.append(c)
@@ -118,6 +131,60 @@ def compare(tables, column=None, key=None, drift=5.0, agg="median",
     res.key = _key_for(tables, key)
     _per_key(res, tables, column, agg, drift)
     return res
+
+
+def pick(st, refs=(), group=None, last=None):
+    """The runs to compare, oldest first: those named; a group's (a
+    campaign's parts or a design's points); or the last N runs like the
+    one named (5 by default)."""
+    if group:
+        es = [e for e in st.entries() if e.meta.get("group") == group]
+        if not es:
+            die("no runs in group %r (a campaign or a design's name)"
+                % group)
+        return es[-last:] if last else es
+    refs = list(refs) or ["latest"]
+    if len(refs) == 1 or last:
+        e = st.resolve(refs[-1])
+        if not hasattr(e, "captures"):
+            die("%s is a whole dataset, not a run: compare runs of it "
+                "(qd compare NAME --last N)" % e.id)
+        like = [x for x in st.entries() if (x.meta.get("kind"),
+                x.meta.get("command"), x.meta.get("name")) ==
+                (e.meta.get("kind"), e.meta.get("command"),
+                 e.meta.get("name"))]
+        ids = [x.id for x in like]
+        es = like[:ids.index(e.id) + 1][-(last or 5):]
+        if len(es) < 2:
+            die("%s is the only run of %r: compare needs another (or name "
+                "the runs to compare)" % (e.id, e.meta.get("name") or
+                                          e.meta.get("command")))
+        return es
+    return [st.resolve(r) for r in refs]
+
+
+def with_baseline(st, entries, ref):
+    """(entries, the baseline's index): the run named, where it is among
+    them, or put in front when it is not."""
+    if not ref:
+        return entries, 0
+    b = st.resolve(ref)
+    ids = [e.id for e in entries]
+    if b.id in ids:
+        return entries, ids.index(b.id)
+    return [b] + entries, 0
+
+
+def last_change(res, vals):
+    """The latest run against the baseline (the first run when the
+    baseline is the latest), in percent."""
+    last = vals[-1] if res.baseline != len(vals) - 1 else vals[0]
+    return pct(vals[res.baseline], last)
+
+
+def column_changes(res):
+    """With no column: [(column, [median per run], change)]."""
+    return [(c, meds, last_change(res, meds)) for c, meds in res.columns]
 
 
 def pct(a, b):
@@ -204,8 +271,7 @@ def wide_table(res):
     cols = list(res.key) + labs + ["change_pct", "flags"]
     rows = []
     for k, vals, flags in res.keys:
-        last = vals[-1] if res.baseline != len(vals) - 1 else vals[0]
-        d = pct(vals[res.baseline], last)
+        d = last_change(res, vals)
         rows.append(list(k) + [num(v) for v in vals] +
                     [("%.1f" % d) if d not in (None, float("inf"),
                                                float("-inf")) else "",

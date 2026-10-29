@@ -613,6 +613,14 @@ class Run(object):
         t.entry = self
         return t
 
+    def setting_columns(self):
+        """The columns that say what was run where, not what came back:
+        the design's factors and the hosts' attributes."""
+        names = [k for k, _ in split_attrs(self.meta.get("factors"))]
+        for h in self.store.host_rows(self.id):
+            names.extend(k for k, _ in split_attrs(h.get("attrs")))
+        return set(names)
+
     def _host_lead(self, hosts):
         """host, addr, its attributes, the run's design factors, pass."""
         attrs = []

@@ -4,9 +4,11 @@
 
 A small server, standard library only, on 127.0.0.1 unless told otherwise:
 one static page (quarterdeck/web/) and a JSON API over provost's store.  The
-page does no arithmetic of its own -- every figure, filter, group, diff and
-outlier comes back from the same functions `qd stats`, `qd diff` and the
-rest print, so the browser and the terminal cannot disagree about a number.
+page does no arithmetic of its own -- every figure, filter, group, diff,
+comparison and outlier comes back from the same functions `qd stats`,
+`qd diff`, `qd compare` and the rest print, so the browser and the terminal
+cannot disagree about a number.  Campaigns and designs are listed as
+`qd campaign status` and `qd doe status` list them.
 
 When datacenter_visualization is installed its viewer is served beside it at
 /floor/, with qd's overlays at /floor/files/, so "Floor plan" on any dataset
@@ -31,8 +33,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import VERSION
-from . import diff as diffmod, query, stats, table as tablemod, tools
-from .common import PROG, QdError, die, write_text
+from . import campaign as camp, compare as comparemod, diff as diffmod, \
+    doe as doemod, query, stats, table as tablemod, tools
+from .common import PROG, QdError, die, env_float, write_text
 from .store import cache_root, describe_entry, split_ref
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -123,7 +126,9 @@ class Api(object):
                         "created": m.get("created", ""),
                         "command": m.get("command", ""),
                         "summary": e.summary(), "hosts": m.get("hosts"),
-                        "rc": m.get("rc"),
+                        "rc": m.get("rc"), "group": m.get("group", ""),
+                        "part": m.get("part", ""),
+                        "factors": m.get("factors", ""),
                         "tables": [{"name": t["name"],
                                     "rows": t.get("rows", 0),
                                     "from": t.get("from", "")}
@@ -310,6 +315,80 @@ class Api(object):
                 "changed_total": len(res.changed),
                 "col_summary": res.col_summary}
 
+    def compare(self, q):
+        """N runs side by side: `qd compare`'s engine, its run picking
+        and baseline rule included."""
+        group = one(q, "group") or None
+        last = int(one(q, "last") or 0) or None
+        es, base = comparemod.with_baseline(
+            self.book, comparemod.pick(self.book, [one(q, "e") or "latest"],
+                                       group, last), one(q, "baseline"))
+        tables = [self.table(e.id, one(q, "t")) for e in es]
+        wh = [w for w in q.get("where", []) if w.strip()]
+        if wh:
+            tables = [t.derive(rows=query.where(t, wh)) for t in tables]
+        key = [k.strip() for k in (one(q, "key") or "").split(",")
+               if k.strip()] or None
+        drift = float(one(q, "drift") or env_float("DRIFT", 5.0))
+        agg = one(q, "agg") or "median"
+        res = comparemod.compare(tables, one(q, "c") or None, key, drift,
+                                 agg, base)
+        runs = []
+        for r in res.runs:
+            m = r["entry"].meta if r["entry"] is not None else {}
+            h = r["hosts"]
+            runs.append({"label": r["label"], "id": r["id"],
+                         "created": r["created"], "rows": r["rows"],
+                         "part": m.get("part", ""),
+                         "factors": m.get("factors", ""),
+                         "command": m.get("command", ""),
+                         "hosts_ok": ("%d/%d" % (h.get("ok", 0),
+                                                 h.get("total", 0)))
+                         if h else "",
+                         "stats": r.get("stats"),
+                         "change_pct": r.get("delta_pct")})
+        only = one(q, "changed") != "0"
+        keys, changed = [], 0
+        for k, vals, flags in res.keys:
+            changed += bool(flags)
+            if (flags or not only) and len(keys) < 500:
+                keys.append({"key": list(k), "values": vals,
+                             "change_pct": comparemod.last_change(res, vals),
+                             "flags": flags,
+                             "status": res.status.get(k)})
+        return {"runs": runs, "baseline": base, "column": res.column,
+                "unit": res.unit, "key": res.key, "drift": res.drift,
+                "agg": agg, "group": group, "notes": res.notes,
+                "numeric": comparemod.common_numeric(tables),
+                "columns": [{"column": c, "medians": meds, "change_pct": d}
+                            for c, meds, d in
+                            comparemod.column_changes(res)],
+                "keys": keys, "keys_total": len(res.keys),
+                "changed": changed, "only_changed": only}
+
+    def groups(self, q):
+        """The campaigns and designs in the store, how far each has got,
+        and its parts or points: what `qd campaign status` and `qd doe
+        status` print."""
+        out = []
+        for name, c in sorted(camp.load_all(self.book).items()):
+            summ, rows = camp.describe(self.book, c, quiet=True)
+            out.append({"kind": "campaign", "name": name,
+                        "command": c.command, "split": c.split,
+                        "progress": camp.progress(c, summ),
+                        "done": summ.get("done"),
+                        "total": summ.get("total", str(len(c.parts))),
+                        "columns": camp.STATUS_COLUMNS, "rows": rows})
+        for name in doemod.names(self.book):
+            row, rows, done = doemod.status_rows(self.book, name)
+            out.append({"kind": "design", "name": name,
+                        "command": row.get("command", ""),
+                        "progress": "%d of %d points measured"
+                        % (done, len(rows)),
+                        "done": str(done), "total": str(len(rows)),
+                        "columns": doemod.STATUS_COLUMNS, "rows": rows})
+        return {"groups": out}
+
     def raw(self, q):
         t = self.table(one(q, "e"), one(q, "t"))
         e = getattr(t, "entry", None)
@@ -409,7 +488,8 @@ ROUTES = {"/api/entries": "entries", "/api/entry": "entry_info",
           "/api/rows": "rows", "/api/column": "column",
           "/api/group": "group", "/api/pivot": "pivot",
           "/api/trend": "trend", "/api/diff": "diff", "/api/raw": "raw",
-          "/api/overlay": "overlay"}
+          "/api/overlay": "overlay", "/api/compare": "compare",
+          "/api/groups": "groups"}
 
 
 class Handler(BaseHTTPRequestHandler):

@@ -99,6 +99,58 @@ t_diff_defaults_to_the_last_same_run() {
     assert_contains "$out" "nothing earlier"
 }
 
+t_compare_is_the_terminal_s() {
+    seed
+    start_web
+    # host a moved 0.5 -> 0.6 between the two runs: past 5%, a change
+    out="$(get '/api/compare?e=latest&c=A')"
+    assert_contains "$out" '"label": "R2"'
+    assert_contains "$out" '"changed": 1'
+    assert_contains "$out" '"keys_total": 5'
+    assert_contains "$out" "R2 drift +20.0%"
+    assert_contains "$(qd compare latest -c A)" "R2 drift +20.0%"
+    # every key on request, the runs' own figures beside them
+    out="$(get '/api/compare?e=latest&c=A&changed=0')"
+    assert_contains "$out" '"key": ["e"]'
+    assert_contains "$out" '"median": 0.5'
+    # no column: the medians of every numeric column the runs share
+    out="$(get '/api/compare?e=latest')"
+    assert_contains "$out" '"numeric": ["A"]'
+    assert_contains "$out" '"column": "A", "medians"'
+    out="$(get '/api/compare?e=latest&c=nosuch')"
+    assert_contains "$out" "400"
+}
+
+t_campaigns_and_designs_are_listed() {
+    install_fake_ssh
+    for h in a b c d; do fake_host "$h"; done
+    printf 'a rack=r1\nb rack=r1\nc rack=r2\nd rack=r2\n' > hosts.txt
+    stand_in_doe
+    cat > bench.json <<'EOF'
+{"metadata": {"name": "Stream test"},
+ "factors": [{"name": "streams", "levels": ["1", "4"], "type": "continuous"}],
+ "responses": [{"name": "mbps", "optimize": "maximize"}],
+ "settings": {"operation": "full_factorial", "block_count": 1}}
+EOF
+    # shellcheck disable=SC2016  # expanded on the far side, not here
+    qdf doe run bench.json -s hosts.txt -q -- \
+        'echo "mbps: $(( 900 + 100 * {streams} ))"' > /dev/null
+    start_web
+    out="$(get /api/groups)"
+    assert_contains "$out" '"kind": "design"'
+    assert_contains "$out" '"name": "stream-test"'
+    assert_contains "$out" "2 of 2 points measured"
+    # the design's points compared: its factors on each run
+    out="$(get '/api/compare?group=stream-test&c=mbps')"
+    assert_contains "$out" '"factors": "streams=4"'
+    assert_contains "$out" "R2 drift"
+    # a factor is what the point was, not what it measured
+    out="$(get '/api/compare?group=stream-test')"
+    assert_contains "$out" '"numeric": ["mbps"]'
+    out="$(get /api/entries)"
+    assert_contains "$out" '"group": "stream-test"'
+}
+
 t_raw_export_and_overlay() {
     seed
     start_web
@@ -178,6 +230,8 @@ run_test "entries, rows, --where, a bad filter"     t_entries_rows_and_filters
 run_test "column figures match the CLI's"           t_column_figures_match_the_cli
 run_test "group, pivot, trend"                      t_group_pivot_trend
 run_test "diff defaults to the last same run"       t_diff_defaults_to_the_last_same_run
+run_test "compare: the terminal's verdict"           t_compare_is_the_terminal_s
+run_test "campaigns and designs, and their runs"     t_campaigns_and_designs_are_listed
 run_test "raw answers, export, overlay"             t_raw_export_and_overlay
 run_test "static page; nothing escapes its root"    t_static_page_and_no_escape
 run_test "app.js parses"                            t_app_js_parses

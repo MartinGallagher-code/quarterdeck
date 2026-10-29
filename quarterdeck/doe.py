@@ -182,6 +182,35 @@ def point_runs(st, name):
     return out
 
 
+def names(st):
+    """Every design in the store, in the order they were first filed."""
+    out = []
+    for r in st._read_own(DESIGNS):
+        if r.get("design") and r["design"] not in out:
+            out.append(r["design"])
+    return out
+
+
+STATUS_COLUMNS = ["point", "block", "factors", "runs", "last_run", "ok"]
+
+
+def status_rows(st, name):
+    """(the design's row, a STATUS_COLUMNS row per point, how many points
+    have been measured)."""
+    row, _, matrix = load(st, name)
+    runs = point_runs(st, name)
+    rows = []
+    for rid, blk, lv in points(matrix):
+        rs = runs.get(rid, [])
+        last = rs[-1] if rs else None
+        h = (last.meta.get("hosts") or {}) if last else {}
+        rows.append([str(rid), str(blk), " ".join("%s=%s" % kv for kv in lv),
+                     str(len(rs)), last.id if last else "",
+                     ("%d/%d" % (h.get("ok", 0), h.get("total", 0))) if h
+                     else ""])
+    return row, rows, sum(1 for r in rows if r[3] != "0")
+
+
 def responses(st, name, column, agg="median"):
     """[(run_id, value or None, n)]: each point's response, one number
     from all its runs' rows (hosts that answered)."""
