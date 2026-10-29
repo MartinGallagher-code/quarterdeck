@@ -149,6 +149,20 @@ t_key_value_answers_with_units() {
     assert_contains "$out" "max 32768"
 }
 
+t_a_blank_value_stays_blank() {
+    seed
+    # a setting a host could not read: `key:` and nothing, which provost
+    # reads as a section header over the lines after it
+    for h in node01 node02 node03; do
+        printf 'vm.swappiness: 60\nnet.core.rmem_max: \nvm.dirty_ratio: 20\nfs.file-max: 9\n' \
+            > "$FAKE_ROOT/$h/s"
+    done
+    run_qd -- cat s > out
+    out="$(qd show latest --cols host,vm.swappiness,vm.dirty_ratio --format csv)"
+    assert_contains "$out" "node02,60,20"
+    assert_not_contains "$(qd show latest --format csv | head -1)" "group"
+}
+
 t_json_number_and_csv_answers() {
     seed
     for h in node01 node02 node03; do
@@ -303,6 +317,7 @@ run_test "provost's rows name their host"            t_provost_rows_name_their_h
 run_test "run exits 0 when every host answers"        t_run_all_ok_exits_zero
 run_test "a failed command is not unreachable"        t_failed_command_is_failed_not_unreachable
 run_test "key: value answers, numbers with units"     t_key_value_answers_with_units
+run_test "a key: with no value stays blank"           t_a_blank_value_stays_blank
 run_test "json, number and csv answers"               t_json_number_and_csv_answers
 run_test "a host that printed nothing keeps its row"  t_a_host_that_printed_nothing_keeps_its_row
 run_test "df: one row per filesystem"                 t_df_table_is_one_row_per_filesystem

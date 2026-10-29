@@ -72,8 +72,8 @@ CATALOGUE = [
      "net.ipv4.tcp_max_syn_backlog vm.swappiness vm.dirty_ratio "
      "vm.dirty_background_ratio vm.overcommit_memory vm.max_map_count "
      "fs.file-max kernel.pid_max kernel.numa_balancing; do "
-     "printf '%s: %s\\n' \"$k\" \"$(sysctl -n \"$k\" 2>/dev/null | "
-     "tr '\\t' ' ')\"; done",
+     "v=$(tr '\\t' ' ' 2>/dev/null < \"/proc/sys/$(echo \"$k\" | tr . /)\"); "
+     "if [ -n \"$v\" ]; then printf '%s: %s\\n' \"$k\" \"$v\"; fi; done",
      "the kernel settings that move performance (network buffers, "
      "backlogs, congestion control, VM, file and pid limits)", ""),
     ("services", "command",
@@ -187,8 +187,10 @@ def available(p):
         return True, "shell"
     if kind == "script":
         path = script_path(how[0])
-        return (True, path) if path else (False, needs or "pip install "
-                                          "binnacle")
+        if path:
+            return True, path
+        return False, " -- ".join(x for x in (needs, "pip install binnacle")
+                                  if x)
     argv = tools.find_tool(how[0])
     if argv:
         return True, " ".join(argv)

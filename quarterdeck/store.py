@@ -156,7 +156,11 @@ def context_columns(meta):
     return out
 
 
-LONG_KV = (("field", "value"), ("key", "value"), ("name", "value"))
+LONG_KEYS = ("field", "key", "name")
+# What provost files beside a long key and value: its row number, and a
+# group -- a `key:` line with nothing after it (a setting not measured on
+# that host) reads to it as a section header, and the lines after carry it.
+LONG_EXTRA = ("n", "group")
 
 
 def widen(records):
@@ -166,8 +170,8 @@ def widen(records):
     are not that shape (a real table stays a table)."""
     if not records:
         return None
-    cols = [c for c, _ in records[0] if c != "n"]
-    if tuple(cols) not in LONG_KV:
+    cols = [c for c, _ in records[0] if c not in LONG_EXTRA]
+    if len(cols) != 2 or cols[0] not in LONG_KEYS or cols[1] != "value":
         return None
     out, seen = [], set()
     for rec in records:
