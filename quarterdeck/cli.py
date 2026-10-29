@@ -3,37 +3,48 @@
 """qd -- run it everywhere, keep what came back, read it any way you like.
 
 Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
+       qd probe [NAME...] [HOSTS]              ask by name: facts, sysctl, gpu
        qd do  [OPTIONS] -- TOOL ARGS...        mx, iperf, agree, reckon, ...
        qd import PATH...                       output already on disk
+       qd split [HOSTS] --by rack|--into N...  one host list into several
+       qd campaign new|run|status|retry|ls     a system in parts, progress kept
+       qd doe plan|run|status|analyze          designed experiments
        qd log [RUN]                            what the store holds
        qd view [RUN]                           full-screen explorer
        qd show|stats|freq|hist|outliers|pivot|trend RUN ...
        qd diff [OLD] NEW                       what changed between two
+       qd compare RUN --last N -c COL          N runs side by side
        qd export RUN [--format overlay]        CSV, JSON, the viewer's TSV
        qd web                                  the store in a browser
-       qd floor RUN --layout   floor.dc        paint it on the floor plan
+       qd floor RUN --layout floor.dc          paint it on the floor plan
        qd hosts | doctor | hints | help
 
 Examples:
   qd run --servers hosts.txt -- uname -r
-  qd run -S 'node[01-24]' -- 'sysctl net.core.somaxconn vm.swappiness'
-  qd run --layout floor.dc --select 'rack[1-3]' -- cat /proc/loadavg
+  qd probe facts inventory -s hosts.txt
+  qd compare facts -c cpu.busy_pct --last 5
+  qd split -s hosts.txt --by rack --out lists/
+  qd campaign new burn -s hosts.txt --by rack -- ./burnin.sh
+  qd campaign run burn                  qd campaign status burn
+  qd doe run iperf.json -s hosts.txt -- 'iperf3 -c peer -P {streams}'
+  qd doe analyze iperf -c mbps
   qd do -- mx run --for 60
-  qd do -- agree script why-slow --servers hosts.txt --fleet-csv -- --csv
-  qd stats latest A --by rack           qd freq latest A
-  qd outliers latest mbps               qd diff latest
+  qd stats latest A --by rack           qd outliers latest mbps
   qd view latest                        qd web
 
 RUN is latest, latest~1, a run id or a unique part of one, a run's
 --name, ds:NAME for a whole provost dataset, or a file or directory to read
 without filing it.  Add :TABLE to pick one of a run's tables (latest:hosts).
 
-Everything is kept in provost's store (provost ls, provost source cNNNN):
---store, QD_STORE, else provost's own choice.
+Everything is kept in provost's store (provost ls, provost source N):
+--store, QD_STORE, else provost's own choice.  binnacle (pip install
+binnacle) gives qd its probes' instruments and campaigns' muster;
+design_of_experiments (pip install doehelper) its designs.
 
 Exit status
   0   done, and every host answered
-  1   a finding: a host that did not answer, a diff that differs
+  1   a finding: a host that did not answer, a diff or a compare that
+      differs
   2   usage error, or something could not be read or written
 
 Full manual: https://github.com/MartinGallagher-code/quarterdeck#readme
@@ -275,22 +286,62 @@ def cmd_run(args):
         die("nothing to run: put the command after --, e.g.\n"
             "  %s run --servers hosts.txt -- uptime" % PROG)
     hs = collect(args)
-    if args.limit is not None and len(hs) > args.limit and not args.yes:
-        die("refusing to run on %d hosts: --limit is %d (add --yes)"
-            % (len(hs), args.limit))
+    check_limit(args, hs)
     push = list(args.push or [])
     for f in push:
         if not os.path.isfile(f):
             die("no such file to push: %s" % f)
     if args.script:
         push.append(args.script)
-        command = " ".join(
-            [shlex.quote("%s/%s" % (args.remote_dir,
-                                    os.path.basename(args.script)))] +
-            [shlex.quote(a) for a in cmd])
+        command = remote_script(args, args.script, cmd)
     else:
         command = " ".join(cmd)
     check_danger(command, args.yes)
+    label = args.name or (os.path.basename(args.script) if args.script
+                          else os.path.basename(command.split()[0])
+                          if command.split() else "run")
+    job = fleet_run(args, hs, command, label, push)
+    if job is None:
+        return 0
+    report_run(args, command, hs, job)
+    return job.rc
+
+
+def check_limit(args, hs):
+    if args.limit is not None and len(hs) > args.limit and not args.yes:
+        die("refusing to run on %d hosts: --limit is %d (add --yes)"
+            % (len(hs), args.limit))
+
+
+def remote_script(args, script, words):
+    return " ".join(
+        [shlex.quote("%s/%s" % (args.remote_dir, os.path.basename(script)))] +
+        [shlex.quote(a) for a in words])
+
+
+class Job(object):
+    """One fan-out, done and filed: what `qd run`, a probe, a campaign's
+    part and a design point each are."""
+
+    def __init__(self, results, interrupted, entry, table):
+        self.results = results
+        self.interrupted = interrupted
+        self.entry = entry
+        self.table = table
+        self.passes = max(r.pass_no for r in results)
+        self.last = [r for r in results if r.pass_no == self.passes]
+        self.rc = 0 if all(r.outcome == fleet.OK for r in self.last) else 1
+
+
+def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
+              store=True):
+    """Run `command` on every host, as args says (ssh, jobs, timeout,
+    passes), and file what came back as one run named `label`.
+
+    context: (key, value) pairs every answer's prologue carries besides
+    run and host -- a campaign's part, a design point's factors -- so they
+    are columns of provost's rows too.  extra: fields of the qd.runs row
+    (group, part, factors).  Returns a Job, or None for --dry-run."""
     if args.count < 0 or (args.count == 0 and not args.every):
         die("--count wants 1 or more (0, meaning until Ctrl-C, needs "
             "--every)")
@@ -303,9 +354,9 @@ def cmd_run(args):
         for h in hs:
             out(" ".join(shlex.quote(a) for a in runner.ssh_argv(
                 h, runner.wrap(command))))
-        return 0
+        return None
     st = prov = None
-    if not args.no_store:
+    if store and not args.no_store:
         # before the fleet, not after: answers with nowhere to go are lost
         st = store_of(args)
         prov = filing.Provost(st)
@@ -314,7 +365,7 @@ def cmd_run(args):
     t0 = time.time()
     created = now_iso()
     results, interrupted = fleet.run_passes(
-        hs, lambda h, k: runner.run_one(h, command, push or None,
+        hs, lambda h, k: runner.run_one(h, command, list(push) or None,
                                         not args.keep_remote, k),
         args.jobs, count, args.every or 0)
     if not results:
@@ -322,44 +373,38 @@ def cmd_run(args):
     took = round(time.time() - t0, 2)
     passes = max(r.pass_no for r in results)
     last = [r for r in results if r.pass_no == passes]
-    entry = None
-    if st is not None:
-        label = args.name or (os.path.basename(args.script) if args.script
-                              else os.path.basename(command.split()[0])
-                              if command.split() else "run")
-        rid = new_run_id(st, label)
-        ds = filing.dataset_name(label)
-        b = filing.Batch()
-        for r in results:
-            if r.stdout.strip():
-                pairs = [("run", rid), ("host", r.host.name)] + (
-                    [("pass", str(r.pass_no))] if passes > 1 else []) + \
-                    list(r.host.attrs)
-                b.add(ds, filing.prologue(pairs) + filing.body(r.stdout))
-        ncap = len(b.inputs)
-        b.add_own(storemod.HOSTS, filing.own_tsv(
-            storemod.HOST_COLUMNS, [host_row(rid, r) for r in results]))
-        counts = outcome_counts(last)
-        b.add_own(storemod.RUNS, filing.own_tsv(storemod.RUN_COLUMNS, [run_row(
-            rid, "run", label, command, created, duration_s=took,
-            hosts=len(hs), ok=counts.get(fleet.OK, 0),
-            failed=counts.get(fleet.FAILED, 0),
-            timeout=counts.get(fleet.TIMEOUT, 0),
-            unreachable=counts.get(fleet.UNREACHABLE, 0),
-            push_failed=counts.get(fleet.PUSH_FAILED, 0), passes=passes,
-            every=args.every, captures=ncap,
-            notes=("interrupted after %s" % plural(passes, "pass", "passes"))
-            if interrupted else None)]))
-        if ncap > 8 and sys.stderr.isatty():
-            sys.stderr.write("%s run: filing %s through provost ...\n"
-                             % (PROG, plural(ncap, "answer")))
-        notes = file_batch(prov, b, "answers")
-        entry = filed(st, rid, notes, b)
-        t = entry.load("data")
-    else:
-        t = unfiled_table(results, passes)
-    report_run(args, command, hs, results, t, entry, passes, interrupted)
-    return 0 if all(r.outcome == fleet.OK for r in last) else 1
+    if st is None:
+        return Job(results, interrupted, None, unfiled_table(results, passes))
+    rid = new_run_id(st, label)
+    ds = filing.dataset_name(label)
+    b = filing.Batch()
+    for r in results:
+        if r.stdout.strip():
+            pairs = [("run", rid), ("host", r.host.name)] + (
+                [("pass", str(r.pass_no))] if passes > 1 else []) + \
+                list(context) + list(r.host.attrs)
+            b.add(ds, filing.prologue(pairs) + filing.body(r.stdout))
+    ncap = len(b.inputs)
+    b.add_own(storemod.HOSTS, filing.own_tsv(
+        storemod.HOST_COLUMNS, [host_row(rid, r) for r in results]))
+    counts = outcome_counts(last)
+    fields = dict(extra or {})
+    b.add_own(storemod.RUNS, filing.own_tsv(storemod.RUN_COLUMNS, [run_row(
+        rid, fields.pop("kind", "run"), label, command, created,
+        duration_s=took, hosts=len(hs), ok=counts.get(fleet.OK, 0),
+        failed=counts.get(fleet.FAILED, 0),
+        timeout=counts.get(fleet.TIMEOUT, 0),
+        unreachable=counts.get(fleet.UNREACHABLE, 0),
+        push_failed=counts.get(fleet.PUSH_FAILED, 0), passes=passes,
+        every=args.every, captures=ncap,
+        notes=("interrupted after %s" % plural(passes, "pass", "passes"))
+        if interrupted else None, **fields)]))
+    if ncap > 8 and sys.stderr.isatty():
+        sys.stderr.write("%s: filing %s through provost ...\n"
+                         % (PROG, plural(ncap, "answer")))
+    notes = file_batch(prov, b, "answers")
+    entry = filed(st, rid, notes, b)
+    return Job(results, interrupted, entry, entry.load("data"))
 
 
 def unfiled_table(results, passes):
@@ -387,8 +432,9 @@ def data_columns(t):
     return [c for c in rest if c != "dataset"]
 
 
-def report_run(args, command, hs, results, t, entry, passes, interrupted):
-    last = [r for r in results if r.pass_no == passes]
+def report_run(args, command, hs, job, title=None):
+    t, entry = job.table, job.entry
+    passes, interrupted, last = job.passes, job.interrupted, job.last
     counts = outcome_counts(last)
     parts = ["%d ok" % counts.get(fleet.OK, 0)] + [
         "%d %s" % (counts[k], k) for k in (fleet.FAILED, fleet.TIMEOUT,
@@ -404,8 +450,9 @@ def report_run(args, command, hs, results, t, entry, passes, interrupted):
         if dcols:
             shape += ": " + ", ".join(dcols[:6]) + (" ..." if len(dcols) > 6
                                                      else "")
-    lines = ["%s run -- %s: %s, %s%s   [%s]" % (
-        PROG, command if len(command) < 60 else command[:57] + "...",
+    lines = ["%s -- %s: %s, %s%s   [%s]" % (
+        title or (PROG + " run"),
+        command if len(command) < 60 else command[:57] + "...",
         plural(len(hs), "host"), ", ".join(parts),
         (", %d passes" % passes) if passes > 1 else "", shape)]
     if interrupted:
@@ -1297,6 +1344,626 @@ def cmd_floor(args):
 
 
 # ---------------------------------------------------------------------------
+# compare: N runs side by side
+# ---------------------------------------------------------------------------
+
+def compare_entries(st, args):
+    """The runs to compare, oldest first: those named; --group NAME, a
+    campaign's parts or a design's points; or the last N runs like REF."""
+    if args.group:
+        es = [e for e in st.entries() if e.meta.get("group") == args.group]
+        if not es:
+            die("no runs in group %r (a campaign or a design's name)"
+                % args.group)
+        return es[-args.last:] if args.last else es
+    refs = args.refs or ["latest"]
+    if len(refs) == 1 or args.last:
+        e = st.resolve(refs[-1])
+        if not hasattr(e, "captures"):
+            die("%s is a whole dataset, not a run: compare runs of it "
+                "(qd compare NAME --last N)" % e.id)
+        like = [x for x in st.entries() if (x.meta.get("kind"),
+                x.meta.get("command"), x.meta.get("name")) ==
+                (e.meta.get("kind"), e.meta.get("command"),
+                 e.meta.get("name"))]
+        ids = [x.id for x in like]
+        upto = like[:ids.index(e.id) + 1]
+        es = upto[-(args.last or 5):]
+        if len(es) < 2:
+            die("%s is the only run of %r: compare needs another (or name "
+                "the runs to compare)" % (e.id, e.meta.get("name") or
+                                          e.meta.get("command")))
+        return es
+    return [st.resolve(r) for r in refs]
+
+
+def cmd_compare(args):
+    from . import compare as comparemod
+    st = store_of(args)
+    entries = compare_entries(st, args)
+    baseline = 0
+    if args.baseline:
+        b = st.resolve(args.baseline)
+        ids = [e.id for e in entries]
+        if b.id in ids:
+            baseline = ids.index(b.id)
+        else:
+            entries = [b] + entries
+    tables = [e.load(args.table) for e in entries]
+    if args.where:
+        tables = [t.derive(rows=query.where(t, args.where)) for t in tables]
+    key = [k.strip() for k in args.key.split(",")] if args.key else None
+    res = comparemod.compare(tables, args.column, key, args.drift, args.agg,
+                             baseline)
+    lines = compare_report(res, args)
+    emit(args, comparemod.wide_table(res), lines)
+    return 1 if any(flags for _, _, flags in res.keys) else 0
+
+
+def compare_report(res, args):
+    from . import compare as comparemod
+    w = width_of(args)
+    what = res.column or "every numeric column"
+    lines = ["%s compare -- %d runs, %s by %s (baseline %s; a change is a "
+             "median past %s%% or a status that is not ok)" % (
+                 PROG, len(res.runs), what, ",".join(res.key),
+                 res.runs[res.baseline]["label"], stats.fmt_num(res.drift))]
+    for r in res.runs:
+        e = r["entry"]
+        bits = []
+        if e is not None:
+            m = e.meta
+            for k in ("part", "factors"):
+                if m.get(k):
+                    bits.append("%s %s" % (k, m[k]))
+            bits.append(m.get("command") or "")
+        lines.append("  %-4s %s  %s" % (r["label"], r["id"],
+                                        "  ".join(b for b in bits if b)))
+    for n in res.notes:
+        lines.append("  note  %s" % n)
+    lines.append("")
+    if res.column:
+        st_t = comparemod.summary_table(res)
+        show = st_t.derive(columns=["run", "hosts_ok", "n", "median", "mean",
+                                    "min", "p95", "max", "change_pct"])
+        unit = (" (%s)" % res.unit) if res.unit else ""
+        lines.append("  %s%s" % (res.column, unit))
+        lines.extend(render.render_table(show, width=w, indent="  "))
+    elif res.columns:
+        cols = ["column"] + [r["label"] for r in res.runs] + ["change_pct"]
+        rows = []
+        for c, meds in res.columns:
+            d = comparemod.pct(meds[res.baseline], meds[-1])
+            rows.append([c] + [comparemod.num(m) for m in meds] +
+                        [("%.1f" % d) if d not in (None, float("inf"),
+                                                   float("-inf")) else ""])
+        lines.append("  medians")
+        lines.extend(render.render_rows(cols, rows,
+                                        numeric=range(1, len(cols)),
+                                        width=w, indent="  "))
+    flagged = [(k, v, f) for k, v, f in res.keys if f]
+    lines.append("")
+    lines.append("  %d of %s changed" % (len(flagged),
+                                         plural(len(res.keys), "key")))
+    if flagged:
+        lim = len(flagged) if args.limit == 0 else args.limit
+        t = comparemod.wide_table(res)
+        rows = [r for r in t.rows if r[-1]][:lim]
+        lines.extend(render.render_rows(t.columns, rows, max_cell=48,
+                                        width=w, indent="  "))
+        if len(flagged) > lim:
+            lines.append("  ... %d more: --limit 0 lists every one"
+                         % (len(flagged) - lim))
+    tips = []
+    if res.column and flagged:
+        tips.append(("%s show %s --where %s" % (
+            PROG, res.runs[-1]["id"], "%s=%s" % (res.key[0],
+                                                flagged[0][0][0])),
+            "the latest run's rows for the first key that changed"))
+    if not res.column and res.columns:
+        tips.append(("%s compare ... -c %s" % (PROG, res.columns[0][0]),
+                     "host by host, for one column"))
+    tips.append(("%s compare ... --format csv" % PROG,
+                 "every key's value per run, for a spreadsheet"))
+    lines.extend(next_steps(tips))
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# split: one host list into several
+# ---------------------------------------------------------------------------
+
+SPLIT_MODES = ("by", "into", "deal", "size", "random", "ab", "canary",
+               "pairs", "reachable", "answers")
+
+
+def split_groups(args, hs, st=None):
+    from . import split as splitmod
+    chosen = [m for m in SPLIT_MODES if getattr(args, "split_" + m, None)
+              not in (None, False)]
+    if len(chosen) != 1:
+        die("say how to split, once: --by ATTR, --into N, --deal N, --size "
+            "N, --random N, --ab, --canary N, --pairs, --reachable or "
+            "--answers RUN%s" % (" (got %s)" % ", ".join(
+                "--" + c for c in chosen) if chosen else ""))
+    m = chosen[0]
+    if m == "by":
+        return splitmod.by_attr(hs, args.split_by), "by %s" % args.split_by
+    if m in ("into", "deal"):
+        n = getattr(args, "split_" + m)
+        return splitmod.into(hs, n, deal=(m == "deal")), \
+            "%d shards%s" % (n, ", dealt" if m == "deal" else "")
+    if m == "size":
+        return splitmod.waves(hs, args.split_size), \
+            "waves of %d" % args.split_size
+    if m == "random":
+        return splitmod.at_random(hs, args.split_random, args.seed,
+                                  args.stratify), \
+            "%d at random%s%s" % (args.split_random,
+                                  " by " + args.stratify if args.stratify
+                                  else "", ", seed %s" % args.seed
+                                  if args.seed is not None else "")
+    if m == "ab":
+        return splitmod.ab(hs, args.seed, args.stratify), "A/B halves"
+    if m == "canary":
+        return splitmod.canary(hs, args.split_canary), \
+            "canary of %d" % args.split_canary
+    if m == "pairs":
+        return splitmod.pairs(hs, args.ring), "pairs" + (
+            " in a ring" if args.ring else "")
+    if m == "reachable":
+        return splitmod.reachable(hs, tools.find_tool("reachable")), \
+            "reachable or not"
+    e = (st or store_of(args)).resolve(args.split_answers)
+    return splitmod.by_answers(hs, e), "by answer in %s" % e.id
+
+
+def hosts_of_run(e):
+    from .hosts import parse_host_token
+    t = e.load("hosts")
+    out = []
+    for r in t.rows:
+        name = r[t.index("host")]
+        addr = r[t.index("addr")] if t.has("addr") and \
+            r[t.index("addr")] else ""
+        attrs = [(c, r[t.index(c)]) for c in t.columns[1:]
+                 if c not in ("addr", "pass", "ts", "status", "rc",
+                              "duration_s", "bytes", "error", "stderr",
+                              "capture") and r[t.index(c)]]
+        if not any(h.name == name for h in out):
+            out.append(parse_host_token("%s=%s" % (name, addr) if addr
+                                        else name, attrs))
+    return out
+
+
+def any_hosts_given(args):
+    return bool(args.servers or args.server or args.layout or
+                env("SERVERS") or os.path.isfile("hosts.txt") or
+                os.path.isfile("servers.txt"))
+
+
+def cmd_split(args):
+    from . import split as splitmod
+    st = None
+    if args.split_answers and not any_hosts_given(args):
+        st = store_of(args)
+        hs = hosts_of_run(st.resolve(args.split_answers))
+    else:
+        hs = collect(args)
+    groups, how = split_groups(args, hs, st)
+    fmt = args.format or "text"
+    if fmt != "text":
+        t = splitmod.as_table(groups)
+        emit(args, t, [])
+        return 0
+    paths = []
+    if args.out:
+        paths = splitmod.write_lists(groups, args.out, args.prefix or "",
+                                     how)
+    lines = ["%s split -- %s into %s, %s" % (
+        PROG, plural(len(hs), "host"), plural(len(groups), "list"), how)]
+    rows = []
+    for i, (g, members) in enumerate(groups):
+        names = [h.name for h in members]
+        rows.append([g, str(len(members)), paths[i] if paths else "",
+                     label_list(names, False, 6)])
+    lines.extend(render.render_rows(["list", "hosts", "file", "members"],
+                                    rows, numeric=[1], max_cell=60,
+                                    width=width_of(args), indent="  "))
+    empty = [g for g, members in groups if not members]
+    if empty:
+        lines.append("  (empty: %s)" % ", ".join(empty))
+    tips = []
+    if paths:
+        tips.append(("%s run -s %s -- ..." % (PROG, paths[0]),
+                     "one list at a time"))
+        tips.append(("%s campaign new NAME -s ... %s -- ..." % (
+            PROG, split_flag(args)), "every list in turn, progress kept"))
+    else:
+        tips.append(("%s split ... --out lists/" % PROG,
+                     "write each list to a file"))
+    lines.extend(next_steps(tips))
+    sys.stdout.write(render.page(lines))
+    return 0
+
+
+def split_flag(args):
+    for m in SPLIT_MODES:
+        v = getattr(args, "split_" + m, None)
+        if v not in (None, False):
+            return "--%s" % m if v is True else "--%s %s" % (m, v)
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# probe: the catalogue
+# ---------------------------------------------------------------------------
+
+def cmd_probe(args):
+    from . import probes
+    if not args.names:
+        rows = []
+        for name, kind, how, what, needs in probes.CATALOGUE:
+            ok, where = probes.available((name, kind, how, what, needs))
+            rows.append([name, kind, "yes" if ok else "no: " + where, what])
+        lines = ["%s probe -- what to ask a fleet, by name" % PROG, ""]
+        lines.extend(render.render_rows(["probe", "kind", "here", "what"],
+                                        rows, max_cell=70,
+                                        width=width_of(args), indent="  "))
+        lines.append("")
+        lines.append("  groups: " + "; ".join(
+            "%s = %s" % (g, " ".join(ms))
+            for g, ms in sorted(probes.GROUPS.items())))
+        lines.extend(next_steps([
+            ("%s probe facts -s hosts.txt" % PROG,
+             "two hundred readings per host, from why-slow"),
+            ("%s probe inventory -s hosts.txt" % PROG,
+             "what every host is: os, disks, mounts, NUMA, GPUs, packages"),
+            ("%s compare facts -c cpu.busy_pct --last 5" % PROG,
+             "the same probe over time")]))
+        sys.stdout.write(render.page(lines))
+        return 0
+    names = probes.expand(args.names)
+    missing = []
+    for n in names:
+        ok, where = probes.available(probes.get(n))
+        if not ok:
+            missing.append("%s (%s)" % (n, where))
+    if missing:
+        die("not available here: %s" % "; ".join(missing))
+    hs = collect(args)
+    check_limit(args, hs)
+    worst = 0
+    for n in names:
+        name, kind, how, what, needs = probes.get(n)
+        if kind == "tool":
+            rc = probe_tool(args, name, how, hs)
+        else:
+            if kind == "script":
+                # run by python3, not as an executable: a file copied out
+                # of site-packages has no x bit
+                path = probes.script_path(how[0])
+                command = "python3 " + remote_script(args, path, how[1])
+                push = [path]
+            else:
+                command, push = how, []
+            job = fleet_run(args, hs, command, name, push,
+                            extra={"tool": "probe"})
+            if job is None:
+                continue
+            report_run(args, what, hs, job,
+                       title="%s probe %s" % (PROG, name))
+            rc = job.rc
+        worst = max(worst, rc)
+    return worst
+
+
+def probe_tool(args, name, how, hs):
+    """A probe that is a tool driving the fleet itself: run here with a
+    host file made for it, and read back as `qd do` reads it."""
+    tool, words = how
+    st = store_of(args)
+    prov = filing.Provost(st)
+    prov.require("keep what it finds")
+    work = tempfile.mkdtemp(prefix="qd-probe-")
+    try:
+        hosts_file = os.path.join(work, "hosts.txt")
+        write_text(hosts_file, "".join(h.token(plain=True) + "\n"
+                                       for h in hs))
+        cmd = [tool] + [w.replace("{hosts}", hosts_file).replace(
+            "{out}", os.path.join(work, name + ".tsv")) for w in words]
+        cmd = resolve_argv(cmd)
+        ns = argparse.Namespace(**dict(vars(args), no_import=False,
+                                       import_=None))
+        cmdline = " ".join(shlex.quote(a) for a in [tool] + words)
+        return _do(ns, cmd, st, prov, tool, name, cmdline, work)
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# campaign: a system in parts, muster keeping count
+# ---------------------------------------------------------------------------
+
+def cmd_campaign(args):
+    from . import campaign as camp
+    st = store_of(args)
+    what = args.action
+    if what == "ls":
+        cs = camp.load_all(st)
+        if not cs:
+            out("no campaigns in the store %s yet: %s campaign new NAME ..."
+                % (st.shown(), PROG))
+            return 0
+        rows = []
+        for name in sorted(cs):
+            c = cs[name]
+            summ, _ = camp.describe(st, c)
+            rows.append([name, str(len(c.parts)),
+                         "%s/%s" % (summ.get("done", "?"),
+                                    summ.get("total", len(c.parts))),
+                         c.split, c.command[:50]])
+        sys.stdout.write(render.page(render.render_rows(
+            ["campaign", "parts", "done", "split", "command"], rows,
+            numeric=[1], width=width_of(args))))
+        return 0
+    if not args.name:
+        die("which campaign? %s campaign %s NAME" % (PROG, what))
+    if what == "new":
+        cmd = strip_dashes(args.command)
+        if not cmd:
+            die("a campaign runs a command: %s campaign new NAME -s hosts "
+                "--by rack -- COMMAND" % PROG)
+        command = " ".join(cmd)
+        check_danger(command, args.yes)
+        prov = filing.Provost(st)
+        prov.require("keep the campaign")
+        if args.name in camp.load_all(st):
+            die("there is a campaign %s already (`%s campaign status %s`)"
+                % (args.name, PROG, args.name))
+        hs = collect(args)
+        groups, how = split_groups(args, hs, st)
+        groups = [(g, members) for g, members in groups if members]
+        pool = os.path.abspath(args.pool) if args.pool else \
+            camp.default_pool(args.name)
+        camp.define(st, prov, args.name, groups, command, how, pool)
+        lines = ["%s campaign -- %s: %s, %s, %s" % (
+            PROG, args.name, plural(len(groups), "part"),
+            plural(sum(len(m) for _, m in groups), "host"), how),
+            "  pool     %s (muster's: `muster status --pool %s`)"
+            % (pool, pool)]
+        lines.extend(next_steps([
+            ("%s campaign run %s" % (PROG, args.name),
+             "every part in turn (--parts N for some)"),
+            ("%s campaign run %s   (in another terminal)" % (PROG, args.name),
+             "a second worker: muster never hands out a part twice")]))
+        sys.stdout.write(render.page(lines))
+        return 0
+    c = camp.load(st, args.name)
+    if what == "status":
+        summ, rows = camp.describe(st, c)
+        lines = ["%s campaign -- %s: %s, %s" % (
+            PROG, c.name, plural(len(c.parts), "part"), c.split),
+            "  command  %s" % c.command,
+            camp.progress_line(summ, len(c.parts)), ""]
+        t = tablemod.Table(["part", "hosts", "state", "runs", "last_run",
+                            "ok", "verdict", "finished"], rows, "parts")
+        lines.extend(render.render_table(t, width=width_of(args),
+                                         indent="  "))
+        failed = [r[0] for r in rows if r[6] == "hosts failed"]
+        tips = []
+        if summ and summ.get("available", "0") not in ("0", ""):
+            tips.append(("%s campaign run %s" % (PROG, c.name),
+                         "carry on: %s left" % summ["available"]))
+        if failed:
+            tips.append(("%s campaign retry %s" % (PROG, c.name),
+                         "run the %s that had failures again"
+                         % plural(len(failed), "part")))
+        tips.append(("%s compare --group %s -c COLUMN" % (PROG, c.name),
+                     "the parts side by side"))
+        lines.extend(next_steps(tips))
+        if (args.format or "text") != "text":
+            emit(args, t, [])
+        else:
+            sys.stdout.write(render.page(lines))
+        return 0
+    if what == "retry":
+        parts = camp.retry(c, st, args.parts_named)
+        out("%s campaign -- %s: %s back in the pool%s" % (
+            PROG, c.name, plural(len(parts), "part"),
+            (": " + ", ".join(parts)) if parts else
+            " (none had failures)"))
+        return 0
+    if what != "run":
+        die("unknown campaign action %r (new, run, status, retry, ls)" % what)
+    filing.Provost(st).require("keep the parts")
+    done, worst = 0, 0
+    limit = args.parts or 10 ** 9
+    while done < limit:
+        part, held = camp.take(c, args.lease)
+        if part is None:
+            break
+        try:
+            hs = c.hosts(part)
+            job = fleet_run(args, hs, c.command, c.name,
+                            context=[("campaign", c.name), ("part", part)],
+                            extra={"group": c.name, "part": part})
+        except BaseException:
+            camp.finish(c, held, done=False)   # back in the pool
+            raise
+        camp.finish(c, held, done=True)
+        done += 1
+        if job is None:
+            continue
+        worst = max(worst, job.rc)
+        h = outcome_counts(job.last)
+        out("%s campaign %s -- part %s: %d/%d ok  (%s)" % (
+            PROG, c.name, part, h.get(fleet.OK, 0), len(hs), job.entry.id
+            if job.entry else "not kept"))
+    st.reset()
+    summ, _ = camp.describe(st, c)
+    out(camp.progress_line(summ, len(c.parts)).strip())
+    if not done:
+        out("  nothing was left to take: `%s campaign status %s`"
+            % (PROG, c.name))
+    return worst
+
+
+# ---------------------------------------------------------------------------
+# doe: designed experiments, doe designing and analysing
+# ---------------------------------------------------------------------------
+
+def cmd_doe(args):
+    from . import doe as doemod
+    what = args.action
+    if what == "plan":
+        cfg = doemod.read_config(args.target)
+        matrix = doemod.generate(cfg, args.seed)
+        pts = doemod.points(matrix)
+        names = matrix.get("factor_names") or []
+        rows = [[str(rid), str(blk)] + [v for _, v in lv]
+                for rid, blk, lv in pts]
+        lines = ["%s doe -- %s: %s of %s, %s" % (
+            PROG, doemod.design_name(cfg, args.target, args.name),
+            plural(len(pts), "point"), plural(len(names), "factor"),
+            matrix.get("operation", "?"))]
+        lines.extend(render.render_rows(["point", "block"] + names, rows,
+                                        numeric=[0, 1], width=width_of(args),
+                                        indent="  "))
+        lines.extend(next_steps([(
+            "%s doe run %s -s hosts.txt -- 'COMMAND %s'" % (
+                PROG, args.target, " ".join("{%s}" % n for n in names)),
+            "measure every point on the fleet")]))
+        sys.stdout.write(render.page(lines))
+        return 0
+    st = store_of(args)
+    if what == "run":
+        return doe_run(args, st, doemod)
+    if what == "status":
+        row, cfg, matrix = doemod.load(st, args.target)
+        runs = doemod.point_runs(st, args.target)
+        rows = []
+        for rid, blk, lv in doemod.points(matrix):
+            rs = runs.get(rid, [])
+            last = rs[-1] if rs else None
+            h = (last.meta.get("hosts") or {}) if last else {}
+            rows.append([str(rid), str(blk), " ".join(
+                "%s=%s" % kv for kv in lv), str(len(rs)),
+                last.id if last else "",
+                ("%d/%d" % (h.get("ok", 0), h.get("total", 0))) if h
+                else ""])
+        done = sum(1 for r in rows if r[3] != "0")
+        lines = ["%s doe -- %s: %d of %s measured" % (
+            PROG, args.target, done, plural(len(rows), "point")),
+            "  command  %s" % row.get("command", "")]
+        lines.extend(render.render_rows(
+            ["point", "block", "factors", "runs", "last_run", "ok"], rows,
+            numeric=[0, 1, 3], width=width_of(args), indent="  "))
+        tips = []
+        if done < len(rows):
+            tips.append(("%s doe run CONFIG ... --name %s" % (
+                PROG, args.target), "measure the rest (measured points "
+                "are kept, not run again)"))
+        tips.append(("%s doe analyze %s -c COLUMN" % (PROG, args.target),
+                     "effects, interactions, ANOVA: doe's analysis"))
+        lines.extend(next_steps(tips))
+        sys.stdout.write(render.page(lines))
+        return 0
+    if what == "analyze":
+        if not args.column:
+            die("analyze what? -c COLUMN: the response, as qd show names it")
+        text, resp = doemod.analyze(st, args.target, args.column, args.agg,
+                                    args.optimize)
+        _, _, matrix = doemod.load(st, args.target)
+        lv = dict((rid, " ".join("%s=%s" % kv for kv in levels))
+                  for rid, _, levels in doemod.points(matrix))
+        rows = [[str(rid), lv.get(rid, ""), str(n),
+                 stats.fmt_num(v) if v is not None else ""]
+                for rid, v, n in resp]
+        lines = ["%s doe -- %s: %s per point (%s over the hosts that "
+                 "answered)" % (PROG, args.target, args.column, args.agg)]
+        lines.extend(render.render_rows(
+            ["point", "factors", "samples", args.column], rows,
+            numeric=[0, 2, 3], width=width_of(args), indent="  "))
+        lines.append("")
+        lines.append("  doe analyze:")
+        lines.extend("  " + ln for ln in text.splitlines())
+        sys.stdout.write(render.page(lines))
+        return 0
+    die("unknown doe action %r (plan, run, status, analyze)" % what)
+
+
+def doe_run(args, st, doemod):
+    from . import split as splitmod
+    cmd = strip_dashes(args.command)
+    if not cmd:
+        die("a design runs a command with its factors in braces: %s doe run "
+            "CONFIG -s hosts -- 'iperf3 -c peer -P {streams}'" % PROG)
+    template = " ".join(cmd)
+    cfg = doemod.read_config(args.target)
+    name = doemod.design_name(cfg, args.target, args.name)
+    prov = filing.Provost(st)
+    prov.require("keep the measurements")
+    if doemod.exists(st, name):
+        row, _, matrix = doemod.load(st, name)
+        if row.get("command") != template:
+            die("the design %s was run with another command (%s): --name "
+                "a new one for this command" % (name, row.get("command")))
+    else:
+        matrix = doemod.generate(cfg, args.seed)
+        doemod.file_design(st, prov, name, template, args.seed,
+                           args.blocks_by, cfg, matrix)
+        st.reset()
+    pts = doemod.points(matrix)
+    left = doemod.unused(template, pts[0][2] if pts else [])
+    if left:
+        warn("the command does not use %s: those factors will not change "
+             "anything" % ", ".join("{%s}" % f for f in left))
+    hs = collect(args)
+    check_limit(args, hs)
+    blocks = None
+    if args.blocks_by:
+        groups = splitmod.by_attr(hs, args.blocks_by)
+        nblocks = len(set(b for _, b, _ in pts))
+        if len(groups) < nblocks:
+            die("the design has %d blocks but --blocks-by %s gives %s"
+                % (nblocks, args.blocks_by, plural(len(groups), "group")))
+        blocks = dict((i + 1, members) for i, (_, members)
+                      in enumerate(groups))
+    done = doemod.point_runs(st, name)
+    worst, ran = 0, 0
+    for rid, blk, levels in pts:
+        if done.get(rid) and not args.redo:
+            continue
+        command = doemod.substitute(template, levels)
+        check_danger(command, args.yes)
+        hosts = blocks[blk] if blocks else hs
+        factors = " ".join("%s=%s" % kv for kv in levels)
+        job = fleet_run(args, hosts, command, name,
+                        context=[("design", name), ("point", str(rid))] +
+                        [(k, v) for k, v in levels],
+                        extra={"group": name, "part": str(rid),
+                               "factors": factors})
+        if job is None:
+            continue
+        ran += 1
+        worst = max(worst, job.rc)
+        h = outcome_counts(job.last)
+        out("%s doe %s -- point %d/%d (%s): %d/%d ok  (%s)" % (
+            PROG, name, rid, len(pts), factors, h.get(fleet.OK, 0),
+            len(hosts), job.entry.id if job.entry else "not kept"))
+    st.reset()
+    measured = len(doemod.point_runs(st, name))
+    out("%s doe %s -- %d of %s measured%s" % (
+        PROG, name, measured, plural(len(pts), "point"),
+        "" if ran else " (nothing left to run: --redo runs them again)"))
+    if measured >= 2:
+        out("  next: %s doe analyze %s -c COLUMN" % (PROG, name))
+    return worst
+
+
+# ---------------------------------------------------------------------------
 # view / doctor / hints / help
 # ---------------------------------------------------------------------------
 
@@ -1375,6 +2042,14 @@ HINTS = [
      "qd do -- reckon floor.dc --mx reports/ --overlay reckon.tsv"),
     ("How is every host doing right now?",
      "qd do -- dcprobe scan --servers hosts.txt -o host_status.tsv"),
+    ("Everything about every host", "qd probe facts inventory -s hosts.txt"),
+    ("Has it changed over the last five runs?",
+     "qd compare NAME -c COLUMN --last 5"),
+    ("A rack at a time, and know where I got to",
+     "qd campaign new NAME -s hosts.txt --by rack -- CMD; qd campaign run NAME"),
+    ("Which settings matter, and how much?",
+     "qd doe run design.json -s hosts.txt -- 'CMD {factor}'; qd doe analyze ..."),
+    ("Half the fleet against the other half", "qd split -s hosts.txt --ab --out ab/"),
     ("Who is far from the rest?", "qd outliers latest COLUMN"),
     ("Centre and spread, per rack", "qd stats latest COLUMN --by rack"),
     ("What changed since last time?", "qd diff latest"),
@@ -1480,6 +2155,104 @@ def seconds(text):
     return v
 
 
+def add_ssh(sp):
+    g = sp.add_argument_group("ssh")
+    g.add_argument("-u", "--user", default=env("SSH_USER"),
+                   help="ssh user (QD_SSH_USER; default: your ssh config)")
+    g.add_argument("-j", "--jobs", type=positive,
+                   default=env_int("JOBS", 32),
+                   help="hosts contacted at once (QD_JOBS, 32)")
+    g.add_argument("--timeout", type=seconds,
+                   default=env_float("TIMEOUT", 60.0),
+                   help="per-host command timeout, seconds (QD_TIMEOUT, 60)")
+    g.add_argument("--max-output", type=positive, metavar="BYTES",
+                   default=env_int("MAX_OUTPUT", 4 * 1024 * 1024),
+                   help="per-host output cap; past it the host is killed and "
+                   "reported (QD_MAX_OUTPUT, 4 MiB)")
+    g.add_argument("--ssh", default=env("SSH", "ssh"), metavar="CMD",
+                   help="ssh transport (QD_SSH)")
+    g.add_argument("--scp", default=env("SCP", "scp"), metavar="CMD",
+                   help="scp transport (QD_SCP)")
+    g.add_argument("--sudo", action="store_true",
+                   help="run the command under sudo -n")
+    g.add_argument("--remote-dir", default=env("REMOTE_DIR", "/var/tmp/qd"),
+                   help="where pushed files go, removed afterwards "
+                   "(QD_REMOTE_DIR, /var/tmp/qd)")
+    g.add_argument("--keep-remote", action="store_true",
+                   help="leave pushed files on the hosts")
+    return g
+
+
+def add_passes(sp):
+    g = sp.add_argument_group("what comes back")
+    g.add_argument("--every", type=seconds, metavar="S",
+                   help="repeat: a pass every S seconds")
+    g.add_argument("--count", type=nonneg, default=None, metavar="N",
+                   help="passes to run (1; 0 with --every runs until Ctrl-C)")
+    return g
+
+
+def add_report(g, preview=20):
+    g.add_argument("--preview", type=nonneg, default=preview, metavar="N",
+                   help="rows of the dataset to print (%d; 0 for none)"
+                   % preview)
+    g.add_argument("-q", "--quiet", action="store_true",
+                   help="the summary line only")
+
+
+def add_safety(sp):
+    g = sp.add_argument_group("safety")
+    g.add_argument("--dry-run", action="store_true",
+                   help="print the ssh command per host and stop")
+    g.add_argument("--limit", type=positive, metavar="N",
+                   help="refuse to run wider than N hosts without --yes")
+    g.add_argument("--yes", action="store_true",
+                   help="proceed past --limit and the mutation guard")
+
+
+def add_fleet(sp, preview=20):
+    """Everything a verb that runs on the fleet takes, as `qd run` does."""
+    add_hosts(sp)
+    add_ssh(sp)
+    g = add_passes(sp)
+    add_report(g, preview)
+    add_safety(sp)
+    sp.set_defaults(no_store=False)
+    return g
+
+
+def add_split(sp, required=False):
+    g = sp.add_argument_group("how to split (one of)")
+    g.add_argument("--by", dest="split_by", metavar="ATTR",
+                   help="a list per value: rack, row, role, any attribute")
+    g.add_argument("--into", dest="split_into", type=positive, metavar="N",
+                   help="N shards in list order")
+    g.add_argument("--deal", dest="split_deal", type=positive, metavar="N",
+                   help="N shards dealt round-robin")
+    g.add_argument("--size", dest="split_size", type=positive, metavar="N",
+                   help="waves of N in list order")
+    g.add_argument("--random", dest="split_random", type=positive,
+                   metavar="N", help="N groups at random (--seed, "
+                   "--stratify ATTR)")
+    g.add_argument("--ab", dest="split_ab", action="store_true",
+                   help="two halves for an A/B comparison")
+    g.add_argument("--canary", dest="split_canary", type=positive,
+                   metavar="N", help="the first N, then the rest")
+    g.add_argument("--pairs", dest="split_pairs", action="store_true",
+                   help="two by two (--ring: each with the next)")
+    g.add_argument("--reachable", dest="split_reachable",
+                   action="store_true",
+                   help="up and down, as binnacle's reachable finds them")
+    g.add_argument("--answers", dest="split_answers", metavar="RUN",
+                   help="by what each host said in a stored run")
+    g.add_argument("--seed", type=int, help="for --random and --ab")
+    g.add_argument("--stratify", metavar="ATTR",
+                   help="for --random and --ab: spread every value of ATTR "
+                   "across the groups")
+    g.add_argument("--ring", action="store_true", help="for --pairs")
+    return g
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog=PROG, add_help=False,
@@ -1507,55 +2280,19 @@ def build_parser():
 
     sp = verb("run", "run a command on every host and keep the answers")
     add_hosts(sp)
-    g = sp.add_argument_group("ssh")
-    g.add_argument("-u", "--user", default=env("SSH_USER"),
-                   help="ssh user (QD_SSH_USER; default: your ssh config)")
-    g.add_argument("-j", "--jobs", type=positive,
-                   default=env_int("JOBS", 32),
-                   help="hosts contacted at once (QD_JOBS, 32)")
-    g.add_argument("--timeout", type=seconds,
-                   default=env_float("TIMEOUT", 60.0),
-                   help="per-host command timeout, seconds (QD_TIMEOUT, 60)")
-    g.add_argument("--max-output", type=positive, metavar="BYTES",
-                   default=env_int("MAX_OUTPUT", 4 * 1024 * 1024),
-                   help="per-host output cap; past it the host is killed and "
-                   "reported (QD_MAX_OUTPUT, 4 MiB)")
-    g.add_argument("--ssh", default=env("SSH", "ssh"), metavar="CMD",
-                   help="ssh transport (QD_SSH)")
-    g.add_argument("--scp", default=env("SCP", "scp"), metavar="CMD",
-                   help="scp transport (QD_SCP)")
-    g.add_argument("--sudo", action="store_true",
-                   help="run the command under sudo -n")
+    g = add_ssh(sp)
     g.add_argument("--push", action="append", metavar="FILE",
                    help="copy FILE to each host first, repeatable")
     g.add_argument("--script", metavar="FILE",
                    help="push FILE and run it; the words after -- are its "
                    "arguments")
-    g.add_argument("--remote-dir", default=env("REMOTE_DIR", "/var/tmp/qd"),
-                   help="where pushed files go, removed afterwards "
-                   "(QD_REMOTE_DIR, /var/tmp/qd)")
-    g.add_argument("--keep-remote", action="store_true",
-                   help="leave pushed files on the hosts")
-    g = sp.add_argument_group("what comes back")
-    g.add_argument("--every", type=seconds, metavar="S",
-                   help="repeat: a pass every S seconds")
-    g.add_argument("--count", type=nonneg, default=None, metavar="N",
-                   help="passes to run (1; 0 with --every runs until Ctrl-C)")
+    g = add_passes(sp)
     g.add_argument("--name", help="the run's name: the provost dataset its "
                    "answers go to, and what `qd show NAME` finds")
     g.add_argument("--no-store", action="store_true",
                    help="print the answers but keep nothing")
-    g.add_argument("--preview", type=nonneg, default=20, metavar="N",
-                   help="rows of the dataset to print (20; 0 for none)")
-    g.add_argument("-q", "--quiet", action="store_true",
-                   help="the summary line only")
-    g = sp.add_argument_group("safety")
-    g.add_argument("--dry-run", action="store_true",
-                   help="print the ssh command per host and stop")
-    g.add_argument("--limit", type=positive, metavar="N",
-                   help="refuse to run wider than N hosts without --yes")
-    g.add_argument("--yes", action="store_true",
-                   help="proceed past --limit and the mutation guard")
+    add_report(g)
+    add_safety(sp)
     sp.add_argument("command", nargs=argparse.REMAINDER,
                     help="-- COMMAND...")
     sp.set_defaults(fn=cmd_run)
@@ -1701,6 +2438,96 @@ def build_parser():
     add_format(sp)
     sp.set_defaults(fn=cmd_diff)
 
+    sp = verb("compare", "line up N stored runs: summary, host by host, "
+              "what moved")
+    sp.add_argument("refs", nargs="*", metavar="RUN",
+                    help="runs to compare; one RUN (default latest) with "
+                    "--last N takes the last N runs like it")
+    sp.add_argument("-c", "--column", metavar="COL",
+                    help="the column to compare (default: the medians of "
+                    "every numeric column)")
+    sp.add_argument("--last", type=positive, metavar="N",
+                    help="the last N runs of the same thing (5)")
+    sp.add_argument("--group", metavar="NAME",
+                    help="every run of a campaign or a design")
+    sp.add_argument("--baseline", metavar="RUN",
+                    help="what the others are measured against (the first)")
+    sp.add_argument("--key", metavar="COLS",
+                    help="match rows on these (default host, as diff does)")
+    sp.add_argument("--drift", type=float, default=env_float("DRIFT", 5.0),
+                    metavar="PCT", help="a median moving more than PCT %% "
+                    "is a change (QD_DRIFT, 5)")
+    sp.add_argument("--agg", default="median",
+                    help="how a key's repeated rows reduce (median)")
+    sp.add_argument("--table", metavar="NAME",
+                    help="which table of each run (data)")
+    sp.add_argument("--where", action="append", metavar="EXPR",
+                    help="applied to every run")
+    sp.add_argument("--limit", type=nonneg, default=30,
+                    help="changed keys to list (30; 0 for all)")
+    add_format(sp)
+    sp.set_defaults(fn=cmd_compare)
+
+    sp = verb("split", "cut a host list into several: by rack, shards, "
+              "waves, random, A/B, pairs ...")
+    add_hosts(sp)
+    add_split(sp)
+    sp.add_argument("--out", metavar="DIR",
+                    help="write each list to DIR/NAME.txt")
+    sp.add_argument("--prefix", metavar="P", help="file names start with P")
+    add_format(sp)
+    sp.set_defaults(fn=cmd_split)
+
+    sp = verb("probe", "ask the fleet something by name: facts, health, "
+              "sysctl, gpu ... (none: the list)")
+    sp.add_argument("names", nargs="*", metavar="PROBE")
+    add_fleet(sp, preview=12)
+    sp.set_defaults(fn=cmd_probe)
+
+    sp = verb("campaign", "run a system in parts, progress kept by muster, "
+              "every part in provost")
+    sp.add_argument("action", choices=["new", "run", "status", "retry",
+                                       "ls"])
+    sp.add_argument("name", nargs="?", metavar="NAME")
+    sp.add_argument("parts_named", nargs="*", metavar="PART",
+                    help="retry: these parts (default: the ones that had "
+                    "failures)")
+    add_fleet(sp, preview=0)
+    add_split(sp)
+    sp.add_argument("--pool", metavar="FILE",
+                    help="new: muster's pool, somewhere every worker can "
+                    "read (default qd's cache)")
+    sp.add_argument("--parts", type=positive, metavar="N",
+                    help="run: this many parts, then stop (default all)")
+    sp.add_argument("--lease", default="2h",
+                    help="run: how long a part is held before it comes back "
+                    "(2h)")
+    add_format(sp)
+    sp.set_defaults(fn=cmd_campaign, command=[])
+
+    sp = verb("doe", "designed experiments: doe designs, qd measures, doe "
+              "analyses")
+    sp.add_argument("action", choices=["plan", "run", "status", "analyze"])
+    sp.add_argument("target", metavar="CONFIG|NAME",
+                    help="plan/run: a doe config; status/analyze: the "
+                    "design's name")
+    add_fleet(sp, preview=0)
+    sp.add_argument("--name", help="the design's name (default the "
+                    "config's)")
+    sp.add_argument("--seed", type=int, help="doe's run-order seed")
+    sp.add_argument("--blocks-by", metavar="ATTR",
+                    help="run the design's blocks on host groups by ATTR")
+    sp.add_argument("--redo", action="store_true",
+                    help="measure points that are measured already")
+    sp.add_argument("-c", "--column", metavar="COL",
+                    help="analyze: the response column")
+    sp.add_argument("--agg", default="median",
+                    help="analyze: one number per point from its hosts "
+                    "(median)")
+    sp.add_argument("--optimize", action="store_true",
+                    help="analyze: doe optimize's recommendation too")
+    sp.set_defaults(fn=cmd_doe, command=[])
+
     sp = verb("export", "write a dataset out: csv, tsv, json, ndjson, md, "
               "overlay")
     sp.add_argument("ref", nargs="?", metavar="RUN")
@@ -1799,6 +2626,13 @@ def main(argv=None):
     _stdio_safe()
     argv = list(sys.argv[1:] if argv is None else argv)
     argv = glue_sort(argv)
+    # `campaign` and `doe` take positionals and then a command after --;
+    # argparse would hand everything after the first positional to the
+    # command, options included, so the command is cut off first.
+    tail = None
+    if argv and argv[0] in ("campaign", "doe") and "--" in argv:
+        i = argv.index("--")
+        argv, tail = argv[:i], argv[i + 1:]
     parser, sub = build_parser()
     if not argv:
         sys.stdout.write(__doc__.lstrip())
@@ -1816,6 +2650,8 @@ def main(argv=None):
     if args.verb == "help":
         sys.stdout.write(full_help(parser, sub))
         return 0
+    if tail is not None:
+        args.command = tail
     if getattr(args, "count", "x") is None:
         args.count = 0 if args.every else 1
     try:

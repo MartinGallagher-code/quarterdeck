@@ -31,10 +31,12 @@ jobs:
 
       # qd files everything through provost, so the suites need a real one:
       # PyPI's, which has no `batch` yet -- the one-capture-at-a-time path.
-      # ssh and scp are faked, the toolchain is played by stand-ins, and the
-      # web suite's server listens on loopback.
-      - name: Install provost
-        run: python -m pip install provost
+      # binnacle's muster, reachable and the scripts probes push are the
+      # real ones too, and so is doe for designs.  ssh and scp are faked,
+      # the rest of the toolchain is played by stand-ins, and the web
+      # suite's server listens on loopback.
+      - name: Install provost, binnacle and doe
+        run: python -m pip install provost binnacle doehelper
 
       - name: Run the test suite
         run: bash tests/run_tests.sh
@@ -73,7 +75,7 @@ jobs:
           docker run --rm -v "$PWD:/w" -w /w \
             -e QD_PROVOST="bash /w/.pv/x/provost_data/_bundle/provost" \
             python:3.6 \
-            bash -euxc 'bash tests/check_python_compat.sh && bash tests/run_tests.sh'
+            bash -euxc 'pip install -q binnacle && bash tests/check_python_compat.sh && bash tests/run_tests.sh'
 
   web:
     name: web page syntax
@@ -148,6 +150,9 @@ jobs:
           qd --version
           quarterdeck --version
           qd hints > /dev/null
+          qd probe > /dev/null
+          printf 'a rack=r1\nb rack=r2\n' > h.txt
+          qd split -s h.txt --by rack
           python -c "import os, quarterdeck.web as w; assert os.path.isfile(os.path.join(w.STATIC, 'app.js'))"
           printf 'host,v\na,1\nb,2\n' > t.csv
           qd import t.csv > /dev/null

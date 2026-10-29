@@ -8,13 +8,22 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 ## What this is
 
 `qd` drives the toolchain (binnacle, matrix_orchestrator, iperf_orchestrator,
-datacenter_visualization) and keeps what comes back in a logbook. It reads
-their output; it does not reimplement them. When a tool's output format or
-flags change, `quarterdeck/tools.py` (what `qd do` reads back) and
-`quarterdeck/table.py` (the readers) are where that knowledge lives.
+datacenter_visualization, design_of_experiments) and keeps what comes back in
+provost's store. It reads their output; it does not reimplement them. When a
+tool's output format or flags change, `quarterdeck/tools.py` (what `qd do`
+reads back), `quarterdeck/probes.py` (what `qd probe` runs) and
+`quarterdeck/table.py` (the readers) are where that knowledge lives; what qd
+knows of provost's store is in `quarterdeck/store.py` (reading) and
+`quarterdeck/filing.py` (filing, only ever by running provost).
 
 ## Rules that hold everywhere
 
+- **Use the toolchain; never reinvent it.** If a tool in any
+  MartinGallagher-code repository already does something -- provost
+  parsing and keeping, binnacle measuring (why-slow, skew, reachable,
+  muster, manifest), dcprobe, doe designing and analysing -- qd calls it
+  (as a command where it needs a newer Python) and does only what is
+  left. Survey the repos before building anything new.
 - **Blank is not measured, never zero**, through every reader, statistic,
   pivot and diff.
 - **The web page computes nothing.** Every figure comes from the Python
@@ -35,7 +44,11 @@ bash tests/run_tests.sh
 ```
 
 No network: a fake ssh/scp, stand-in tools, `QD_TEST_KEYS` for the
-explorer, and a real server on loopback for the web API. The page's look
+explorer, and a real server on loopback for the web API -- but a real
+provost (`QD_PROVOST` or `provost` on PATH; CI installs PyPI's), and the
+real binnacle and doe where installed. Run them on both of provost's paths
+before pushing: with a provost that has `batch`, and with
+`QD_PROVOST_BATCH=0` (or PyPI's 2.1.0), which files one capture at a time. The page's look
 is checked by hand in a browser; there is deliberately no browser-driving
 test in the tree. A test that starts a server, spawns a process and drives
 a browser is the shape upload scanners refuse in a handover --

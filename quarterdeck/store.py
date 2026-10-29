@@ -46,7 +46,8 @@ RUNS, HOSTS = "qd.runs", "qd.hosts"
 RUN_COLUMNS = ("run", "kind", "name", "command", "created", "finished",
                "duration_s", "hosts", "ok", "failed", "timeout",
                "unreachable", "push_failed", "passes", "every", "rc",
-               "captures", "tool", "ran", "version", "cwd", "qd", "notes")
+               "captures", "tool", "ran", "version", "cwd", "qd", "notes",
+               "group", "part", "factors")
 HOST_COLUMNS = ("run", "host", "addr", "pass", "ts", "status", "rc",
                 "duration_s", "bytes", "error", "attrs", "stderr")
 OUTCOMES = ("ok", "failed", "timeout", "unreachable", "push-failed")
@@ -54,7 +55,7 @@ OUTCOMES = ("ok", "failed", "timeout", "unreachable", "push-failed")
 # Free text is escaped in qd's own tables: provost's TSV reader drops
 # double quotes, and a tab or a newline would end the cell.
 TEXT_COLUMNS = ("command", "ran", "version", "cwd", "notes", "error",
-                "stderr", "attrs")
+                "stderr", "attrs", "factors")
 
 KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 
@@ -152,6 +153,30 @@ def context_columns(meta):
         k, sep, c = pair.partition("=")
         if sep and c:
             out.add(c)
+    return out
+
+
+LONG_KV = (("field", "value"), ("key", "value"), ("name", "value"))
+
+
+def widen(records):
+    """One host's answer filed long -- a `field, value` row per setting,
+    which is how provost reads `key: value` lines it judges a list -- as
+    the one row it describes: each field a column.  None when the rows
+    are not that shape (a real table stays a table)."""
+    if not records:
+        return None
+    cols = [c for c, _ in records[0] if c != "n"]
+    if tuple(cols) not in LONG_KV:
+        return None
+    out, seen = [], set()
+    for rec in records:
+        d = dict(rec)
+        f = d.get(cols[0], "")
+        if not f or f in seen:
+            return None              # a repeated field: a list, not a record
+        seen.add(f)
+        out.append((f, d.get("value", "")))
     return out
 
 
@@ -585,21 +610,26 @@ class Run(object):
         return t
 
     def _host_lead(self, hosts):
+        """host, addr, its attributes, the run's design factors, pass."""
         attrs = []
         for h in hosts:
             for k, _ in split_attrs(h.get("attrs")):
                 if k not in attrs:
                     attrs.append(k)
+        factors = split_attrs(self.meta.get("factors"))
+        fnames = [k for k, _ in factors if k not in attrs]
         show_addr = any(h.get("addr") for h in hosts)
         multi = int(self.meta.get("passes") or 1) > 1
-        cols = ["host"] + (["addr"] if show_addr else []) + attrs + (
-            ["pass", "ts"] if multi else [])
+        cols = ["host"] + (["addr"] if show_addr else []) + attrs + \
+            fnames + (["pass", "ts"] if multi else [])
+        fvals = dict(factors)
 
         def cells(h):
             ad = dict(split_attrs(h.get("attrs")))
             return [h.get("host", "")] + ([h.get("addr", "")]
                                           if show_addr else []) + \
-                [ad.get(a, "") for a in attrs] + (
+                [ad.get(a, "") for a in attrs] + \
+                [fvals.get(f, "") for f in fnames] + (
                     [h.get("pass") or "1", h.get("ts", "")] if multi else [])
         return cols, cells
 
@@ -642,9 +672,11 @@ class Run(object):
                         continue
                     keep = [i for i, c in enumerate(t.columns)
                             if c not in ("#", "capture") and c not in drop]
-                    for r in t.rows:
-                        recs.append((ds, [(t.columns[i], r[i])
-                                          for i in keep]))
+                    pairs = [[(t.columns[i], r[i]) for i in keep]
+                             for r in t.rows]
+                    wide = widen(pairs)
+                    recs.extend((ds, p) for p in
+                                ([wide] if wide is not None else pairs))
                 many = many or len(recs) > 1
             parts.append((h, cid, recs))
         # Data columns in the order they first appear, less any blank on

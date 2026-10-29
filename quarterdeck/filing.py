@@ -32,10 +32,7 @@ from . import store as storemod, tools
 
 def find():
     """argv that runs provost, or None (QD_PROVOST, PATH, the module)."""
-    argv = tools.find_tool("provost")
-    if argv and not (shutil.which(argv[0]) or os.path.isfile(argv[0])):
-        return None
-    return argv
+    return tools.find_tool("provost")
 
 
 def dataset_name(label):

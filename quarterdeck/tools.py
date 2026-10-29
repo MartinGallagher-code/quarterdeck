@@ -57,6 +57,9 @@ TOOLS = [
 ] + [
     ("provost", ("provost",), "provost_data",
      "the store: every answer filed, parsed and kept in git"),
+    # no module fallback: doe has no __main__, and wants Python 3.9+
+    ("doe", ("doe",), None, "design of experiments: designs and their "
+     "analysis (qd doe)"),
     ("dcviz", ("dcviz",), "dcviz", "floor-plan viewer: dcviz serve"),
     ("dcprobe", ("dcprobe",), "dcviz.dcprobe", "how every host is doing"),
     ("dcadd", ("dcadd",), "dcviz.dcadd", "append to a results file"),
@@ -78,7 +81,12 @@ def find_tool(name):
     """argv that runs `name`, or None."""
     over = env(name.upper().replace("-", "_"))
     if over:
-        return shlex.split(over)
+        argv = shlex.split(over)
+        # an override naming nothing that exists is "not installed", said
+        # as such, rather than an OSError at the first use
+        if argv and (shutil.which(argv[0]) or os.path.isfile(argv[0])):
+            return argv
+        return None
     for t in TOOLS:
         if t[0] == name:
             exes, mod = t[1], t[2]
@@ -129,6 +137,7 @@ def doctor_rows():
 
 INSTALL = {
     "provost": "pip install provost (qd keeps everything in its store)",
+    "doe": "pip install doehelper (Python 3.9+)",
     "mx": "pip install matrix-orchestrator",
     "iperf-orchestrator": "pip install iperf-orchestrator",
     "dcviz": "pip install datacenter-layout-viewer",

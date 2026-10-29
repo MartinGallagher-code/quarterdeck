@@ -10,35 +10,51 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 [![REUSE status](https://api.reuse.software/badge/github.com/MartinGallagher-code/quarterdeck)](https://api.reuse.software/info/github.com/MartinGallagher-code/quarterdeck)
 
 The quarterdeck is where a ship is commanded from: the binnacle's
-instruments are read there and the log is kept there. This one does three
-things for a fleet of Linux boxes:
+instruments are read there and the log is kept there. This one does that
+for a fleet of Linux boxes:
 
 1. **Runs a command on every host and keeps every answer as a dataset.**
    It doesn't just show you N screens of output: each host is a row,
-   whatever it printed is parsed into columns, and a host that didn't
-   answer is a row too.
-2. **Drives the rest of the toolchain and keeps what it leaves.**
+   whatever it printed is parsed into columns by
+   [provost](https://github.com/MartinGallagher-code/provost), which keeps
+   it, and a host that didn't answer is a row too.
+2. **Asks by name.** `qd probe facts` is two hundred readings per host
+   from binnacle's why-slow; `qd probe health` is dcprobe's scan;
+   `sysctl`, `gpu`, `services`, `mounts` and the rest cover what no
+   instrument measures yet.
+3. **Drives the rest of the toolchain and keeps what it leaves.**
    [binnacle](https://github.com/MartinGallagher-code/binnacle),
    [matrix_orchestrator](https://github.com/MartinGallagher-code/matrix_orchestrator) (`mx`),
    [iperf_orchestrator](https://github.com/MartinGallagher-code/iperf_orchestrator) and
    [datacenter_visualization](https://github.com/MartinGallagher-code/datacenter_visualization)
-   (`dcprobe`, the floor plan) all write files. `qd do` runs one and reads
-   its output back into the same logbook, in the same shape.
-3. **Reads any of it back, any way you like.** Statistics, value counts
+   (`dcprobe`, the floor plan) all write files. `qd do` runs one and files
+   its output in the same store, in the same shape.
+4. **Runs a system in parts, and runs experiments.** `qd split` cuts a
+   host list by rack, into shards, waves, random or stratified groups,
+   A/B halves or pairs; `qd campaign` works through the parts with
+   binnacle's `muster` keeping count; `qd doe` measures a designed
+   experiment from design_of_experiments' `doe` and hands the results
+   back to it for the analysis.
+5. **Reads any of it back, any way you like.** Statistics, value counts
    (who agrees and who doesn't), histograms, robust outliers, group-bys,
-   pivots, trends and diffs between runs. You can read them as text, as
-   CSV/JSON, in a full-screen terminal explorer, in a browser, or painted
-   on the floor plan.
+   pivots, trends, diffs between two runs and comparisons of many. You can
+   read them as text, as CSV/JSON, in a full-screen terminal explorer, in
+   a browser, or painted on the floor plan.
 
 ```bash
 git clone https://github.com/MartinGallagher-code/quarterdeck
-./quarterdeck/qd hints                   # runs from the clone, nothing installed
+pip install provost binnacle             # the store, and the instruments
+./quarterdeck/qd hints                   # runs from the clone
 pip install ./quarterdeck                # or put qd (and quarterdeck) on PATH
+pip install doehelper                    # for qd doe (Python 3.9+)
 ```
 
-No dependencies, Python 3.6+, standard library only. Nothing is installed
-on the fleet and nothing is left running there. All it needs is key-based
-ssh, which the rest of the toolchain needs anyway.
+qd itself is Python 3.6+, standard library only. It needs provost to keep
+anything (`--no-store` runs without it); binnacle gives it its probes'
+instruments and campaigns' muster, and `doe` its designs, each found on
+`PATH` or where `QD_<TOOL>` points. Nothing is installed on the fleet and
+nothing is left running there. All it needs is key-based ssh, which the
+rest of the toolchain needs anyway.
 
 ---
 
@@ -48,65 +64,74 @@ ssh, which the rest of the toolchain needs anyway.
 printf '%s\n' 'node[01-24] rack=r1' 'node[25-48] rack=r2' > hosts.txt
 
 qd run -- uname -r                       # every host, every answer, kept
-qd freq latest stdout                    # who runs which kernel
-qd run --extract load1='^(\S+)' -- cat /proc/loadavg
-qd stats latest load1 --by rack          # centre and spread, per rack
-qd outliers latest load1                 # who is far from everybody else
-qd diff latest                           # against the last time this ran
+qd freq latest A                         # who runs which kernel
+qd probe facts                           # why-slow's readings, a column each
+qd stats facts cpu.busy_pct --by rack    # centre and spread, per rack
+qd outliers facts mem.available_pct      # who is far from everybody else
+qd compare facts -c cpu.busy_pct --last 5    # the last five runs, host by host
 qd web                                   # all of it, in a browser
 ```
 
 ```text
-qd run -- uname -r: 48 hosts, 46 ok, 2 unreachable   [parsed as text]
-  logbook  logbook/20261029-142233-uname  (48 rows)
+qd run -- uname -r: 48 hosts, 46 ok, 2 unreachable   [provost: uname: A]
+  stored   20261029-142233-uname in ~/.provost  (48 rows, 46 captures c0001..c0046)
 
   DID NOT ANSWER
     node09  unreachable      ssh: connect to host node09 port 22: Connection timed out
     node31  unreachable      ssh: connect to host node31 port 22: Connection timed out
 
-  host    stdout
+  host    A
   node01  6.1.0-18-amd64
   ...
 
   WHAT TO DO NEXT
     * qd show latest --where status!=ok  the 2 hosts that did not answer, with why
     * reachable hosts.txt -i             binnacle: comment dead entries out of the list
-    * qd freq latest stdout              2 different answers: who said which
+    * qd freq latest A                   2 different answers: who said which
+    * provost source 1                   one host's answer exactly as it came back
     * qd view latest                     explore it full-screen
 ```
 
 ---
 
-## What it keeps: the logbook
+## What it keeps: provost's store
 
-Every `qd run`, `qd do` and `qd import` makes one entry in `./logbook/`
-(`--logbook DIR` or `QD_LOGBOOK` to keep it elsewhere):
+qd keeps nothing of its own. What comes back is filed by
+[provost](https://github.com/MartinGallagher-code/provost), which turns
+command output into data and keeps it in git: every host's answer is a
+**capture** of its own (`provost source N` shows it exactly as it came
+back), opening with a `#%` line that says which run and which host it is.
+Where provost has `batch`, a whole run is one commit, the answers parsed in
+parallel, and `--context-columns` puts the host (and its rack, and the
+run) on every row, so `provost show NAME` says who said what without qd.
+An older provost files one capture at a time and qd puts the host back
+from each capture's prologue just the same.
 
-```text
-logbook/
-  20261029-142233-uname/
-    entry.json        what ran, on which hosts, when, how it went
-    data.csv          the dataset; an entry can hold several tables
-    raw/node01.out    each host's answer exactly as it arrived
-    raw/node01.err
-```
+Besides the answers, a run files two tables of qd's own:
 
-That's the whole of the state: no dotdir, no database, no daemon. An entry
-is a directory you can read, copy, `tar` or delete. A table in the
-floor-plan viewer's results format is stored in that format, so `dcviz
-serve -d logbook` opens it as is.
+| Dataset | One row per | What |
+|---|---|---|
+| `qd.runs` | run | what ran, where, when, how many hosts answered |
+| `qd.hosts` | host and pass | status, rc, duration, stderr, whether it printed anything |
 
-Name an entry the way you'd say it:
+and qd puts them back together when you read a run: each host's status
+beside the rows provost parsed out of its answer, and a row for a host
+that printed nothing. The store is provost's to choose: `--store DIR` or
+`QD_STORE`, else `PROVOST_WORKSPACE`, the controlled directory you are in,
+`PROVOST_HOME`, `~/.provost` -- so `provost ls` lists what qd filed.
+
+Name a run the way you'd say it:
 
 | Reference | Means |
 |---|---|
-| `latest`, `latest~1`, `prev` | the newest entry, the one before it |
-| `20261029-142233-uname` | that entry; any unique part of an id works too |
-| `kernel` | the newest entry made with `--name kernel` |
-| `latest:reports` | one table of an entry with several |
-| `results.tsv`, `reports/` | a file or directory, read without importing it |
+| `latest`, `latest~1`, `prev` | the newest run, the one before it |
+| `20261029-142233-uname` | that run; any unique part of an id works too |
+| `kernel` | the newest run named `kernel` (`--name`, a probe's name) |
+| `latest:hosts` | one table of a run: `data` (the default), `hosts` |
+| `ds:uname` | a whole provost dataset: every run that ever filed into it |
+| `results.tsv`, `reports/` | a file or directory, read without filing it |
 
-`qd log` lists the entries and `qd log ENTRY` describes one.
+`qd log` lists the runs and `qd log RUN` describes one.
 
 ---
 
@@ -151,41 +176,26 @@ without running anything.
 
 ### What comes back
 
-How each host's answer becomes columns (`--parse`):
-
-| Mode | What it does |
-|---|---|
-| `auto` (default) | the first of `json`, `number`, `kv`, `csv` that fits *every* host's answer, else `text`; the report says which it chose |
-| `text` | the whole answer in one `stdout` column |
-| `lines` | one row per line: `line_no`, `line` |
-| `number` | the first number in the answer, as `value` |
-| `kv` | `key=value` and `key: value` lines, one column per key. `MemTotal: 16384 kB` becomes `memtotal_kb` = 16384. A colon only separates when whitespace follows it, so times and `host:port` stay text |
-| `csv` | a CSV or TSV with a header; one row per row, stacked by column name across hosts the way `agree --merge-csv` stacks them |
-| `json` | an object is a row (nested keys dotted), a list of them is rows |
-| `table` | a whitespace-aligned table with a header: `df -P`, `ps`, `ss` |
-
-`--extract NAME=REGEX` takes a column straight out of the text: group 1,
-or the whole match. A regex with `(?P<name>...)` groups makes those
-columns. It can be repeated:
-
-```bash
-qd run --extract load1='^(\S+)' --extract '(?P<run>\d+)/(?P<procs>\d+)' -- cat /proc/loadavg
-```
-
-A host whose answer doesn't fit gets a `parse_error` saying why, not a
-silent blank. Every host's raw answer is kept beside the dataset either
-way.
+provost reads each host's answer: CSV and TSV, JSON, `key: value` and
+`key = value` lines, aligned tables like `df -P` and `ss`, a lone number,
+and two hundred tool-specific formats besides. `MemTotal: 16384 kB` stays
+`16384 kB`, and qd reads it as the number 16384 in kB; sizes in mixed
+units (`512M` beside `50G`) are put on one scale before any statistic. A
+host whose answer provost could not read as a table is held in its
+`unsorted` bucket (`provost triage` says why) and its row says so. Every
+host's answer is kept, exactly, either way.
 
 Every dataset a run makes has these columns: `host`, its attributes,
 `status` (`ok`, `failed`, `timeout`, `unreachable`, `push-failed`, in
-agree's sense of each), `rc`, `duration_s` and `error` (the first line of
-what went wrong), then the parsed columns.
+agree's sense of each), `rc`, `duration_s`, `error` (the first line of what
+went wrong) and `capture` (provost's id for the answer), then what provost
+read.
 
 ### Over time
 
 ```bash
-qd run --every 10 --count 30 --extract load1='^(\S+)' -- cat /proc/loadavg
-qd trend latest load1                    # a sparkline per host
+qd run --every 10 --count 30 -- 'cut -d" " -f1 /proc/loadavg'
+qd trend latest A                        # a sparkline per host
 ```
 
 `--every S --count N` runs N passes, one starting every S seconds, into a
@@ -202,7 +212,7 @@ Ctrl-C, and every pass that finished is kept.
 | `--dry-run` | print the ssh command per host; contact nothing |
 | `--first N` | the first N hosts only, the canary before the fleet |
 | `--limit N` | refuse to run wider than N hosts without `--yes` |
-| `--no-log` | print the answers, keep nothing |
+| `--no-store` | print the answers, keep nothing |
 
 The mutation guard is agree's: `rm -rf`, `mkfs`, `reboot`, `systemctl
 stop` and the rest are refused without `--yes`. It's a typo guard, not
@@ -219,11 +229,134 @@ security.
 | `--max-output` | `QD_MAX_OUTPUT` | 4 MiB per host; past it the host is killed and reported |
 | `--ssh`, `--scp` | `QD_SSH`, `QD_SCP` | `ssh`, `scp` |
 | `--remote-dir` | `QD_REMOTE_DIR` | `/var/tmp/qd` |
-| `--parse` | `QD_PARSE` | `auto` |
-| `--logbook` | `QD_LOGBOOK` | `./logbook` |
+| `--store` | `QD_STORE` | provost's own choice |
+| | `QD_PROVOST` | `provost` on `PATH` |
+| | `QD_PROVOST_BATCH=0` | file one capture at a time even where provost has `batch` |
 
 Exit status is 0 when every host answered, 1 when one didn't, and 2 for a
 usage error.
+
+---
+
+## Asking by name: `qd probe`
+
+```bash
+qd probe                                  # the catalogue, and what's installed here
+qd probe facts inventory -s hosts.txt     # each probe is a run of its own name
+qd show facts --cols host,cpu.busy_pct,mem.available_pct
+```
+
+| Probe | Kind | What |
+|---|---|---|
+| `facts` | binnacle, on each host | why-slow `--facts`: cpu.\*, mem.\*, disk.\*, net.\*, fs.\*, lim.\*, cg.\*, therm.\* |
+| `why-slow` | binnacle, on each host | why-slow's findings: rule, severity, detail, fix |
+| `skew` | binnacle, on each host | clock and time sync |
+| `health` | dcprobe, from here | load, CPU, iowait, steal, memory, swap, disk, NIC link and drops, kernel errors, inventory |
+| `preflight` | dcprobe, from here | ssh, skew, nofile, bind, tools: before a test |
+| `reach` | binnacle, from here | `reachable --csv`: ping and ssh, and why not |
+| `os`, `sysctl`, `services`, `gpu`, `mounts`, `disks`, `packages`, `numa`, `pagecache`, `listen`, `containers` | a shell command | what none of the instruments measures |
+
+Groups: `inventory` (os, disks, mounts, numa, gpu, packages), `settings`
+(sysctl, numa), `state` (services, listen, containers, pagecache). A
+binnacle tool is pushed with qd's own `--script` and run by `python3` on
+each host, so the hosts need python3 and binnacle needs to be installed
+here, nowhere else. A probe whose tool isn't here says what to install
+before it contacts a host.
+
+---
+
+## Cutting a host list: `qd split`
+
+```bash
+qd split -s hosts.txt --by rack --out lists/     # lists/rack-r1.txt, rack-r2.txt, ...
+qd run -s lists/rack-r1.txt -- ...
+```
+
+| Flag | Lists |
+|---|---|
+| `--by ATTR` | one per value of an attribute (with `--layout`, the manifest's room, row, rack, slot) |
+| `--into N` / `--deal N` | N shards in list order / dealt round-robin |
+| `--size N` | waves of N, in list order |
+| `--random N --seed S` | N groups at random; `--stratify rack` spreads every rack across them |
+| `--ab` | two halves for an A/B comparison, stratified by rack when there is one |
+| `--canary N` | the first N, then the rest |
+| `--pairs`, `--pairs --ring` | two by two, or each host with the next all the way round |
+| `--reachable` | up and down, as binnacle's `reachable` finds them |
+| `--answers RUN` | by what each host said in a stored run: identical answers together, the way agree groups a fleet |
+
+Every list keeps its hosts' attributes and is a host file the whole suite
+reads. `--format csv` gives `group,host,...` instead.
+
+---
+
+## A system in parts: `qd campaign`
+
+```bash
+qd campaign new burnin -s hosts.txt --by rack -- ./burnin.sh --minutes 30
+qd campaign run burnin              # every rack in turn; Ctrl-C and come back later
+qd campaign run burnin --parts 2    # or two racks now
+qd campaign status burnin           # PROGRESS 5 of 12 parts done, and how each went
+qd campaign retry burnin            # the racks that had a host fail, back in the pool
+qd compare --group burnin -c temp_c # the racks side by side
+```
+
+A campaign is a command and a host list cut into parts, any way `qd split`
+cuts one. Which parts are done is binnacle's
+[`muster`](https://binnacle.readthedocs.io/en/latest/tools/muster.html) to
+keep: its pool hands each part out once, under a lease, so a second
+terminal running the same campaign takes the next rack rather than the
+same one, and a part whose worker died comes back when its lease runs out.
+`muster status --pool ...` reads the same progress. What each part found is
+provost's: a part is a run named after the campaign, its campaign and part
+on every row. The definition is filed too (`qd.campaigns`), and the pool
+can live anywhere every worker can read (`--pool`).
+
+---
+
+## Many runs side by side: `qd compare`
+
+```bash
+qd compare facts -c cpu.busy_pct --last 5        # the last five runs of facts
+qd compare monday tuesday latest -c mbps         # these three
+qd compare --group burnin -c temp_c              # a campaign's parts, a design's points
+qd compare kernel --last 10                      # no column: every numeric median
+```
+
+One row per run (hosts that answered, n, median, mean, min, p95, max, and
+the change from the baseline), then host by host every run's value side by
+side, flagged where a median moved more than `--drift` percent (5) from the
+baseline or the host's status was not ok. The baseline is the first run, or
+`--baseline RUN`. Runs over different hosts (a campaign's parts) are
+compared as wholes. `--format csv` is the host-by-run table. The exit status
+is 1 when anything changed, as with `diff`.
+
+---
+
+## Designed experiments: `qd doe`
+
+```bash
+qd doe plan iperf.json                      # the design doe makes: points, blocks, levels
+qd doe run iperf.json -s hosts.txt -- 'iperf3 -c peer -P {streams} -w {window}'
+qd doe status iperf                         # which points are measured
+qd doe analyze iperf -c mbps                # doe's main effects, interactions, ANOVA, power
+qd doe analyze iperf -c mbps --optimize     # and its recommended settings
+```
+
+The design is
+[design_of_experiments](https://github.com/MartinGallagher-code/design_of_experiments)'
+(`doe`, `pip install doehelper`): its config names the factors and their
+levels and the design (full or fractional factorial, Plackett-Burman,
+Latin hypercube, central composite, Box-Behnken, ...), and its generator
+lays out the points. qd runs each point on the fleet with every `{factor}`
+in the command replaced by that point's level, and files it as a run named
+after the design, the factors on every row. `--blocks-by rack` runs the
+design's blocks on different racks. A point already measured is not run
+again (an interrupted design carries on), and `--count N` measures each
+point N times. `qd doe analyze` reduces each point to one response (the
+median of the column over the hosts that answered, or `--agg`), writes it
+as doe reads results (`run_<id>.json` beside the design's
+`design_matrix.json`) and runs `doe analyze`. doe wants Python 3.9 and
+numpy; qd runs it as a command, so qd keeps its 3.6 floor.
 
 ---
 
@@ -247,12 +380,12 @@ qd do -- netmesh check --reports idle/ web03 db01
 | `mx run`, `mx summarize` | `reports/` (`--reports`, `MX_REPORTS`) as table `reports`, then `mx export --no-collect --json` as table `mx_export`. That's no ssh, and it's the overlay numbers mx computes by its own rules |
 | `mx export` | `-o FILE`, or what it printed |
 | `iperf-orchestrator` | `results/<run>/` after `run`, `all`, `summarize`, `process`, `parse-csv`, `export-overlay`: `iperf_results`, `cpu_summary` and the overlay |
-| `agree` | `--json`, `--csv`, `--merge-csv` files. With none of them, qd adds `--csv` (and `--merge-csv` for `script`) pointing into the entry, and says so |
+| `agree` | `--json`, `--csv`, `--merge-csv` files. With none of them, qd adds `--csv` (and `--merge-csv` for `script`) and says so |
 | `dcprobe` | `-o FILE` and `--history FILE` |
 | `reckon` | `--overlay`, `--csv`, `--json` files |
 | `netmesh` | `--reports DIR`, `--grid DIR` |
 | any `--csv PATH` | that file; a bare `--csv` prints to stdout |
-| anything else | stdout, when it is a table; plain text is kept as lines |
+| anything else | stdout, when it is a table, or when nothing else came back: filed for provost to read |
 
 `--import PATH` reads more files afterwards; `--no-import` reads nothing
 back. A tool is found on `PATH`, as an installed module, or wherever
@@ -260,8 +393,11 @@ back. A tool is found on `PATH`, as an installed module, or wherever
 `qd doctor` says which tools this machine can drive. The exit status is
 the tool's.
 
-**`qd import PATH...`** brings output that's already on disk into the
-logbook: a file in any format below, mx's `reports/`, netmesh's
+Each table read back is filed in provost as a capture of its own, as
+TSV, its notes and display metadata kept with it.
+
+**`qd import PATH...`** files output that's already on disk: a file in any
+format below, mx's `reports/`, netmesh's
 `--reports`, an iperf `results/` directory (its `latest` run) or one run
 of it, or a folder of monitoring tables. Files in a folder that share a
 header stack into one table.
@@ -300,7 +436,7 @@ qd show latest --sort -mbps --limit 10 --cols host,mbps
 qd stats latest                               # every column described
 qd stats latest mbps                          # one column in depth, with a histogram
 qd stats latest mbps loss_pct --by rack       # per group (--agg mean,p95,...)
-qd freq latest stdout                         # who said what
+qd freq latest A                              # who said what
 qd hist latest rtt_p99 --bins 20
 qd outliers latest mbps                       # far from the median, by MAD
 qd pivot latest --rows host --cols peer --values pps
@@ -366,8 +502,9 @@ shared column is compared, except the ones that differ on every run by
 construction (`ts`, `run`, `duration_s`, ...). Those are named rather
 than silently dropped, and `--cols` compares them anyway. A key that
 repeats is reduced first (numbers by their mean, words by the worst or
-most common), and the report says so. With one entry, `qd diff` compares
-it with the previous entry that ran the same command.
+most common), and the report says so. With one run, `qd diff` compares
+it with the previous run of the same command. `qd compare` lines up more
+than two.
 
 Changes are listed worst first: a status that got worse, then a value that
 went blank, then the biggest relative change. The exit status is 1 when
@@ -384,7 +521,7 @@ qd web --layout floor.dc       # with the floor plan behind "Floor plan"
 
 ![qd web: the table with the load1 column's figures, histogram and outliers](docs/qd-web-table.png)
 
-- **The logbook** on the left; the entry's command, how many hosts
+- **The runs in the store** on the left; the run's command, how many hosts
   answered, and its tables at the top.
 - **Table**: sort on any column and filter with the same `--where`
   language. Click a row for every field and that host's raw answer.
@@ -394,7 +531,7 @@ qd web --layout floor.dc       # with the floor plan behind "Floor plan"
 - **Group**, **Pivot** (shaded per column, or across the whole grid when
   it's one metric), **Trend** (a line per host, with a crosshair and
   tooltip; past eight hosts they're drawn grey and the one you point at
-  lifts), **Diff** against any other entry, **About** the entry.
+  lifts), **Diff** against any other run, **About** the run.
 - **Floor plan** writes the view as an overlay and opens it in the
   datacenter viewer, served by the same server at `/floor/` when
   `datacenter-layout-viewer` is installed. Without `--layout`, use
@@ -413,7 +550,8 @@ browser and the terminal can't disagree about a number. There's no build
 step and no dependency, just three static files and a JSON API served by
 the standard library. It listens on 127.0.0.1 unless you pass `--host`
 (`QD_WEB_HOST`, `QD_WEB_PORT`). It's read-only, except that "Floor plan"
-writes the overlay into the entry it was made from, as `qd floor` does.
+writes the overlay into qd's cache (never the store, which provost commits
+whole), as `qd floor` does.
 
 Over ssh to a jump host, forward the port:
 
@@ -440,9 +578,9 @@ A full-screen explorer for when there's no browser: the same views, keyed.
 | `g` | group by this column; Enter on a group filters to it |
 | `h`, `o`, `t` | histogram, outliers, trend |
 | `p` | pivot: `rows,cols[,values]` |
-| `x` | diff against another entry (default: its last run) |
+| `x` | diff against another run (default: the last of the same thing) |
 | Enter | every field of the row, and the host's raw answer |
-| `T`, `L` | another table of this entry, the logbook |
+| `T`, `L` | another table of this run, the runs in the store |
 | `e`, `r` | export this view to a file, reload from disk |
 | `-`, `*`, `w` | hide a column, show them all, widen one |
 | `?`, `q`, `Q` | help, back, quit |
@@ -461,7 +599,7 @@ qd export latest --format overlay -o load.tsv
 
 Each numeric column becomes an overlay named `qd_<column>` (`--prefix`),
 one sample per host (per pass, for a run that repeated, which the viewer
-reduces with its own mean, p95, last, ...), tagged `run=<entry id>`. A host's `status` becomes a
+reduces with its own mean, p95, last, ...), tagged `run=<run id>`. A host's `status` becomes a
 PASS/FAIL overlay, so an unreachable host paints red rather than
 disappearing. Free text (stdout, errors) and layout attributes (rack,
 row) stay out. A unit is taken from a column's name where the name says
@@ -481,8 +619,8 @@ These are binnacle's, for the same reasons:
   number look better than it is.
 - **Failures are findings.** A host that didn't answer is a row with a
   status and a reason. It isn't dropped or left on stderr to scroll past.
-- **Say what was done to the data.** The parse mode chosen, the columns a
-  diff ignored, keys it reduced, the filters behind every report.
+- **Say what was done to the data.** The datasets provost filed into, the
+  columns a diff ignored, keys it reduced, the filters behind every report.
 - **Deterministic output.** Fan-out answers come back in host-list order,
   never completion order, so two runs can be diffed.
 - **Diagnose, don't dump.** Every run ends with what to look at next.
@@ -499,7 +637,7 @@ These are binnacle's, for the same reasons:
 | | |
 |---|---|
 | 0 | done, and every host answered |
-| 1 | a finding: a host that did not answer, a diff that differs, nothing to bin |
+| 1 | a finding: a host that did not answer, a diff or compare that differs, nothing to bin |
 | 2 | a usage error, or something could not be read or written |
 | other | `qd do` passes on the tool's own |
 
@@ -512,10 +650,14 @@ bash tests/run_tests.sh          # every suite
 bash tests/run_tests.sh run web  # some of them
 ```
 
-The tests need no network and no second machine. `ssh` and `scp` are
-replaced by a shim that runs the "remote" command in a sandbox directory
-per fake host. mx, iperf-orchestrator and agree are replaced by stand-ins
-that write what the real ones write, where they write it. The explorer is
+The tests need no network and no second machine, but a real provost
+(`pip install provost`, or `QD_PROVOST`): every case files into a store of
+its own. `QD_PROVOST_BATCH=0` runs them on the one-capture-at-a-time path.
+`ssh` and `scp` are replaced by a shim that runs the "remote" command in a
+sandbox directory per fake host. mx, iperf-orchestrator, agree, dcprobe
+and doe are replaced by stand-ins that write what the real ones write,
+where they write it; muster and the probes' binnacle scripts are the real
+ones where binnacle is installed, and doe too where it is. The explorer is
 driven by a script of keys (`QD_TEST_KEYS`, as binnacle's `rig` does it)
 and the web suite talks to a real server on loopback.
 
@@ -523,7 +665,9 @@ and the web suite talks to a real server on loopback.
 
 ## Related
 
-- [binnacle](https://github.com/MartinGallagher-code/binnacle) — the instruments: why-slow, agree, netmesh, reckon, manifest, ...
+- [provost](https://github.com/MartinGallagher-code/provost) — the store: command output turned into data, kept in git
+- [binnacle](https://github.com/MartinGallagher-code/binnacle) — the instruments: why-slow, agree, netmesh, reckon, manifest, muster, ...
+- [design_of_experiments](https://github.com/MartinGallagher-code/design_of_experiments) — `doe`: designs and their analysis
 - [matrix_orchestrator](https://github.com/MartinGallagher-code/matrix_orchestrator) — request/response pps across a fleet
 - [iperf_orchestrator](https://github.com/MartinGallagher-code/iperf_orchestrator) — full-mesh TCP bandwidth
 - [datacenter_visualization](https://github.com/MartinGallagher-code/datacenter_visualization) — the `.dc` floor plan, dcprobe, and the viewer overlays paint on
