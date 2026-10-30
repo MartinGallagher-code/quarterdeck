@@ -110,6 +110,7 @@
 
   function readHash() {
     const q = new URLSearchParams(location.hash.slice(1));
+    S.store = q.get("store") || null;
     S.e = q.get("e") || null;
     S.g = q.get("g") || null;
     S.t = q.get("t") || null;
@@ -123,6 +124,7 @@
 
   function writeHash() {
     const q = new URLSearchParams();
+    if (S.store) q.set("store", S.store);
     if (S.e) q.set("e", S.e);
     else if (S.g) q.set("g", S.g);
     if (S.t) q.set("t", S.t);
@@ -152,6 +154,9 @@
       if (Array.isArray(v)) v.forEach((x) => u.searchParams.append(k, x));
       else u.searchParams.set(k, v);
     }
+    // every figure comes from the store the picker names; none named is
+    // the store this server was started on
+    if (S.store && !u.searchParams.has("store")) u.searchParams.set("store", S.store);
     S.busy++;
     document.body.style.cursor = "progress";
     try {
@@ -199,6 +204,38 @@
   // -------------------------------------------------------------------------
   // The runs in the store
   // -------------------------------------------------------------------------
+
+  // The store picker: the named stores (qd store ls), the one this
+  // server was started on first chosen.  Hidden when there is nothing to
+  // pick between.
+  async function loadStores() {
+    let d;
+    try { d = await api("/api/stores", { store: "" }); } catch (err) { return; }
+    const sel = clear($("store"));
+    const names = d.stores.map((x) => x.name);
+    if (!d.here) {
+      sel.append(h("option", { value: "", text: "this store (" + d.here_path + ")" }));
+    }
+    for (const x of d.stores) {
+      sel.append(h("option", { value: x.here ? "" : x.name,
+        text: x.name + (x.runs != null ? "  (" + x.runs + (x.runs === 1 ? " run)" : " runs)") : "") +
+          (x.active ? "  active" : "") }));
+    }
+    sel.value = S.store && names.includes(S.store) ? S.store : "";
+    $("store-pick").hidden = sel.options.length < 2;
+  }
+
+  async function switchStore(name) {
+    S.store = name || null;
+    S.e = S.g = S.t = null;
+    S.tab = "table"; S.where = []; S.sort = ""; S.col = null; S.p = {};
+    closePanel();
+    writeHash();
+    try {
+      await loadEntries();
+      await fromHash();
+    } catch (err) { showError(err); }
+  }
 
   async function loadEntries() {
     const d = await api("/api/entries");
@@ -406,6 +443,8 @@
   function renderCli(cmd) {
     const el = clear($("cli"));
     if (!cmd) return;
+    // the picked store is the terminal's only if it says so
+    if (S.store) cmd = cmd.replace(/^(qd \S+)/, "$1 --store " + shq(S.store));
     const copy = h("button", { type: "button", class: "link", text: "copy" });
     copy.addEventListener("click", async () => {
       try { await navigator.clipboard.writeText(cmd); copy.textContent = "copied"; }
@@ -1352,6 +1391,9 @@
     window.addEventListener("keydown", (ev) => {
       if (ev.key === "Escape" && !$("panel").hidden && !$("detail").open) closePanel();
     });
+    $("store").addEventListener("change", (ev) => switchStore(ev.target.value));
+    readHash();
+    await loadStores();
     try {
       await loadEntries();
     } catch (err) { showError(err); return; }

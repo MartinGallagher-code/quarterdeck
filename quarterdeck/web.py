@@ -36,6 +36,7 @@ from . import VERSION
 from . import campaign as camp, compare as comparemod, diff as diffmod, \
     doe as doemod, query, stats, table as tablemod, tools
 from .common import PROG, QdError, die, env_float, write_text
+from . import store as storemod
 from .store import cache_root, describe_entry, shown_attrs, split_ref
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -495,6 +496,54 @@ def safe_join(root, rel):
     return os.path.join(root, *words)
 
 
+class StoreApis(object):
+    """An Api per named store, made the first time the page picks it: what
+    `store=NAME` on a request selects.  Only a registered name -- never a
+    path: no file on the machine is read because a request named it."""
+
+    def __init__(self, default):
+        self.default = default
+        self.apis = {}
+        self.lock = threading.Lock()
+
+    def get(self, q):
+        from . import stores
+        name = one(q, "store")
+        if not name:
+            return self.default
+        if not stores.NAME_RE.match(name) or ".." in name:
+            die("no store named %r" % name)
+        cfg = stores.load()
+        if name not in cfg["stores"]:
+            die("no store named %r (qd store ls lists them)" % name)
+        path = os.path.abspath(cfg["stores"][name])
+        if path == self.default.book.root:
+            return self.default
+        with self.lock:
+            api = self.apis.get(name)
+            if api is None or api.book.root != path:
+                api = self.apis[name] = Api(storemod.Store(path),
+                                            self.default.layout)
+            return api
+
+    def listing(self):
+        """The named stores, which is active, and which this server was
+        started on: what the page's store picker offers."""
+        from . import stores
+        cfg = stores.load()
+        here = self.default.book.root
+        out = []
+        for name in sorted(cfg["stores"]):
+            path = os.path.abspath(cfg["stores"][name])
+            out.append({"name": name, "path": storemod.tilde(path),
+                        "runs": stores.run_count(path),
+                        "active": name == cfg.get("active"),
+                        "here": path == here})
+        return {"stores": out, "active": cfg.get("active"),
+                "here": stores.name_of(here, cfg),
+                "here_path": storemod.tilde(here)}
+
+
 ROUTES = {"/api/entries": "entries", "/api/entry": "entry_info",
           "/api/rows": "rows", "/api/column": "column",
           "/api/group": "group", "/api/pivot": "pivot",
@@ -508,6 +557,7 @@ LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 class Handler(BaseHTTPRequestHandler):
     api = None
+    apis = None
     quiet = False
     loopback = True
     server_version = "quarterdeck/" + VERSION
@@ -559,15 +609,19 @@ class Handler(BaseHTTPRequestHandler):
         path = url.path
         q = parse_qs(url.query, keep_blank_values=True)
         try:
-            if path in ROUTES:
-                with self.api.lock:
-                    self.api.book.refresh()
-                    obj = getattr(self.api, ROUTES[path])(q)
+            if path == "/api/stores":
+                self.send_json(200, self.apis.listing())
+            elif path in ROUTES:
+                api = self.apis.get(q)
+                with api.lock:
+                    api.book.refresh()
+                    obj = getattr(api, ROUTES[path])(q)
                 self.send_json(200, obj)
             elif path == "/api/export":
-                with self.api.lock:
-                    self.api.book.refresh()
-                    name, text = self.api.export(q)
+                api = self.apis.get(q)
+                with api.lock:
+                    api.book.refresh()
+                    name, text = api.export(q)
                 self.send(200, text, "text/plain; charset=utf-8", {
                     "Content-Disposition": 'attachment; filename="%s"'
                     % re.sub(r'[^\w.@-]', "_", name)})
@@ -657,6 +711,7 @@ def serve(book, host="127.0.0.1", port=8100, layout=None, open_browser=True,
         pass
 
     Bound.api = api
+    Bound.apis = StoreApis(api)
     Bound.quiet = quiet
     Bound.loopback = host in LOOPBACK
     port = free_port(host, port)

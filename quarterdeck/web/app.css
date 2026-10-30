@@ -153,6 +153,8 @@ a { color: var(--accent-ink); }
 .top .where-root { color: var(--muted); font-family: var(--mono); font-size: 12px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .top .spacer { flex: 1; }
+.top .store-pick { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; }
+.top .store-pick select { max-width: 220px; }
 
 .shell {
   display: grid;

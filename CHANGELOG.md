@@ -5,6 +5,58 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.2.0 — 2026-10-30
+
+### Added
+- **Named stores: `qd store new NAME [--path DIR]`, `ls`, `use NAME`,
+  `rename OLD NEW`, `rm NAME [--delete]`.** A store qd makes lives in
+  `~/.local/share/quarterdeck/stores/NAME` (`XDG_DATA_HOME`). The registry
+  and the active store are kept in `~/.config/quarterdeck/config.json`
+  (`XDG_CONFIG_HOME`), written whole and renamed into place.
+  - `rename` moves a store qd made, and leaves one registered with `--path`
+    where it is.
+  - `rm` forgets a store; `--delete` also deletes its files, but never a
+    directory that is not a provost store.
+  - Both take provost's store lock (`stores.py`, `cli.py` `cmd_store`).
+- **Every command's `--store` takes a store's name, or a directory as
+  before.** Which store a command uses: `--store`, then `QD_STORE` (a name
+  or a directory), then provost's explicit choice (`PROVOST_WORKSPACE`, or
+  the controlled directory you are in), then the active store, then
+  provost's default with a warning that no store is active (`stores.py`
+  `choose`, `store.py` `default_root`).
+- **provost's default store** (`PROVOST_HOME` or `~/.provost`) is registered
+  as `default` once it exists, and made the active store if none is. A
+  machine that used qd before keeps working without a step, and an `rm` of
+  it sticks.
+- **`qd store export [NAME] FILE`**: one gzipped tar holding the store whole,
+  its git history and the raw answers under `captures/`, after a manifest:
+  qd's and provost's versions, the store format, the run count, the
+  capture count and a sha256 for every file. It takes provost's own store
+  lock (`STORE/.lock` with an owner record provost reads). So it refuses
+  while a run is filing, and no run starts filing until it is done.
+- **`qd store import FILE [--as NAME]`**: checks the manifest, every checksum,
+  that no file is missing or added, and that the store format is one this
+  qd reads. It refuses a member outside the store, a link or a device. The
+  store is unpacked beside where it will live, and renamed into place only
+  once every check has passed. It refuses a name already taken, rather than
+  merging.
+- **`qd web` has a store picker** (`/api/stores`). Every API call takes
+  `store=NAME`, a registered name only and never a path. With a store
+  picked, the "same in a terminal" commands carry `--store NAME`
+  (`web.py` `StoreApis`, `web/app.js`).
+
+### Tests
+- `tests/test_store.sh`, 8 cases: a fresh machine warns, then registers
+  `default`; names work in every command, in the precedence above; a path
+  still works; rename, rm and `--delete`; an export and import round trip
+  (same runs, same git history, a clean tree); export refuses while a run's
+  lock is held and leaves that lock alone; import refuses a tampered file,
+  an escaping member, a newer store format and a non-archive, and leaves
+  nothing behind. In `test_web.sh`, the picker's API.
+- The test helper gives each case its own `XDG_CONFIG_HOME`,
+  `XDG_DATA_HOME` and `PROVOST_HOME`, so no test reads or registers this
+  machine's stores.
+
 ## 0.1.2 — 2026-10-30
 
 ### Changed

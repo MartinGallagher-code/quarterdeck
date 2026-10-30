@@ -117,7 +117,10 @@ def out(text=""):
 
 
 def store_of(args):
-    return storemod.Store(getattr(args, "store", None))
+    """The store this command uses: --store NAME|DIR, QD_STORE, provost's
+    explicit choice, the active store, provost's default (stores.py)."""
+    from . import stores
+    return storemod.Store(stores.choose(getattr(args, "store", None))[0])
 
 
 def manifest_argv():
@@ -1873,6 +1876,200 @@ def probe_tool(args, name, how, hs):
 # campaign: a system in parts, muster keeping count
 # ---------------------------------------------------------------------------
 
+def cmd_store(args):
+    """Named stores: qd store [ls|new|use|rename|rm|export|import]."""
+    from . import stores
+    act = args.action or "ls"
+    words = list(args.words or [])
+
+    def want(n, usage):
+        if len(words) != n:
+            die("usage: %s store %s" % (PROG, usage))
+
+    if act == "ls":
+        want(0, "ls")
+        cfg = stores.load()
+        try:
+            path, name, how = stores.choose(args.store, quiet=True)
+        except QdError as exc:
+            # a bad --store or QD_STORE is no reason not to list the stores
+            path, name, how = None, None, str(exc)
+        rows = []
+        for n in sorted(cfg["stores"]):
+            p = cfg["stores"][n]
+            runs = stores.run_count(p)
+            rows.append(["*" if n == cfg.get("active") else "", n,
+                         "" if runs is None else str(runs),
+                         storemod.tilde(p) + ("" if os.path.isdir(p)
+                                              else "   (not there)")])
+        lines = ["%s store -- %s" % (PROG, plural(len(rows), "named store"))]
+        if rows:
+            lines.append("")
+            lines.extend(render.render_rows(["", "store", "runs", "path"],
+                                            rows, numeric=[2],
+                                            width=width_of(args),
+                                            indent="  "))
+        lines.append("")
+        why = {"--store": "--store", "QD_STORE": "QD_STORE",
+               "provost": "provost's PROVOST_WORKSPACE or controlled "
+                          "directory", "active": "the active store",
+               "default": "provost's default: no store is active"}
+        if path is None:
+            lines.append("  in use here: none -- %s" % how)
+        else:
+            lines.append("  in use here: %s%s  (%s)" % (
+                name + " = " if name else "", storemod.tilde(path),
+                why[how]))
+        if how in ("--store", "QD_STORE", "provost") and cfg.get("active"):
+            lines.append("  which goes before the active store, %s"
+                         % cfg["active"])
+        lines.extend(next_steps([
+            ("%s store new NAME" % PROG, "a store of its own, in %s"
+             % storemod.tilde(stores.data_root())),
+            ("%s store use NAME" % PROG, "the store commands use from now on"),
+            ("%s store export NAME FILE" % PROG,
+             "one archive: its history, its answers, a manifest")]))
+        sys.stdout.write("\n".join(lines) + "\n")
+        return 0
+    if act == "new":
+        want(1, "new NAME [--path DIR]")
+        name = stores.check_name(words[0])
+        cfg = stores.load()
+        if name in cfg["stores"]:
+            die("there is a store named %s already (%s)"
+                % (name, storemod.tilde(cfg["stores"][name])))
+        path = os.path.abspath(os.path.expanduser(args.path)) if args.path \
+            else os.path.join(stores.data_root(), name)
+        if os.path.isdir(path) and os.listdir(path) \
+                and not stores.is_store(path):
+            die("%s holds files that are not a provost store: a store goes "
+                "in an empty directory, or one that is a store already"
+                % storemod.tilde(path))
+        adopted = stores.is_store(path)
+        try:
+            os.makedirs(path, exist_ok=True)
+        except OSError as exc:
+            die("cannot make %s: %s" % (path, exc))
+        cfg["stores"][name] = path
+        stores.save(cfg)
+        out("%s store: %s = %s%s" % (PROG, name, storemod.tilde(path),
+                                     "  (a store already: registered as it "
+                                     "is)" if adopted else ""))
+        if cfg.get("active") != name:
+            out("  %s store use %s   makes it the store commands use"
+                % (PROG, name))
+        return 0
+    if act == "use":
+        want(1, "use NAME")
+        cfg = stores.load()
+        stores.registered(words[0], cfg)
+        cfg["active"] = words[0]
+        stores.save(cfg)
+        out("%s store: %s is the active store (%s)" % (
+            PROG, words[0], storemod.tilde(cfg["stores"][words[0]])))
+        for var in ("QD_STORE", "PROVOST_WORKSPACE"):
+            if os.environ.get(var):
+                warn("%s is set in this shell, and goes before it" % var)
+        return 0
+    if act == "rename":
+        want(2, "rename OLD NEW")
+        old_name, new_name = words[0], stores.check_name(words[1])
+        cfg = stores.load()
+        path = stores.registered(old_name, cfg)
+        if new_name in cfg["stores"]:
+            die("there is a store named %s already" % new_name)
+        new_path = path
+        managed = os.path.join(stores.data_root(), old_name)
+        if os.path.abspath(path) == os.path.abspath(managed) \
+                and os.path.isdir(path):
+            # a store qd made moves with its name; one registered by --path
+            # stays where it was put
+            new_path = os.path.join(stores.data_root(), new_name)
+            if os.path.exists(new_path):
+                die("%s is there already" % storemod.tilde(new_path))
+            lock, owner = stores.hold_lock(path, "rename it")
+            try:
+                os.rename(path, new_path)
+            except OSError as exc:
+                stores.let_go(lock, owner)
+                die("cannot move %s: %s" % (path, exc))
+            stores.let_go(os.path.join(new_path, ".lock"), owner)
+        del cfg["stores"][old_name]
+        cfg["stores"][new_name] = new_path
+        if cfg.get("active") == old_name:
+            cfg["active"] = new_name
+        stores.save(cfg)
+        out("%s store: %s is now %s (%s)" % (PROG, old_name, new_name,
+                                             storemod.tilde(new_path)))
+        return 0
+    if act == "rm":
+        want(1, "rm NAME [--delete]")
+        name = words[0]
+        cfg = stores.load()
+        path = stores.registered(name, cfg)
+        deleted = False
+        if args.delete and os.path.isdir(path):
+            if os.listdir(path) and not stores.is_store(path):
+                die("%s holds files that are not a provost store: not "
+                    "deleted (it is still registered)" % storemod.tilde(path))
+            stores.hold_lock(path, "delete it")
+            try:
+                shutil.rmtree(path)
+            except OSError as exc:
+                die("could not delete all of %s: %s (it is still "
+                    "registered)" % (storemod.tilde(path), exc))
+            deleted = True
+        del cfg["stores"][name]
+        was_active = cfg.get("active") == name
+        if was_active:
+            cfg["active"] = None
+        stores.save(cfg)
+        out("%s store: %s %s%s" % (
+            PROG, name, "deleted, with " + storemod.tilde(path)
+            if deleted else "forgotten; " + (
+                storemod.tilde(path) + " was not there" if args.delete
+                else "its files stay in " + storemod.tilde(path)),
+            "" if not was_active else
+            "\n  no store is active now: %s store use NAME picks one" % PROG))
+        return 0
+    if act == "export":
+        if len(words) not in (1, 2):
+            die("usage: %s store export [NAME] FILE" % PROG)
+        if len(words) == 2:
+            path, name = stores.resolve(words[0])
+        else:
+            path, name, _ = stores.choose(args.store)
+        name = name or os.path.basename(path.rstrip("/")).lstrip(".") \
+            or "store"
+        if not stores.NAME_RE.match(name):
+            name = "store"
+        m = stores.export(path, name, words[-1])
+        out("%s store export: %s -> %s  (%s, %s, %s, store format %d, "
+            "%s bytes)" % (PROG, name, words[-1],
+                           plural(m["runs"], "run"),
+                           plural(m["captures"], "capture"),
+                           plural(len(m["files"]), "file"),
+                           m["store_format"],
+                           "{:,}".format(os.path.getsize(words[-1]))))
+        return 0
+    if act == "import":
+        want(1, "import FILE [--as NAME]")
+        if not os.path.isfile(words[0]):
+            die("no such file: %s" % words[0])
+        name, dest, m = stores.import_(words[0], args.as_name)
+        out("%s store import: %s = %s  (%s, %s, store format %d, exported "
+            "%s by qd %s)" % (PROG, name, storemod.tilde(dest),
+                              plural(m.get("runs", 0), "run"),
+                              plural(len(m["files"]), "file"),
+                              m["store_format"], m.get("exported", "?"),
+                              m.get("qd", "?")))
+        out("  %s store use %s   to make it the store commands use"
+            % (PROG, name))
+        return 0
+    die("qd store: no such action %r" % act)
+
+
+
 def cmd_campaign(args):
     from . import campaign as camp
     st = store_of(args)
@@ -2284,10 +2481,11 @@ def cmd_hints(args):
 # ---------------------------------------------------------------------------
 
 def add_common(p):
-    p.add_argument("--store", metavar="DIR",
-                   help="the provost store to file into and read (QD_STORE; "
-                   "default provost's own: PROVOST_WORKSPACE, the controlled "
-                   "directory you are in, PROVOST_HOME, ~/.provost)")
+    p.add_argument("--store", metavar="NAME|DIR",
+                   help="the store to file into and read: a name from qd "
+                   "store ls, or a directory (QD_STORE; else PROVOST_"
+                   "WORKSPACE or the controlled directory you are in, then "
+                   "the active store, then ~/.provost)")
     p.add_argument("--width", type=int, metavar="N",
                    help="cut tables to N columns of text (default: the "
                    "terminal's, none when piped)")
@@ -2696,6 +2894,23 @@ def build_parser():
     sp.add_argument("names", nargs="*", metavar="PROBE")
     add_fleet(sp, preview=12)
     sp.set_defaults(fn=cmd_probe)
+
+    sp = verb("store", "named stores: new, ls, use, rename, rm, export, "
+              "import")
+    sp.add_argument("action", nargs="?", choices=[
+        "ls", "new", "use", "rename", "rm", "export", "import"])
+    sp.add_argument("words", nargs="*", metavar="ARG",
+                    help="new NAME | use NAME | rename OLD NEW | rm NAME | "
+                    "export [NAME] FILE | import FILE")
+    sp.add_argument("--path", metavar="DIR",
+                    help="new: put the store here (default %s/NAME)"
+                    % "~/.local/share/quarterdeck/stores")
+    sp.add_argument("--delete", action="store_true",
+                    help="rm: delete the store's files too")
+    sp.add_argument("--as", dest="as_name", metavar="NAME",
+                    help="import: the name to give it (default the one it "
+                    "was exported under)")
+    sp.set_defaults(fn=cmd_store)
 
     sp = verb("campaign", "run a system in parts, progress kept by muster, "
               "every part in provost")

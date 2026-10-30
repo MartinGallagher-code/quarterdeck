@@ -10,7 +10,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quarterdeck"
-version = "0.1.2"
+version = "0.2.0"
 description = "Run commands across a fleet, keep every answer as a dataset, and read it back: statistics, diffs, a terminal explorer and a browser view"
 readme = "README.md"
 requires-python = ">=3.6"

@@ -116,9 +116,59 @@ Besides the answers, a run files two tables of qd's own:
 
 and qd puts them back together when you read a run: each host's status
 beside the rows provost parsed out of its answer, and a row for a host
-that printed nothing. The store is provost's to choose: `--store DIR` or
-`QD_STORE`, else `PROVOST_WORKSPACE`, the controlled directory you are in,
-`PROVOST_HOME`, `~/.provost` -- so `provost ls` lists what qd filed.
+that printed nothing. Whichever store it is, `provost ls` there lists what
+qd filed.
+
+### Named stores: `qd store`
+
+```bash
+qd store new lab               # ~/.local/share/quarterdeck/stores/lab
+qd store new bench --path /data/bench
+qd store use lab               # the store commands use from now on
+qd store ls                    # every store, its runs, which is active
+qd run -s hosts.txt --store bench -- uptime
+qd store rename lab lab-2026   # a store qd made moves with its name
+qd store rm bench              # forgotten; --delete deletes its files too
+```
+
+Which store a command uses, the first of these that applies:
+
+1. `--store NAME` or `--store DIR`: a store's name, or a directory as
+   before, so existing scripts keep working.
+2. `QD_STORE`: a name or a directory.
+3. provost's own explicit choice: `PROVOST_WORKSPACE`, or the controlled
+   directory you are in (`provost control`). qd and provost never disagree
+   about where you are.
+4. The active store: `qd store use NAME`, kept in
+   `~/.config/quarterdeck/config.json`.
+5. provost's default, `PROVOST_HOME` or `~/.provost`, with a warning that
+   no store is active.
+
+Once provost's default store exists, qd registers it as `default`, and
+makes it the active store if none is. So a machine that used qd before
+stores had names keeps working without a step. `qd log`, `show`, `view`,
+`compare`, `diff`, `stats` and the rest all read the store chosen this way.
+`qd web` has a picker for the named stores.
+
+**Moving a store between machines**:
+
+```bash
+qd store export lab lab.tgz    # NAME is optional: the store in use
+qd store import lab.tgz --as lab-from-rig2
+```
+
+An export is one archive: the store whole, with its git history and every
+raw answer under `captures/`. First comes a manifest: qd's and provost's
+versions, the store format, the run count and a sha256 for every file. The
+export takes provost's own store lock, so it refuses while a run is filing,
+and no run starts filing until the archive is written. (A run that finishes
+during a long export waits up to provost's lock timeout, 30 s.)
+
+An import checks the manifest, every checksum, that nothing is missing or
+added, and that this qd reads the store format. It refuses a member that
+would land outside the store, and a link or a device. Only then is the
+store given its name. It refuses a name that is taken: it never merges
+into an existing store.
 
 Name a run the way you'd say it:
 
@@ -234,7 +284,7 @@ security.
 | `--max-output` | `QD_MAX_OUTPUT` | 4 MiB per host; past it the host is killed and reported |
 | `--ssh`, `--scp` | `QD_SSH`, `QD_SCP` | `ssh`, `scp` |
 | `--remote-dir` | `QD_REMOTE_DIR` | `/var/tmp` |
-| `--store` | `QD_STORE` | provost's own choice |
+| `--store` | `QD_STORE` | a name from `qd store ls` or a directory; else the active store (see Named stores) |
 | | `QD_PROVOST` | `provost` on `PATH` |
 | | `QD_PROVOST_BATCH=0` | file one capture at a time even where provost has `batch` |
 | | `QD_FILE_CHUNK` | 200 inputs per `provost batch`, each a commit, so its lock is never held for a whole big fleet |
@@ -554,6 +604,11 @@ anything differs, like `diff(1)`.
 qd web                         # http://127.0.0.1:8100/, opened for you
 qd web --layout floor.dc       # with the floor plan behind "Floor plan"
 ```
+
+With more than one named store, a picker beside the title reads any of
+them (`/api/stores` lists them). The page asks for a store by name, never
+by path. The commands it shows under "same in a terminal" carry
+`--store NAME`.
 
 ![qd web: the table with the load1 column's figures, histogram and outliers](docs/qd-web-table.png)
 
