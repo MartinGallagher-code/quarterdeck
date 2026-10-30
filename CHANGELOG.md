@@ -120,6 +120,12 @@ ssh had passed.
 - A tip to read an answer with provost (`provost source N`) names the store
   when provost would not find it on its own (`--store`, `QD_STORE`):
   `PROVOST_WORKSPACE=... provost source N`.
+- `qd do` filed whatever was at a tool's output path. A run that failed
+  before it wrote anything (an ssh error, exit 1) had the last run's
+  `results/latest` filed under its own id. An output is now filed only if
+  the run changed it, judged by comparing each file's size, mtime and
+  inode before and after the run (no clock is consulted). `--import` still
+  files what it names as it is (`cli.py` `written_mark`, `_do`).
 
 ### Security
 

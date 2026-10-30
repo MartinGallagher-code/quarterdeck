@@ -104,6 +104,30 @@ t_iperf_reads_the_latest_run() {
     assert_contains "$(qd log latest)" "cpu_summary"
 }
 
+# a run that fails before it writes leaves the last run's results where
+# they were: they are that run's, not this one's
+t_an_earlier_run_s_output_is_not_filed() {
+    fake_iperf
+    PATH="$FAKE_BIN:$PATH" qd "do" -- iperf-orchestrator --servers s.txt run > /dev/null 2>&1
+    cat > "$FAKE_BIN/iperf-orchestrator" <<'EOF2'
+#!/bin/bash
+if [ "$1" = "--version" ]; then echo "iperf-orchestrator 2.5.0"; exit 0; fi
+echo "ssh: connect to host s1: refused" >&2
+exit 1
+EOF2
+    PATH="$FAKE_BIN:$PATH" qd "do" -- iperf-orchestrator --servers s.txt run > /dev/null 2> err \
+        || true
+    assert_contains "$(cat err)" "results/latest: not written by this run"
+    assert_contains "$(qd log latest)" "exit      1"
+    assert_not_contains "$(qd log latest)" "iperf_results"
+    # the first run's are still the first run's
+    assert_contains "$(qd show latest~1:iperf_results --format csv)" "1,a,b,OK,9400"
+    # and the user's own --import is read whatever it holds
+    PATH="$FAKE_BIN:$PATH" qd "do" --import results/latest -- \
+        iperf-orchestrator --servers s.txt run > /dev/null 2>&1 || true
+    assert_contains "$(qd log latest)" "iperf_results"
+}
+
 t_agree_gets_csv_added_and_its_status_passes_through() {
     fake_agree
     set +e
@@ -161,6 +185,7 @@ t_qd_tool_variable_names_the_tool() {
 run_test "mx run: reports/ and mx export read back"     t_mx_run_reads_reports_and_exports
 run_test "mx export to stdout is read"                  t_mx_export_to_stdout_is_read
 run_test "iperf-orchestrator: results/latest read"      t_iperf_reads_the_latest_run
+run_test "an earlier run's output is not filed"         t_an_earlier_run_s_output_is_not_filed
 run_test "agree: --csv added, exit status passed on"    t_agree_gets_csv_added_and_its_status_passes_through
 run_test "stdout table and --import"                    t_stdout_table_and_explicit_import
 run_test "plain text output is filed for provost"       t_plain_text_output_is_filed_for_provost_to_read

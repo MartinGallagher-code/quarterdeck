@@ -404,7 +404,10 @@ qd do -- netmesh check --reports idle/ web03 db01
 | any `--csv PATH` | that file; a bare `--csv` prints to stdout |
 | anything else | stdout, when it is a table, or when nothing else came back: filed for provost to read |
 
-`--import PATH` reads more files afterwards; `--no-import` reads nothing
+Only what the tool wrote this time is filed. A run that fails before it
+writes leaves the last run's `results/latest` where it was, and that is
+said and left alone, not filed as this run's. `--import PATH` reads more
+files afterwards, whatever they hold; `--no-import` reads nothing
 back. A tool is found on `PATH`, as an installed module, or wherever
 `QD_<TOOL>` points (`QD_MX="python3 ~/src/matrix_orchestrator/mx"`).
 `qd doctor` says which tools this machine can drive. The exit status is

@@ -574,6 +574,29 @@ def next_steps(tips):
 # do: a tool from the toolchain, run here and filed
 # ---------------------------------------------------------------------------
 
+def written_mark(path):
+    """What is at path now -- each file's name, size, mtime and inode --
+    to tell afterwards whether a run wrote it; None when nothing is.  A
+    comparison of two marks, never of a mark against the clock, so a
+    file server's clock cannot make fresh output look old."""
+    if not os.path.exists(path):
+        return None
+    if not os.path.isdir(path):
+        s = os.stat(path)
+        return ((path, s.st_size, s.st_mtime, s.st_ino),)
+    marks = []
+    for root, dirs, files in os.walk(path):
+        dirs.sort()
+        for f in sorted(files):
+            p = os.path.join(root, f)
+            try:
+                s = os.stat(p)
+            except OSError:
+                continue
+            marks.append((p, s.st_size, s.st_mtime, s.st_ino))
+    return tuple(marks)
+
+
 def run_teed(argv):
     """Run argv with stdout shown live and kept; stderr and stdin stay the
     terminal's, so progress lines and prompts work as they always do."""
@@ -667,8 +690,14 @@ def _do(args, cmd, st, prov, name, label, cmdline, work):
     plan = tools.plan(cmd, work)
     if args.no_import:
         plan.imports, plan.after = [], []
+    # what the tool's outputs were before it ran: one it did not write is
+    # an earlier run's, and is not this one's to file (--import is the
+    # user's word, and is read whatever it holds)
+    before = dict((path, written_mark(path)) for path, _ in plan.imports)
     for path in args.import_ or []:
-        plan.imports.append((path, None))
+        before.pop(path, None)
+        if path not in [p for p, _ in plan.imports]:
+            plan.imports.append((path, None))
     shown = " ".join(shlex.quote(a) for a in plan.argv)
     sys.stderr.write("%s do: %s\n" % (PROG, shown))
     for n in plan.notes:
@@ -697,6 +726,11 @@ def _do(args, cmd, st, prov, name, label, cmdline, work):
     for path, tname in plan.imports:
         if not os.path.exists(path):
             log.append("  - %s: not there, nothing read" % path)
+            continue
+        if before.get(path) is not None and written_mark(path) == before[path]:
+            log.append("  - %s: not written by this run (an earlier run's), "
+                       "not filed; --import %s files it as it is"
+                       % (path, shlex.quote(path)))
             continue
         try:
             got = importers.read_path(path)
