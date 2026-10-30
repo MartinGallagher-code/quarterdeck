@@ -430,8 +430,8 @@ class Api(object):
             die("only a run in the store can be put on the floor plan")
         o = tools.to_overlay(s, e.id)
         name = "overlay.tsv" if t.name == "data" else \
-            "overlay-%s.tsv" % t.name
-        sub = re.sub(r"[^\w.@-]+", "_", e.id)
+            "overlay-%s.tsv" % re.sub(r"[^\w@-]+", "_", t.name)
+        sub = re.sub(r"[^\w@-]+", "_", e.id)
         path = os.path.join(floor_root(), sub, name)
         write_text(path, tablemod.to_results(o))
         url = None
@@ -493,10 +493,27 @@ ROUTES = {"/api/entries": "entries", "/api/entry": "entry_info",
           "/api/groups": "groups"}
 
 
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
 class Handler(BaseHTTPRequestHandler):
     api = None
     quiet = False
+    loopback = True
     server_version = "quarterdeck/" + VERSION
+
+    def host_ok(self):
+        """Bound to this machine, the server answers only requests made to
+        a loopback name: a page elsewhere that points its own name at
+        127.0.0.1 (DNS rebinding) is turned away."""
+        if not self.loopback:
+            return True
+        host = (self.headers.get("Host") or "").strip().lower()
+        if host.startswith("["):
+            host = host[1:].split("]", 1)[0]
+        else:
+            host = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+        return host in LOOPBACK
 
     def log_message(self, fmt, *args):
         if not self.quiet:
@@ -524,6 +541,10 @@ class Handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self):
+        if not self.host_ok():
+            self.send_json(403, {"error": "this server answers requests "
+                                 "to 127.0.0.1 or localhost only"})
+            return
         url = urlparse(self.path)
         path = url.path
         q = parse_qs(url.query, keep_blank_values=True)
@@ -627,6 +648,7 @@ def serve(book, host="127.0.0.1", port=8100, layout=None, open_browser=True,
 
     Bound.api = api
     Bound.quiet = quiet
+    Bound.loopback = host in LOOPBACK
     port = free_port(host, port)
     httpd = ThreadingServer((host, port), Bound)
     shown = "[%s]" % host if ":" in host else host
@@ -636,7 +658,7 @@ def serve(book, host="127.0.0.1", port=8100, layout=None, open_browser=True,
         sys.stderr.write("%s web: the floor-plan viewer is at %sfloor/\n"
                          % (PROG, url))
     sys.stderr.write("%s web: %s   (Ctrl+C to stop)\n" % (PROG, url))
-    if host not in ("127.0.0.1", "localhost", "::1"):
+    if host not in LOOPBACK:
         sys.stderr.write("%s web: listening beyond this machine: anyone who "
                          "can reach %s:%d can read the store\n"
                          % (PROG, host, port))

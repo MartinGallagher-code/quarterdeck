@@ -207,6 +207,9 @@ def provost_columns(columns, context=()):
     return out
 
 
+# what provost takes for a dataset's name: letters, digits, '.', '_', '-'
+DATASET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
 LONG_KEYS = ("field", "key", "name")
 # What provost files beside a long key and value: its row number, and a
 # group -- a `key:` line with nothing after it (a setting not measured on
@@ -352,7 +355,9 @@ class Store(object):
         return sorted(n[:-4] for n in names if n.endswith(".tsv"))
 
     def has_dataset(self, name):
-        return os.path.isfile(self.path("datasets", name + ".tsv"))
+        # a provost name, never a path: `ds:../../x` is not a dataset
+        return bool(DATASET_RE.match(name or "")) and ".." not in name \
+            and os.path.isfile(self.path("datasets", name + ".tsv"))
 
     def dataset(self, name):
         if name not in self._tables:
@@ -518,6 +523,9 @@ class Store(object):
         """latest, latest~N, a run id or a unique part of one, a run's
         --name (its latest), ds:NAME or a dataset no run is named."""
         if ref.startswith("ds:"):
+            if not self.has_dataset(ref[3:]):
+                die("no dataset %r in %s (provost ls lists them)"
+                    % (ref[3:], self.shown()))
             return Dataset(self, ref[3:])
         entries = self.entries()
         m = re.match(r"^(latest|last|prev)?(?:~(\d+))?$", ref)

@@ -121,6 +121,18 @@ ssh had passed.
   when provost would not find it on its own (`--store`, `QD_STORE`):
   `PROVOST_WORKSPACE=... provost source N`.
 
+### Security
+
+- `qd web` read any `.tsv` file on the machine through a reference: `e=`
+  went to the store's dataset lookup unchecked, so `/api/rows?e=/path/x`
+  or `e=ds:../../x` returned `/path/x.tsv` (and `/api/export` the whole
+  file), and `/api/overlay` could write its overlay outside the cache. A
+  dataset name is a provost name now (letters, digits, `.`, `_`, `-`, no
+  `..`), in the CLI as in the server, and an overlay's file name is
+  sanitised. Bound to loopback, the server answers only requests made to
+  127.0.0.1 or localhost, so a web page that points its own name at it
+  (DNS rebinding) is turned away.
+
 ### Tests
 
 - Cases for each of the above, with commands hidden from a fake host
