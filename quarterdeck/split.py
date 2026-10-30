@@ -199,11 +199,18 @@ def by_answers(hosts, entry):
     from the store rather than asked again)."""
     t = entry.load("hosts")
     names = dict((h.name, h) for h in hosts)
-    groups, order = {}, []
+    # a run of several passes has a row per host per pass: a host's answer
+    # is its last one, and each host goes in one list once
+    last, seen = {}, []
     for r in t.rows:
         host = r[t.index("host")]
-        if host not in names:
-            continue
+        if host in names:
+            if host not in last:
+                seen.append(host)
+            last[host] = r
+    groups, order = {}, []
+    for host in seen:
+        r = last[host]
         status = r[t.index("status")]
         cap = r[t.index("capture")] if t.has("capture") else ""
         if status != "ok":

@@ -454,6 +454,10 @@ def _cell(v):
     if isinstance(v, bool):
         return "true" if v else "false"
     if isinstance(v, float):
+        if v != v:
+            return ""                   # NaN: not a number, not measured
+        if v in (float("inf"), float("-inf")):
+            return "inf" if v > 0 else "-inf"
         return repr(v) if v != int(v) or abs(v) >= 1e16 else str(int(v))
     if isinstance(v, (list, tuple)):
         if all(not isinstance(x, (dict, list)) for x in v):
@@ -596,7 +600,10 @@ def detect(text):
             break
     if not body:
         return "empty"
-    if body[0][0] in "{[":
+    # `[INFO] started` is a log line, not JSON: a '[' opens JSON only
+    # when a value can follow it
+    if body[0][0] == "{" or re.match(
+            r'^\[\s*([\[{"\-\d\]]|true\b|false\b|null\b|$)', body[0]):
         return "json"
     if any(b.startswith("!test") for b in body):
         return "results"

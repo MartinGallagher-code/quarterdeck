@@ -103,6 +103,19 @@ t_a_multi_line_command_is_one_line() {
     assert_not_contains "$out" "second_line_of_the_script"
 }
 
+# repeated keys reduce to a number: an --agg that gives words is refused
+t_a_wordy_agg_is_refused() {
+    install_fake_ssh
+    for h in a b; do fake_host "$h"; echo "x: 1" > "$FAKE_ROOT/$h/f"; done
+    printf 'a\nb\n' > hosts.txt
+    qdf run -s hosts.txt -q --name w -- cat f > /dev/null
+    qdf run -s hosts.txt -q --name w -- cat f > /dev/null
+    qd_rc compare w --last 2 -c x --agg top 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "one number"
+}
+
+run_test "a wordy --agg is refused"                 t_a_wordy_agg_is_refused
 run_test "a multi-line command is one line"           t_a_multi_line_command_is_one_line
 run_test "--last N, one column: summary and drift"    t_last_n_runs_one_column
 run_test "identical runs exit 0"                      t_identical_runs_exit_zero

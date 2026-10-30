@@ -1890,6 +1890,10 @@ def doe_run(args, st, doemod):
         if row.get("command") != template:
             die("the design %s was run with another command (%s): --name "
                 "a new one for this command" % (name, row.get("command")))
+        if (row.get("blocks_by") or "") != (args.blocks_by or ""):
+            die("the design %s was run %s: give the same, or --name a new "
+                "design" % (name, ("--blocks-by " + row["blocks_by"])
+                            if row.get("blocks_by") else "without --blocks-by"))
     else:
         seed = doemod.seed_of(cfg, args.seed)
         matrix = doemod.generate(cfg, seed)
@@ -1909,6 +1913,11 @@ def doe_run(args, st, doemod):
                 % (nblocks, args.blocks_by, plural(len(groups), "group")))
         blocks = dict((i + 1, members) for i, (_, members)
                       in enumerate(groups))
+        if len(groups) > nblocks:
+            warn("the design has %s and --blocks-by %s gives %d groups: %s "
+                 "will not be measured" % (
+                     plural(nblocks, "block"), args.blocks_by, len(groups),
+                     ", ".join(g for g, _ in groups[nblocks:])))
     done = doemod.point_runs(st, name)
     worst, ran = 0, 0
     # every point's command is checked before the first runs: a point the

@@ -157,6 +157,20 @@ t_with_the_real_doe() {
     assert_contains "$out" "streams                300.0000"
 }
 
+# more host groups than blocks: the ones left out are said
+t_unblocked_groups_are_said() {
+    stand_in_doe
+    seed
+    config
+    printf 'a rack=r1\nb rack=r2\nc rack=r3\n' > hosts.txt
+    qdf doe run bench.json -s hosts.txt --blocks-by rack -q -- "$BENCH" > out 2> err
+    assert_contains "$(cat err)" "rack-r2, rack-r3 will not be measured"
+    qdf_rc doe run bench.json -s hosts.txt -q -- "$BENCH" 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "was run --blocks-by rack"
+}
+
+run_test "more groups than blocks: said"            t_unblocked_groups_are_said
 run_test "plan shows doe's design"                   t_plan_shows_the_design
 run_test "run measures every point, once"            t_run_measures_every_point_once
 run_test "analyze hands doe the responses"           t_analyze_hands_doe_the_responses

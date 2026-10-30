@@ -108,6 +108,18 @@ t_one_way_at_a_time() {
     assert_contains "$(cat err)" "got --by, --into"
 }
 
+# a run of several passes: each host once, by its last answer
+t_answers_of_a_multi_pass_run() {
+    install_fake_ssh
+    for h in n1 n2; do fake_host "$h"; echo same > "$FAKE_ROOT/$h/f"; done
+    printf 'n1\nn2\n' > hosts.txt
+    qdf run -q -s hosts.txt --every 0.1 --count 3 -- cat f > /dev/null
+    rm hosts.txt
+    out="$(qd split --answers latest --format csv)"
+    assert_eq "$(printf '%s\n' "$out" | grep -c '^answer-1,')" "2"
+}
+
+run_test "--answers: a multi-pass run"              t_answers_of_a_multi_pass_run
 run_test "--by ATTR, and the lists as files"          t_by_attribute_and_files
 run_test "--into, --deal, --size"                     t_shards_deals_and_waves
 run_test "--random: seeded, --stratify"               t_random_is_seeded_and_stratified

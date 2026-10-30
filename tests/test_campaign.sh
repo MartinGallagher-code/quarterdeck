@@ -131,6 +131,16 @@ t_a_failed_pool_leaves_no_campaign() {
     fi
 }
 
+# a part's previous run is the same part's, not the part before it
+t_a_parts_previous_run_is_its_own() {
+    have_muster || { echo "  (no muster here: pip install binnacle)"; return 0; }
+    seed
+    qdf campaign run burn > /dev/null
+    qd_rc diff latest 2> err
+    assert_contains "$(cat err)" "nothing earlier in the store ran"
+}
+
+run_test "a part's previous run is its own"         t_a_parts_previous_run_is_its_own
 run_test "without muster: refused, and why"          t_without_muster_it_says_so
 run_test "--dry-run takes nothing from the pool"     t_a_dry_run_takes_nothing
 run_test "a failed pool leaves no campaign"          t_a_failed_pool_leaves_no_campaign

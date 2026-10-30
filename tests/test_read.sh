@@ -202,6 +202,18 @@ t_a_data_column_called_n_is_kept() {
     assert_contains "$(qd show latest --cols host,dev,n --format csv)" "y,sda,4"
 }
 
+# a log whose first line opens with [ is a log; JSON NaN is not measured
+t_brackets_and_nan() {
+    printf '[INFO] started\n[WARN] slow disk\n' > log.txt
+    assert_contains "$(qd show log.txt --format csv)" "[WARN]"
+    printf '[{"host":"a","mbps":NaN},{"host":"b","mbps":Infinity}]\n' > nan.json
+    out="$(qd show nan.json --format csv)"
+    assert_contains "$out" "a,"
+    assert_contains "$out" "b,inf"
+    assert_not_contains "$out" "nan"
+}
+
+run_test "[INFO] logs, and JSON NaN"                t_brackets_and_nan
 run_test "a data column called n is kept"            t_a_data_column_called_n_is_kept
 run_test "results format, !test lines, meta"            t_results_format_with_meta
 run_test "results round-trip through the store"         t_results_round_trip_through_the_store

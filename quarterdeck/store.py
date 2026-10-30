@@ -535,13 +535,15 @@ class Store(object):
         if not isinstance(entry, Run):
             return None
         entries = self.entries()
-        key = (entry.meta.get("kind"), entry.meta.get("command"),
-               entry.meta.get("name"))
+        # a campaign's parts run one command under one name: the part is
+        # what tells them apart, so rack-r2 is compared with rack-r2
+        def key(e):
+            return (e.meta.get("kind"), e.meta.get("command"),
+                    e.meta.get("name"), e.meta.get("part") or "")
         ids = [e.id for e in entries]
         earlier = entries[:ids.index(entry.id)] if entry.id in ids else []
         for e in reversed(earlier):
-            if (e.meta.get("kind"), e.meta.get("command"),
-                    e.meta.get("name")) == key:
+            if key(e) == key(entry):
                 return e
         return None
 

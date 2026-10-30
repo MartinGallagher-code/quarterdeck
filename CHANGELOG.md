@@ -80,6 +80,22 @@ ssh had passed.
     plan` showed a different run order from the one `run` used, both
     drawing doe's random order unseeded. The default seed comes from the
     config, so plan shows what run will do.
+  - `qd diff RUN` (and the web page's "previous") compared a campaign part
+    with the part before it -- every key gone or new -- because the parts
+    share a command and a name; the part is part of the match now.
+  - `qd split --answers RUN` on a run of several passes put each host in
+    its lists once per pass; a host is in one list, by its last answer.
+  - `qd compare --agg top` (or worst, first, ...) crashed on a repeated
+    key; compare reduces to a number, and says which aggregations do.
+  - `qd diff` rounded a key reduced from repeated rows to four figures and
+    compared it with the other side's exact value, so identical data read
+    as changed.
+  - A log whose first line opens with `[` (`[INFO] ...`) was refused as
+    JSON; JSON's `NaN` crashed the reader, and is blank now (Infinity
+    reads `inf`).
+  - `qd doe run --blocks-by ATTR` said nothing of the host groups a design
+    with fewer blocks leaves out, and a re-run without the same
+    `--blocks-by` was allowed; the first is said, the second refused.
 - A tip to read an answer with provost (`provost source N`) names the store
   when provost would not find it on its own (`--store`, `QD_STORE`):
   `PROVOST_WORKSPACE=... provost source N`.

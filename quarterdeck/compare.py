@@ -87,6 +87,10 @@ def compare(tables, column=None, key=None, drift=5.0, agg="median",
     from the store).  Returns a Compared."""
     if len(tables) < 2:
         die("compare wants two runs or more (found %d)" % len(tables))
+    if agg in ("distinct", "first", "last", "top", "worst", "auto"):
+        die("compare reduces a key's repeated rows to one number: --agg "
+            "median, mean, min, max, sum, stdev, range, p05..p99 or count "
+            "(not %s)" % agg)
     if agg not in AGGS:
         die("unknown --agg %r (want %s)" % (agg, ", ".join(sorted(AGGS))))
     if not 0 <= baseline < len(tables):

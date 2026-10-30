@@ -95,7 +95,10 @@ def _reduce(table, key_idx, cols, agg, side, notes):
             if len(cells) == 1:
                 vals[c] = cells[0].strip()
             else:
-                vals[c] = cell(AGGS[agg](cells))
+                v = AGGS[agg](cells)
+                # full precision: a single row on the other side is not
+                # rounded, so neither is this
+                vals[c] = ("%.15g" % v) if isinstance(v, float) else cell(v)
         out[k] = vals
     if multi:
         notes.append("%s: %d rows over %d keys -- %d keys repeat, so each "
