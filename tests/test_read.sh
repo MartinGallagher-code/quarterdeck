@@ -203,6 +203,14 @@ t_export_formats_and_overlay() {
     assert_not_contains "$out" "512M"
 }
 
+# a quote in a cell is the cell's: kept through provost on either of
+# its paths (2.1.0's TSV reader drops quotes; its CSV reader does not)
+t_a_quote_in_a_cell_is_kept() {
+    printf 'host,os\na,"PRETTY_NAME=""Ubuntu 24.04"""\nb,plain\n' > q.csv
+    qd import q.csv > /dev/null
+    assert_contains "$(qd show latest --format json)" '"os": "PRETTY_NAME=\"Ubuntu 24.04\""'
+}
+
 t_as_overrides_detection() {
     printf 'x y 3\n' > f.txt
     out="$(qd show f.txt --format csv)"
@@ -269,6 +277,7 @@ run_test "a reports/ directory stacks by header"        t_reports_directory_stac
 run_test "no host column: source_file is added"         t_folder_without_host_column_gets_source_file
 run_test "iperf results/latest run directory"           t_iperf_run_directory_and_latest
 run_test "BOM, CRLF and a repeated header"              t_bom_crlf_and_repeated_headers
+run_test "a quote in a cell is kept"                   t_a_quote_in_a_cell_is_kept
 run_test "export: json, ndjson, md, overlay"            t_export_formats_and_overlay
 run_test "--as overrides detection"                     t_as_overrides_detection
 finish

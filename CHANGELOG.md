@@ -247,6 +247,12 @@ ssh had passed.
   `SCRIPT_DIR/results`; only the installed command uses `./results`), so
   nothing was filed. qd now looks where the script writes
   (`tools.py` `iperf_results_base`).
+- On provost 2.1.0 (PyPI's, without `batch`), a double quote in a cell of
+  a table `qd do`, `qd import` or a tool probe filed was lost:
+  `PRETTY_NAME="Ubuntu 24.04"` came back without its quotes, because
+  that provost's TSV reader drops them. A table with a quote in it is
+  now filed as quoted CSV, which every provost reads whole
+  (`filing.py` `table_tsv`).
 - A command on a host that exited 124 itself (`timeout 5 check`) was
   reported as a qd timeout and listed as not answering. qd's own timeout
   is now marked as such (`fleet.py` `TimedOut`).

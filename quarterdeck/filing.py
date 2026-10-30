@@ -19,6 +19,8 @@ PyPI) files them one capture at a time, a few in parallel, and qd puts
 the host back from each capture's prologue just the same.
 """
 
+import csv
+import io
 import os
 import re
 import shutil
@@ -64,7 +66,19 @@ def own_tsv(columns, rows):
 
 def table_tsv(t):
     """A table qd read, as plain TSV: tabs and newlines in a cell become
-    spaces, a blank stays blank."""
+    spaces, a blank stays blank.  One with a double quote in a cell goes
+    as quoted CSV instead: provost's TSV reader dropped every quote until
+    2.2.0 (PyPI's 2.1.0 still does) -- `PRETTY_NAME="Ubuntu"` came back
+    without them -- and its CSV reader never has."""
+    if len(t.columns) > 1 and any('"' in v for v in t.columns) or any(
+            '"' in v for r in t.rows for v in r):
+        if len(t.columns) > 1:
+            buf = io.StringIO()
+            w = csv.writer(buf, lineterminator="\n")
+            w.writerow([cell(c) for c in t.columns])
+            for r in t.rows:
+                w.writerow([cell(v) for v in r])
+            return buf.getvalue()
     lines = ["\t".join(cell(c) for c in t.columns)]
     for r in t.rows:
         lines.append("\t".join(cell(v) for v in r))
