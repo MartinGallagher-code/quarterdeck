@@ -241,6 +241,30 @@ EOF
     assert_contains "$(get /api/entries)" "200"
 }
 
+# the store picker: the named stores, and any of them read by name --
+# never by path
+t_the_store_picker_reads_named_stores() {
+    seed
+    qd store new lab > /dev/null
+    printf 'host,mbps\nx,9400\n' > lab.csv
+    qd import lab.csv --name in_lab --store lab > /dev/null 2>&1
+    start_web
+    out="$(get /api/stores)"
+    assert_contains "$out" '"name": "lab"'
+    assert_contains "$out" '"runs": 1'
+    assert_contains "$out" '"here": null'
+    out="$(get '/api/entries?store=lab')"
+    assert_contains "$out" '"name": "in_lab"'
+    assert_not_contains "$out" "cat load"
+    assert_contains "$(get '/api/rows?e=latest&store=lab')" '"x"'
+    # the server's own store when none is named
+    assert_contains "$(get /api/entries)" "cat load"
+    out="$(get "/api/entries?store=$TEST_TMPDIR/store")"
+    assert_contains "$out" "400"
+    assert_contains "$out" "no store named"
+    assert_contains "$(get '/api/entries?store=nope')" "400"
+}
+
 t_app_js_parses() {
     if ! command -v node > /dev/null 2>&1; then
         echo "  (node not installed: syntax check skipped)"
@@ -286,6 +310,7 @@ run_test "campaigns and designs, and their runs"     t_campaigns_and_designs_are
 run_test "raw answers, export, overlay"             t_raw_export_and_overlay
 run_test "static page; nothing escapes its root"    t_static_page_and_no_escape
 run_test "references are never paths"              t_refs_are_never_paths
+run_test "the store picker reads named stores"      t_the_store_picker_reads_named_stores
 run_test "app.js parses"                            t_app_js_parses
 run_test "floor: overlay written, viewer named"       t_floor_writes_the_overlay_and_names_the_viewer
 run_test "no store yet: refused"                    t_empty_store_is_refused

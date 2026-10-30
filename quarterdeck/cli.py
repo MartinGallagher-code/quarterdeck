@@ -117,7 +117,10 @@ def out(text=""):
 
 
 def store_of(args):
-    return storemod.Store(getattr(args, "store", None))
+    """The store this command uses: --store NAME|DIR, QD_STORE, provost's
+    explicit choice, the active store, provost's default (stores.py)."""
+    from . import stores
+    return storemod.Store(stores.choose(getattr(args, "store", None))[0])
 
 
 def manifest_argv():
@@ -294,14 +297,15 @@ def host_row(rid, r):
             r.stderr[:STDERR_KEEP]]
 
 
-def filed(st, rid, notes, batch):
+def filed(st, rid, notes, batch, cleanup=True):
     """The run just filed, read back from the store -- proof it is there.
     If it is not, the answers are still on disk, and how to file them is
     said: a fleet's answers are never thrown away for want of a store."""
     st.reset()
     for e in reversed(st.entries()):
         if e.id == rid:
-            batch.cleanup()
+            if cleanup:
+                batch.cleanup()
             if notes:
                 e.meta.setdefault("notes", []).extend(notes)
             return e
@@ -375,65 +379,34 @@ class Job(object):
         self.rc = 0 if all(r.outcome == fleet.OK for r in self.last) else 1
 
 
-def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
-              store=True):
-    """Run `command` on every host, as args says (ssh, jobs, timeout,
-    passes), and file what came back as one run named `label`.
+def new_runner(args):
+    return fleet.Runner(ssh=args.ssh, scp=args.scp, user=args.user,
+                        timeout=args.timeout, max_output=args.max_output,
+                        remote_dir=args.remote_dir, sudo=args.sudo)
 
-    context: (key, value) pairs every answer's prologue carries besides
-    run and host -- a campaign's part, a design point's factors -- so they
-    are columns of provost's rows too.  extra: fields of the qd.runs row
-    (group, part, factors).  Returns a Job, or None for --dry-run."""
-    if args.count < 0 or (args.count == 0 and not args.every):
-        die("--count wants 1 or more (0, meaning until Ctrl-C, needs "
-            "--every)")
-    if args.every is not None and args.every <= 0:
-        die("--every wants a number of seconds above 0")
-    runner = fleet.Runner(ssh=args.ssh, scp=args.scp, user=args.user,
-                          timeout=args.timeout, max_output=args.max_output,
-                          remote_dir=args.remote_dir, sudo=args.sudo)
-    if args.dry_run:
-        for h in hs:
-            out(" ".join(shlex.quote(a) for a in runner.ssh_argv(
-                h, runner.command_for(command, bool(push)))))
-        return None
-    for tool, why in ((runner.ssh, True), (runner.scp, bool(push))):
+
+def check_transport(runner, pushing):
+    for tool, why in ((runner.ssh, True), (runner.scp, pushing)):
         if why and not shutil.which(tool[0]):
             die("cannot run %s: not found (--ssh/--scp, QD_SSH/QD_SCP) -- "
                 "no host was contacted" % tool[0])
-    st = prov = None
-    if store and not args.no_store:
-        # before the fleet, not after: answers with nowhere to go are lost
-        st = store_of(args)
-        prov = filing.Provost(st)
-        prov.require("keep the answers")
-    count = args.count if args.count else 10 ** 9
-    t0 = time.time()
-    created = now_iso()
-    results, interrupted = fleet.run_passes(
-        hs, lambda h, k: runner.run_one(h, command, list(push) or None,
-                                        not args.keep_remote, k),
-        args.jobs, count, args.every or 0)
-    if not results:
-        die("interrupted before any pass finished; nothing was kept", 130)
-    if push and args.keep_remote:
-        warn("the pushed files are left on each host in %s"
-             % runner.work_dir)
-    took = round(time.time() - t0, 2)
-    passes = max(r.pass_no for r in results)
-    last = [r for r in results if r.pass_no == passes]
-    if st is None:
-        return Job(results, interrupted, None, unfiled_table(results, passes))
-    # a part of a campaign or a design point carries its part in its id:
-    # two workers on one campaign finish parts in the same second
-    part = (extra or {}).get("part")
-    rid = new_run_id(st, ("%s-%s" % (label, part)) if part else label)
+
+
+def dry_run_lines(runner, hs, command, push=(), stdin=None):
+    for h in hs:
+        out(" ".join(shlex.quote(a) for a in runner.ssh_argv(
+            h, runner.command_for(command, bool(push)))) +
+            (" < %s" % shlex.quote(stdin) if stdin else ""))
+
+
+def add_answers(b, rid, label, results, passes, context=()):
+    """A run's answers into a batch, one input each.  -> how many."""
     ds = filing.dataset_name(label)
-    b = filing.Batch()
     # a host attribute by the name of something the run set (a design's
     # factor: mtu=9000 on the host, mtu=1500 the point) would overwrite it
     # in the rows -- provost keeps the last -- so it is carried as attr_
     set_here = set(k for k, _ in context)
+    n = 0
     for r in results:
         if r.stdout.strip():
             pairs = [("run", rid), ("host", r.host.name)] + (
@@ -441,7 +414,15 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
                 list(context) + [(("attr_" + k) if k in set_here else k, v)
                                  for k, v in r.host.attrs]
             b.add(ds, filing.prologue(pairs) + filing.body(r.stdout))
-    ncap = len(b.inputs)
+            n += 1
+    return n
+
+
+def add_own_tables(b, rid, label, command, created, took, hs, results,
+                   interrupted, passes, every, ncap, extra=None):
+    """A run's qd.hosts rows and qd.runs row into a batch, after every
+    answer in it."""
+    last = [r for r in results if r.pass_no == passes]
     b.add_own(storemod.HOSTS, filing.own_tsv(
         storemod.HOST_COLUMNS, [host_row(rid, r) for r in results]))
     counts = outcome_counts(last)
@@ -453,15 +434,116 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
         timeout=counts.get(fleet.TIMEOUT, 0),
         unreachable=counts.get(fleet.UNREACHABLE, 0),
         push_failed=counts.get(fleet.PUSH_FAILED, 0), passes=passes,
-        every=args.every, captures=ncap,
+        every=every, captures=ncap,
         notes=("interrupted after %s" % plural(passes, "pass", "passes"))
         if interrupted else None, **fields)]))
+
+
+def say_filing(ncap):
     if ncap > 8 and sys.stderr.isatty():
         sys.stderr.write("%s: filing %s through provost ...\n"
                          % (PROG, plural(ncap, "answer")))
+
+
+def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
+              store=True, stdin=None):
+    """Run `command` on every host, as args says (ssh, jobs, timeout,
+    passes), and file what came back as one run named `label`.
+
+    context: (key, value) pairs every answer's prologue carries besides
+    run and host -- a campaign's part, a design point's factors -- so they
+    are columns of provost's rows too.  extra: fields of the qd.runs row
+    (group, part, factors).  stdin: a local file fed to the command on
+    every host.  Returns a Job, or None for --dry-run."""
+    if args.count < 0 or (args.count == 0 and not args.every):
+        die("--count wants 1 or more (0, meaning until Ctrl-C, needs "
+            "--every)")
+    if args.every is not None and args.every <= 0:
+        die("--every wants a number of seconds above 0")
+    runner = new_runner(args)
+    if args.dry_run:
+        dry_run_lines(runner, hs, command, push, stdin)
+        return None
+    check_transport(runner, bool(push))
+    st = prov = None
+    if store and not args.no_store:
+        # before the fleet, not after: answers with nowhere to go are lost
+        st = store_of(args)
+        prov = filing.Provost(st)
+        prov.require("keep the answers")
+    count = args.count if args.count else 10 ** 9
+    t0 = time.time()
+    created = now_iso()
+    results, interrupted = fleet.run_passes(
+        hs, lambda h, k: runner.run_one(h, command, list(push) or None,
+                                        not args.keep_remote, k, stdin),
+        args.jobs, count, args.every or 0)
+    if not results:
+        die("interrupted before any pass finished; nothing was kept", 130)
+    if push and args.keep_remote:
+        warn("the pushed files are left on each host in %s"
+             % runner.work_dir)
+    took = round(time.time() - t0, 2)
+    passes = max(r.pass_no for r in results)
+    if st is None:
+        return Job(results, interrupted, None, unfiled_table(results, passes))
+    # a part of a campaign or a design point carries its part in its id:
+    # two workers on one campaign finish parts in the same second
+    part = (extra or {}).get("part")
+    rid = new_run_id(st, ("%s-%s" % (label, part)) if part else label)
+    b = filing.Batch()
+    ncap = add_answers(b, rid, label, results, passes, context)
+    add_own_tables(b, rid, label, command, created, took, hs, results,
+                   interrupted, passes, args.every, ncap, extra)
+    say_filing(ncap)
     notes = file_batch(prov, b, "answers")
     entry = filed(st, rid, notes, b)
     return Job(results, interrupted, entry, entry.load("data"))
+
+
+def fleet_runs_together(args, hs, specs, extra=None):
+    """Several commands on every host at once, each filed as a run of its
+    own -- `qd probe facts inventory`.  Every (command, host) pair goes
+    through one pool of --jobs, and every run is filed in one provost call
+    and one commit.  One after another, each paid its own round of ssh,
+    its own wait on a dead host (8 s apiece), and its own provost call.
+
+    specs: [(label, command, stdin)].  One pass.  -> [Job]"""
+    runners = [new_runner(args) for _ in specs]
+    check_transport(runners[0], False)
+    st = store_of(args)
+    prov = filing.Provost(st)
+    prov.require("keep the answers")
+    tasks = [(i, h) for i in range(len(specs)) for h in hs]
+    t0 = time.time()
+    created = now_iso()
+
+    def one(task, k):
+        i, h = task
+        _, command, stdin = specs[i]
+        return runners[i].run_one(h, command, None, True, k, stdin)
+
+    results, interrupted = fleet.run_passes(tasks, one, args.jobs)
+    if not results:
+        die("interrupted before any host answered; nothing was kept", 130)
+    each = [[] for _ in specs]
+    for (i, _), r in zip(tasks, results):
+        each[i].append(r)
+    b = filing.Batch()
+    rids, ncaps = [], []
+    for (label, _, _), rs in zip(specs, each):
+        rids.append(new_run_id(st, label))
+        ncaps.append(add_answers(b, rids[-1], label, rs, 1))
+    for (label, command, _), rs, rid, ncap in zip(specs, each, rids, ncaps):
+        # a run took as long as its slowest host
+        took = round(max(r.started + r.duration for r in rs) - t0, 2)
+        add_own_tables(b, rid, label, command, created, took, hs, rs,
+                       False, 1, None, ncap, extra)
+    say_filing(sum(ncaps))
+    notes = file_batch(prov, b, "answers")
+    entries = [filed(st, rid, notes, b, cleanup=False) for rid in rids]
+    b.cleanup()
+    return [Job(rs, False, e, e.load("data")) for rs, e in zip(each, entries)]
 
 
 def unfiled_table(results, passes):
@@ -1728,28 +1810,40 @@ def cmd_probe(args):
     hs = collect(args)
     check_limit(args, hs)
     worst = 0
+    # the probes run on the hosts: (name, what, command, stdin)
+    on_hosts = []
+    for n in names:
+        name, kind, how, what, needs = probes.get(n)
+        if kind == "script":
+            # sent to `python3 -` on stdin, as why-slow --ssh sends itself:
+            # one connection per host, and nothing written there to clean
+            # up -- not a push, a chmod, a run and a removal
+            command = probes.script_command(how, " ".join(
+                ["python3", "-"] + [shlex.quote(a) for a in how[1]]))
+            on_hosts.append((name, what, command,
+                             probes.script_path(how[0])))
+        elif kind == "command":
+            on_hosts.append((name, what, how, None))
+    together = len(on_hosts) > 1 and args.count == 1 and not args.every \
+        and not args.dry_run and not args.no_store
+    if together:
+        jobs = fleet_runs_together(args, hs, [
+            (name, command, stdin) for name, _, command, stdin in on_hosts],
+            extra={"tool": "probe"})
+    else:
+        jobs = [fleet_run(args, hs, command, name, extra={"tool": "probe"},
+                          stdin=stdin)
+                for name, _, command, stdin in on_hosts]
+    for (name, what, _, _), job in zip(on_hosts, jobs):
+        if job is None:
+            continue
+        report_run(args, what, hs, job, title="%s probe %s" % (PROG, name))
+        worst = max(worst, job.rc)
+    # tools drive the fleet themselves, from here, one after another
     for n in names:
         name, kind, how, what, needs = probes.get(n)
         if kind == "tool":
-            rc = probe_tool(args, name, how, hs)
-        else:
-            if kind == "script":
-                # run by python3, not as an executable: a file copied out
-                # of site-packages has no x bit
-                path = probes.script_path(how[0])
-                command = probes.script_command(
-                    how, "python3 " + remote_script(args, path, how[1]))
-                push = [path]
-            else:
-                command, push = how, []
-            job = fleet_run(args, hs, command, name, push,
-                            extra={"tool": "probe"})
-            if job is None:
-                continue
-            report_run(args, what, hs, job,
-                       title="%s probe %s" % (PROG, name))
-            rc = job.rc
-        worst = max(worst, rc)
+            worst = max(worst, probe_tool(args, name, how, hs))
     return worst
 
 
@@ -1781,6 +1875,200 @@ def probe_tool(args, name, how, hs):
 # ---------------------------------------------------------------------------
 # campaign: a system in parts, muster keeping count
 # ---------------------------------------------------------------------------
+
+def cmd_store(args):
+    """Named stores: qd store [ls|new|use|rename|rm|export|import]."""
+    from . import stores
+    act = args.action or "ls"
+    words = list(args.words or [])
+
+    def want(n, usage):
+        if len(words) != n:
+            die("usage: %s store %s" % (PROG, usage))
+
+    if act == "ls":
+        want(0, "ls")
+        cfg = stores.load()
+        try:
+            path, name, how = stores.choose(args.store, quiet=True)
+        except QdError as exc:
+            # a bad --store or QD_STORE is no reason not to list the stores
+            path, name, how = None, None, str(exc)
+        rows = []
+        for n in sorted(cfg["stores"]):
+            p = cfg["stores"][n]
+            runs = stores.run_count(p)
+            rows.append(["*" if n == cfg.get("active") else "", n,
+                         "" if runs is None else str(runs),
+                         storemod.tilde(p) + ("" if os.path.isdir(p)
+                                              else "   (not there)")])
+        lines = ["%s store -- %s" % (PROG, plural(len(rows), "named store"))]
+        if rows:
+            lines.append("")
+            lines.extend(render.render_rows(["", "store", "runs", "path"],
+                                            rows, numeric=[2],
+                                            width=width_of(args),
+                                            indent="  "))
+        lines.append("")
+        why = {"--store": "--store", "QD_STORE": "QD_STORE",
+               "provost": "provost's PROVOST_WORKSPACE or controlled "
+                          "directory", "active": "the active store",
+               "default": "provost's default: no store is active"}
+        if path is None:
+            lines.append("  in use here: none -- %s" % how)
+        else:
+            lines.append("  in use here: %s%s  (%s)" % (
+                name + " = " if name else "", storemod.tilde(path),
+                why[how]))
+        if how in ("--store", "QD_STORE", "provost") and cfg.get("active"):
+            lines.append("  which goes before the active store, %s"
+                         % cfg["active"])
+        lines.extend(next_steps([
+            ("%s store new NAME" % PROG, "a store of its own, in %s"
+             % storemod.tilde(stores.data_root())),
+            ("%s store use NAME" % PROG, "the store commands use from now on"),
+            ("%s store export NAME FILE" % PROG,
+             "one archive: its history, its answers, a manifest")]))
+        sys.stdout.write("\n".join(lines) + "\n")
+        return 0
+    if act == "new":
+        want(1, "new NAME [--path DIR]")
+        name = stores.check_name(words[0])
+        cfg = stores.load()
+        if name in cfg["stores"]:
+            die("there is a store named %s already (%s)"
+                % (name, storemod.tilde(cfg["stores"][name])))
+        path = os.path.abspath(os.path.expanduser(args.path)) if args.path \
+            else os.path.join(stores.data_root(), name)
+        if os.path.isdir(path) and os.listdir(path) \
+                and not stores.is_store(path):
+            die("%s holds files that are not a provost store: a store goes "
+                "in an empty directory, or one that is a store already"
+                % storemod.tilde(path))
+        adopted = stores.is_store(path)
+        try:
+            os.makedirs(path, exist_ok=True)
+        except OSError as exc:
+            die("cannot make %s: %s" % (path, exc))
+        cfg["stores"][name] = path
+        stores.save(cfg)
+        out("%s store: %s = %s%s" % (PROG, name, storemod.tilde(path),
+                                     "  (a store already: registered as it "
+                                     "is)" if adopted else ""))
+        if cfg.get("active") != name:
+            out("  %s store use %s   makes it the store commands use"
+                % (PROG, name))
+        return 0
+    if act == "use":
+        want(1, "use NAME")
+        cfg = stores.load()
+        stores.registered(words[0], cfg)
+        cfg["active"] = words[0]
+        stores.save(cfg)
+        out("%s store: %s is the active store (%s)" % (
+            PROG, words[0], storemod.tilde(cfg["stores"][words[0]])))
+        for var in ("QD_STORE", "PROVOST_WORKSPACE"):
+            if os.environ.get(var):
+                warn("%s is set in this shell, and goes before it" % var)
+        return 0
+    if act == "rename":
+        want(2, "rename OLD NEW")
+        old_name, new_name = words[0], stores.check_name(words[1])
+        cfg = stores.load()
+        path = stores.registered(old_name, cfg)
+        if new_name in cfg["stores"]:
+            die("there is a store named %s already" % new_name)
+        new_path = path
+        managed = os.path.join(stores.data_root(), old_name)
+        if os.path.abspath(path) == os.path.abspath(managed) \
+                and os.path.isdir(path):
+            # a store qd made moves with its name; one registered by --path
+            # stays where it was put
+            new_path = os.path.join(stores.data_root(), new_name)
+            if os.path.exists(new_path):
+                die("%s is there already" % storemod.tilde(new_path))
+            lock, owner = stores.hold_lock(path, "rename it")
+            try:
+                os.rename(path, new_path)
+            except OSError as exc:
+                stores.let_go(lock, owner)
+                die("cannot move %s: %s" % (path, exc))
+            stores.let_go(os.path.join(new_path, ".lock"), owner)
+        del cfg["stores"][old_name]
+        cfg["stores"][new_name] = new_path
+        if cfg.get("active") == old_name:
+            cfg["active"] = new_name
+        stores.save(cfg)
+        out("%s store: %s is now %s (%s)" % (PROG, old_name, new_name,
+                                             storemod.tilde(new_path)))
+        return 0
+    if act == "rm":
+        want(1, "rm NAME [--delete]")
+        name = words[0]
+        cfg = stores.load()
+        path = stores.registered(name, cfg)
+        deleted = False
+        if args.delete and os.path.isdir(path):
+            if os.listdir(path) and not stores.is_store(path):
+                die("%s holds files that are not a provost store: not "
+                    "deleted (it is still registered)" % storemod.tilde(path))
+            stores.hold_lock(path, "delete it")
+            try:
+                shutil.rmtree(path)
+            except OSError as exc:
+                die("could not delete all of %s: %s (it is still "
+                    "registered)" % (storemod.tilde(path), exc))
+            deleted = True
+        del cfg["stores"][name]
+        was_active = cfg.get("active") == name
+        if was_active:
+            cfg["active"] = None
+        stores.save(cfg)
+        out("%s store: %s %s%s" % (
+            PROG, name, "deleted, with " + storemod.tilde(path)
+            if deleted else "forgotten; " + (
+                storemod.tilde(path) + " was not there" if args.delete
+                else "its files stay in " + storemod.tilde(path)),
+            "" if not was_active else
+            "\n  no store is active now: %s store use NAME picks one" % PROG))
+        return 0
+    if act == "export":
+        if len(words) not in (1, 2):
+            die("usage: %s store export [NAME] FILE" % PROG)
+        if len(words) == 2:
+            path, name = stores.resolve(words[0])
+        else:
+            path, name, _ = stores.choose(args.store)
+        name = name or os.path.basename(path.rstrip("/")).lstrip(".") \
+            or "store"
+        if not stores.NAME_RE.match(name):
+            name = "store"
+        m = stores.export(path, name, words[-1])
+        out("%s store export: %s -> %s  (%s, %s, %s, store format %d, "
+            "%s bytes)" % (PROG, name, words[-1],
+                           plural(m["runs"], "run"),
+                           plural(m["captures"], "capture"),
+                           plural(len(m["files"]), "file"),
+                           m["store_format"],
+                           "{:,}".format(os.path.getsize(words[-1]))))
+        return 0
+    if act == "import":
+        want(1, "import FILE [--as NAME]")
+        if not os.path.isfile(words[0]):
+            die("no such file: %s" % words[0])
+        name, dest, m = stores.import_(words[0], args.as_name)
+        out("%s store import: %s = %s  (%s, %s, store format %d, exported "
+            "%s by qd %s)" % (PROG, name, storemod.tilde(dest),
+                              plural(m.get("runs", 0), "run"),
+                              plural(len(m["files"]), "file"),
+                              m["store_format"], m.get("exported", "?"),
+                              m.get("qd", "?")))
+        out("  %s store use %s   to make it the store commands use"
+            % (PROG, name))
+        return 0
+    die("qd store: no such action %r" % act)
+
+
 
 def cmd_campaign(args):
     from . import campaign as camp
@@ -2193,10 +2481,11 @@ def cmd_hints(args):
 # ---------------------------------------------------------------------------
 
 def add_common(p):
-    p.add_argument("--store", metavar="DIR",
-                   help="the provost store to file into and read (QD_STORE; "
-                   "default provost's own: PROVOST_WORKSPACE, the controlled "
-                   "directory you are in, PROVOST_HOME, ~/.provost)")
+    p.add_argument("--store", metavar="NAME|DIR",
+                   help="the store to file into and read: a name from qd "
+                   "store ls, or a directory (QD_STORE; else PROVOST_"
+                   "WORKSPACE or the controlled directory you are in, then "
+                   "the active store, then ~/.provost)")
     p.add_argument("--width", type=int, metavar="N",
                    help="cut tables to N columns of text (default: the "
                    "terminal's, none when piped)")
@@ -2605,6 +2894,23 @@ def build_parser():
     sp.add_argument("names", nargs="*", metavar="PROBE")
     add_fleet(sp, preview=12)
     sp.set_defaults(fn=cmd_probe)
+
+    sp = verb("store", "named stores: new, ls, use, rename, rm, export, "
+              "import")
+    sp.add_argument("action", nargs="?", choices=[
+        "ls", "new", "use", "rename", "rm", "export", "import"])
+    sp.add_argument("words", nargs="*", metavar="ARG",
+                    help="new NAME | use NAME | rename OLD NEW | rm NAME | "
+                    "export [NAME] FILE | import FILE")
+    sp.add_argument("--path", metavar="DIR",
+                    help="new: put the store here (default %s/NAME)"
+                    % "~/.local/share/quarterdeck/stores")
+    sp.add_argument("--delete", action="store_true",
+                    help="rm: delete the store's files too")
+    sp.add_argument("--as", dest="as_name", metavar="NAME",
+                    help="import: the name to give it (default the one it "
+                    "was exported under)")
+    sp.set_defaults(fn=cmd_store)
 
     sp = verb("campaign", "run a system in parts, progress kept by muster, "
               "every part in provost")

@@ -155,6 +155,29 @@ EOF
     assert_contains "$(cat given.txt)" "a gbps=25 mtu=9000"
 }
 
+# several probes at once: every host asked every probe in one pool, and
+# every run filed by one provost call (one commit) -- each its own run
+t_probes_run_together() {
+    seed
+    qdf probe os -s hosts.txt -q > /dev/null
+    : > "$FAKE_SSH_LOG"
+    before="$(git -C "$QD_STORE" rev-list --count HEAD)"
+    qdf_rc probe os mounts numa -s hosts.txt -q > out
+    assert_status "$QD_RC" 0
+    for p in os mounts numa; do
+        assert_contains "$(cat out)" "qd probe $p"
+        assert_contains "$(qd log)" "-$p"
+    done
+    assert_eq "$(ssh_calls)" "6"
+    if has_batch; then
+        after="$(git -C "$QD_STORE" rev-list --count HEAD)"
+        assert_eq "$((after - before))" "1"
+    fi
+    # each is still its own run, compared with its own last run
+    qdf probe os mounts -s hosts.txt -q > /dev/null
+    assert_contains "$(qd diff os 2>&1)" "matched on host"
+}
+
 t_binnacle_scripts_run_on_the_hosts() {
     seed
     if "$PY" -c 'import binnacle.why_slow' 2>/dev/null; then
@@ -164,6 +187,11 @@ t_binnacle_scripts_run_on_the_hosts() {
         # in them (the top processes) is a cell of JSON, not rows
         assert_contains "$(qd show facts --cols host,cpu.count --format csv)" "a,"
         assert_eq "$(qd show facts --cols host --format csv | tail -n +2 | wc -l | tr -d ' ')" "2"
+        # sent on stdin, as why-slow --ssh sends itself: one ssh per host,
+        # no copy, nothing left on the host
+        assert_eq "$(ssh_calls)" "2"
+        assert_eq "$(grep -c '^scp ' "$FAKE_SSH_LOG")" "0"
+        assert_no_file "$FAKE_ROOT/a/rd"
     else
         qdf_rc probe facts -s hosts.txt 2> err
         assert_status "$QD_RC" 2
@@ -179,5 +207,6 @@ run_test "a missing tool is said, never zeroed"     t_a_missing_tool_is_said_not
 run_test "a failing tool is said, never zeroed"     t_a_failing_tool_is_said_not_zeroed
 run_test "reach reads reachable's CSV"              t_reach_reads_reachables_csv
 run_test "a fleet tool: run here, read back"         t_a_fleet_tool_is_run_here_and_read_back
+run_test "several probes run together"             t_probes_run_together
 run_test "binnacle's scripts run on the hosts"       t_binnacle_scripts_run_on_the_hosts
 finish

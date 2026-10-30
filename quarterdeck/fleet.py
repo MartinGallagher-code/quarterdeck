@@ -103,16 +103,23 @@ class Runner(object):
             command = "cd %s && %s" % (shlex.quote(self.work_dir), command)
         return self.wrap(command)
 
-    def _exec(self, argv, timeout):
-        """Bounded capture: one host in a log storm must not sink the run."""
+    def _exec(self, argv, timeout, stdin=None):
+        """Bounded capture: one host in a log storm must not sink the run.
+        `stdin` is a local file fed to the command (a script for
+        `python3 -`), else it reads nothing."""
         limit = int(self.max_output)
+        src = None
         try:
+            src = open(stdin, "rb") if stdin else None
             p = subprocess.Popen(argv, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE,
-                                 stdin=subprocess.DEVNULL)
+                                 stdin=src or subprocess.DEVNULL)
         except OSError as exc:
             # ssh (or scp) itself would not start: no host was reached
             return 255, "", "cannot run %s: %s" % (argv[0], exc)
+        finally:
+            if src:
+                src.close()
         chunks = {p.stdout: [], p.stderr: []}
         sizes = {p.stdout: 0, p.stderr: 0}
         deadline = time.monotonic() + timeout
@@ -212,7 +219,8 @@ class Runner(object):
         return "qd: could not remove %s from this host: %s" % (
             self.work_dir, first[-1] if first else "exit %d" % rc)
 
-    def run_one(self, host, command, push=None, cleanup=True, pass_no=1):
+    def run_one(self, host, command, push=None, cleanup=True, pass_no=1,
+                stdin=None):
         r = Result(host, pass_no)
         t0 = time.monotonic()
         if push:
@@ -230,7 +238,7 @@ class Runner(object):
                 return r
         rc, out, err = self._exec(
             self.ssh_argv(host, self.command_for(command, bool(push))),
-            self.timeout)
+            self.timeout, stdin)
         r.rc, r.stdout, r.stderr = rc, out, err
         if push and cleanup:
             left = self.cleanup(host)

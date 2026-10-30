@@ -13,6 +13,7 @@
 #   fake_host_unreachable NAME
 #   pv ARGS...              provost itself, on the case's store
 #   has_batch               whether that provost files a run as one batch
+#   assert_dir_exists DIR   a directory is there
 #   stand_in_doe            a doe that designs and analyses as the real one
 #   path_without CMD...     this PATH without those commands
 #   nojq_path               this PATH without jq, for provost's own readers
@@ -52,6 +53,11 @@ setup_env() {
     # the caller runs the suites on the one-capture-at-a-time path.
     export QD_STORE="$TEST_TMPDIR/store"
     export XDG_CACHE_HOME="$TEST_TMPDIR/cache"
+    # qd's config (named stores), where its stores live, and provost's
+    # default store: the case's own, never this machine's
+    export XDG_CONFIG_HOME="$TEST_TMPDIR/config"
+    export XDG_DATA_HOME="$TEST_TMPDIR/data"
+    export PROVOST_HOME="$TEST_TMPDIR/provost-home"
     export LANG=C
     cd "$TEST_TMPDIR" || return 1
 }
@@ -177,6 +183,10 @@ assert_file_exists() {
 
 assert_no_file() {
     [ ! -e "$1" ] || _fail "expected no such path: $1"
+}
+
+assert_dir_exists() {
+    [ -d "$1" ] || _fail "expected a directory: $1"
 }
 
 # -- fake ssh / scp ---------------------------------------------------------

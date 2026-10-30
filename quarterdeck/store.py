@@ -26,10 +26,11 @@ gap.  `qd do` and `qd import` file their tables the same way, each capture
 opening with '#% run=RUN' and a 'qd-table' line that names the table.
 Any other provost dataset reads too: `ds:NAME`, or a bare NAME no run has.
 
-Which store: --store, QD_STORE, or provost's own rule -- PROVOST_WORKSPACE,
-the nearest controlled directory above this one, PROVOST_HOME, ~/.provost
--- so `provost ls` lists what qd filed and `provost source cNNNN` shows a
-host's answer.
+Which store: --store NAME|DIR, QD_STORE, provost's explicit choice
+(PROVOST_WORKSPACE, the nearest controlled directory above this one), the
+active named store, provost's default (PROVOST_HOME, ~/.provost) -- see
+stores.py.  Whichever it is, `provost ls` there lists what qd filed and
+`provost source cNNNN` shows a host's answer.
 """
 
 import binascii
@@ -250,16 +251,25 @@ def read_dataset(path, name):
 
 
 def default_root():
-    v = env("STORE")
-    if v:
-        return os.path.abspath(os.path.expanduser(v))
-    return provost_root()
+    """The store a command uses with no --store: named stores' rule
+    (stores.py) -- QD_STORE, provost's explicit choice, the active store,
+    provost's default."""
+    from . import stores
+    return stores.choose(None)[0]
 
 
-def provost_root():
-    """The store provost finds on its own: PROVOST_WORKSPACE, the controlled
-    directory around here, PROVOST_HOME, ~/.provost -- qd's rule less
-    --store and QD_STORE, which provost does not read."""
+def tilde(path):
+    """A path as one would type it: ~/... under the home directory."""
+    home = os.path.expanduser("~")
+    if home not in ("", "/") and (path + "/").startswith(home + "/"):
+        return "~" + path[len(home):]
+    return path
+
+
+def provost_explicit():
+    """The store provost was told to use, rather than its default: the
+    PROVOST_WORKSPACE setting, or the controlled directory you are in.
+    None when it would fall back to PROVOST_HOME or ~/.provost."""
     v = os.environ.get("PROVOST_WORKSPACE")
     if v:
         return os.path.abspath(os.path.expanduser(v))
@@ -269,9 +279,15 @@ def provost_root():
             return os.path.join(d, ".provost")
         up = os.path.dirname(d)
         if up == d:
-            break
+            return None
         d = up
-    return os.path.abspath(os.path.expanduser(
+
+
+def provost_root():
+    """The store provost finds on its own: PROVOST_WORKSPACE, the controlled
+    directory around here, PROVOST_HOME, ~/.provost -- qd's rule less
+    --store, QD_STORE and the active store, which provost does not read."""
+    return provost_explicit() or os.path.abspath(os.path.expanduser(
         os.environ.get("PROVOST_HOME") or "~/.provost"))
 
 
@@ -326,10 +342,7 @@ class Store(object):
         return os.path.join(self.root, *parts)
 
     def shown(self):
-        root, home = self.root, os.path.expanduser("~")
-        if home not in ("", "/") and (root + "/").startswith(home + "/"):
-            root = "~" + root[len(home):]
-        return root
+        return tilde(self.root)
 
     def provost(self, words):
         """`provost WORDS` as typed to reach this store: with
@@ -567,9 +580,12 @@ class Store(object):
             return None
         entries = self.entries()
         # a campaign's parts run one command under one name: the part is
-        # what tells them apart, so rack-r2 is compared with rack-r2
+        # what tells them apart, so rack-r2 is compared with rack-r2.  A
+        # probe is its name: how qd asks it (the command) changes between
+        # versions, and today's facts are still compared with yesterday's
         def key(e):
-            return (e.meta.get("kind"), e.meta.get("command"),
+            probe = e.meta.get("tool") == "probe"
+            return (e.meta.get("kind"), "" if probe else e.meta.get("command"),
                     e.meta.get("name"), e.meta.get("part") or "")
         ids = [e.id for e in entries]
         earlier = entries[:ids.index(entry.id)] if entry.id in ids else []

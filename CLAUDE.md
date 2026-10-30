@@ -14,7 +14,9 @@ tool's output format or flags change, `quarterdeck/tools.py` (what `qd do`
 reads back), `quarterdeck/probes.py` (what `qd probe` runs) and
 `quarterdeck/table.py` (the readers) are where that knowledge lives; what qd
 knows of provost's store is in `quarterdeck/store.py` (reading) and
-`quarterdeck/filing.py` (filing, only ever by running provost).
+`quarterdeck/filing.py` (filing, only ever by running provost), and which
+store a command uses -- named stores, their export and import -- is
+`quarterdeck/stores.py`.
 
 ## Rules that hold everywhere
 
