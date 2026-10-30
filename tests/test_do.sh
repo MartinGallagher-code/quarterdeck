@@ -104,6 +104,24 @@ t_iperf_reads_the_latest_run() {
     assert_contains "$(qd log latest)" "cpu_summary"
 }
 
+# iperf_orchestrator.sh run as itself keeps its results beside it, not
+# here: that is where they are read from
+t_iperf_s_script_keeps_its_results_beside_it() {
+    mkdir -p src/iperf
+    sed 's|^d=results/|cd "$(dirname "$0")"; d=results/|' > src/iperf/iperf_orchestrator.sh <<'EOF2'
+#!/bin/bash
+if [ "$1" = "--version" ]; then echo "iperf-orchestrator 2.5.0"; exit 0; fi
+d=results/2026-10-29_12-00-00
+mkdir -p "$d"
+printf 'timestamp,source,target,status,mbps\n1,a,b,OK,9400\n' > "$d/iperf_results.csv"
+ln -sfn 2026-10-29_12-00-00 results/latest
+EOF2
+    chmod +x src/iperf/iperf_orchestrator.sh
+    qd "do" -- ./src/iperf/iperf_orchestrator.sh --servers s.txt run > /dev/null 2>&1
+    assert_no_file results
+    assert_contains "$(qd show latest:iperf_results --format csv)" "1,a,b,OK,9400"
+}
+
 # a run that fails before it writes leaves the last run's results where
 # they were: they are that run's, not this one's
 t_an_earlier_run_s_output_is_not_filed() {
@@ -251,6 +269,7 @@ run_test "QD_MX: ~ expanded, a bare name replaced"      t_qd_tool_variable_is_ex
 run_test "mx run: reports/ and mx export read back"     t_mx_run_reads_reports_and_exports
 run_test "mx export to stdout is read"                  t_mx_export_to_stdout_is_read
 run_test "iperf-orchestrator: results/latest read"      t_iperf_reads_the_latest_run
+run_test "iperf_orchestrator.sh: results beside it"   t_iperf_s_script_keeps_its_results_beside_it
 run_test "an earlier run's output is not filed"         t_an_earlier_run_s_output_is_not_filed
 run_test "agree: --csv added, exit status passed on"    t_agree_gets_csv_added_and_its_status_passes_through
 run_test "agree's own options end at --"                t_agree_s_own_options_end_at_the_double_dash

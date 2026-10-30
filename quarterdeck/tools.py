@@ -208,6 +208,19 @@ def tool_of(argv):
     return alias.get(base, base), argv[i + 1:]
 
 
+def iperf_results_base(argv, rest):
+    """Where iperf-orchestrator writes when not told: the installed command
+    sets ./results, but iperf_orchestrator.sh run as itself keeps them
+    beside the script (its SCRIPT_DIR/results)."""
+    script = argv[len(argv) - len(rest) - 1] if len(argv) > len(rest) else ""
+    if script.endswith(".sh"):
+        path = script if os.sep in script else (shutil.which(script) or "")
+        if path:
+            return os.path.join(os.path.dirname(os.path.realpath(path)),
+                                "results")
+    return "results"
+
+
 class Plan(object):
     """What to run, and what to read back afterwards."""
 
@@ -256,7 +269,7 @@ def plan(argv, entry_dir):
     elif tool == "iperf-orchestrator":
         if any(v in rest for v in IPERF_VERBS):
             base = opt(rest, ["-o", "--output"]) or os.environ.get(
-                "RESULTS_BASE") or "results"
+                "RESULTS_BASE") or iperf_results_base(argv, rest)
             run = opt(rest, ["--run-id"]) or os.environ.get(
                 "IPERF_RUN_ID") or "latest"
             p.imports.append((os.path.join(base, run), None))

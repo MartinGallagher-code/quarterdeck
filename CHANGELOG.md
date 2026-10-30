@@ -242,6 +242,11 @@ ssh had passed.
 - An IPv6 host with a port was written to the run's hosts table as
   `fd00::1:2222`, which `split --answers` read back as another address
   on port 22. It is written `[fd00::1]:2222`, as a host line writes it.
+- `qd do -- path/to/iperf_orchestrator.sh run` looked for results in
+  `./results`. The script run as itself keeps them beside it (its
+  `SCRIPT_DIR/results`; only the installed command uses `./results`), so
+  nothing was filed. qd now looks where the script writes
+  (`tools.py` `iperf_results_base`).
 - A command on a host that exited 124 itself (`timeout 5 check`) was
   reported as a qd timeout and listed as not answering. qd's own timeout
   is now marked as such (`fleet.py` `TimedOut`).
