@@ -237,6 +237,7 @@ security.
 | `--store` | `QD_STORE` | provost's own choice |
 | | `QD_PROVOST` | `provost` on `PATH` |
 | | `QD_PROVOST_BATCH=0` | file one capture at a time even where provost has `batch` |
+| | `QD_FILE_CHUNK` | 200 inputs per `provost batch`, each a commit, so its lock is never held for a whole big fleet |
 
 Exit status is 0 when every host answered, 1 when one didn't, and 2 for a
 usage error.

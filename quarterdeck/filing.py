@@ -84,6 +84,11 @@ def body(text):
     return ("\n" + text) if text.startswith("#%") else text
 
 
+# Inputs per `provost batch` call (QD_FILE_CHUNK): each is a commit, under
+# one hold of the store lock.
+CHUNK = 200
+
+
 class Batch(object):
     """The inputs of one filing, written to a scratch directory, in the
     order their captures are to take ids.  qd's own tables are added with
@@ -165,15 +170,26 @@ class Provost(object):
             return []
         jobs = jobs or env_int("FILE_JOBS", 0) or None
         if self.has_batch():
-            lst = os.path.join(batch.dir, "inputs.list")
-            write_text(lst, "".join("%s\t%s\n" % (n, p)
-                                    for n, p in batch.inputs))
-            args = ["batch", "-q", "--context-columns"] + (
-                ["-j", str(jobs)] if jobs else []) + ["--from", lst]
-            rc, _, err = self.call(args)
-            problems = complaints(err)
-            if rc != 0 and not problems:
-                die("provost batch failed (exit %d)" % rc)
+            # A batch holds provost's lock for its whole store half, about
+            # 50 ms an input: a thousand hosts in one would keep any other
+            # writer (a second campaign worker) past PROVOST_LOCK_TIMEOUT.
+            # So a few hundred at a time, a commit each, in order -- qd's
+            # own tables still last.
+            size = max(1, env_int("FILE_CHUNK", CHUNK))
+            problems = []
+            for k in range(0, len(batch.inputs), size):
+                lst = os.path.join(batch.dir, "inputs.%d.list" % k)
+                write_text(lst, "".join("%s\t%s\n" % (n, p) for n, p in
+                                        batch.inputs[k:k + size]))
+                args = ["batch", "-q", "--context-columns"] + (
+                    ["-j", str(jobs)] if jobs else []) + ["--from", lst]
+                rc, _, err = self.call(args)
+                errs = complaints(err)
+                if rc != 0 and not errs:
+                    die("provost batch failed (exit %d)%s" % (
+                        rc, (" after filing %d of %d inputs" % (
+                            k, len(batch.inputs))) if k else ""))
+                problems.extend(errs)
             return problems
         # One capture at a time: the answers a few in parallel (provost
         # parses outside its lock), then qd's own tables in order, the

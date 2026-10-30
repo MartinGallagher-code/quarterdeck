@@ -41,6 +41,10 @@ ssh had passed.
   filed a row an element; it is a cell of JSON now.
 - `reach` gave reachable `-o`, which writes the annotated host list, where
   its CSV path goes after `--csv`.
+- A big run is filed 200 inputs at a time (`QD_FILE_CHUNK`), a commit
+  each: provost's batch holds its store lock about 50 ms an input, so a
+  thousand hosts in one batch kept any other writer (a second campaign
+  worker) waiting past provost's 30 s lock timeout.
 - A tip to read an answer with provost (`provost source N`) names the store
   when provost would not find it on its own (`--store`, `QD_STORE`):
   `PROVOST_WORKSPACE=... provost source N`.

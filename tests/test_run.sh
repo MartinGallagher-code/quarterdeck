@@ -311,6 +311,20 @@ t_provost_tips_name_the_store() {
     assert_not_contains "$out" "PROVOST_WORKSPACE="
 }
 
+# A big run is filed a few hundred inputs at a time, each a commit, so
+# provost's lock is never held for the whole fleet; nothing is lost
+t_a_big_run_is_filed_in_chunks() {
+    has_batch || { echo "  (this provost files one capture at a time)"; return 0; }
+    seed
+    QD_FILE_CHUNK=2 run_qd -- cat kernel > out
+    assert_status "$QD_RC" 1
+    assert_eq "$(git -C "$QD_STORE" log --oneline | grep -c ' batch: ')" "3"
+    out="$(qd show latest --cols host,status,A --format csv)"
+    assert_contains "$out" "node03,ok,6.1.0-13"
+    assert_contains "$out" "node09,unreachable"
+    assert_contains "$(qd log latest)" "3 captures"
+}
+
 t_mutation_guard_and_limit() {
     seed
     run_qd -- rm -rf /var/log 2> err
@@ -394,6 +408,7 @@ run_test "--script: pushed, run, cleaned up"          t_script_is_pushed_run_and
 run_test "--push: the command runs beside its files"  t_push_runs_beside_the_files
 run_test "command not found is failed, not unreachable" t_command_not_found_is_failed_not_unreachable
 run_test "provost tips name a store it cannot find"   t_provost_tips_name_the_store
+run_test "a big run is filed in chunks"               t_a_big_run_is_filed_in_chunks
 run_test "mutation guard, --limit, --first 0"         t_mutation_guard_and_limit
 run_test "--no-store keeps nothing"                   t_no_store_keeps_nothing
 run_test "no provost: refused before any host"        t_no_provost_is_refused_before_any_host
