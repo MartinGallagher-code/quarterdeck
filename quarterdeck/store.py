@@ -621,6 +621,23 @@ class Run(object):
             return 2
         return int(self.meta.get("captures") or 0)
 
+    def _shown_rows(self, cid):
+        """How many rows a capture is in the run's table: provost's count,
+        or one where its rows are `key: value` lines filed long, which the
+        table widens into one row (see widen)."""
+        m = self.store.meta(cid)
+        n = row_count(m)
+        names = [x for x in m.get("dataset", "").split(",") if x]
+        if n > 1 and len(names) == 1 and self.store.has_dataset(names[0]):
+            cols = self.store.dataset(names[0]).columns
+            ctx = context_columns(m)
+            own = provost_columns(cols, ctx)
+            rest = [c for i, c in enumerate(cols) if i not in own
+                    and c not in ctx and c not in LONG_EXTRA]
+            if len(rest) == 2 and rest[0] in LONG_KEYS and rest[1] == "value":
+                return 1
+        return n
+
     def _list(self):
         caps = self.captures()
         if self.meta.get("kind") == "run":
@@ -629,7 +646,7 @@ class Run(object):
             for cid in caps:
                 ctx = self.store.context(cid)
                 per[(ctx.get("host", ""), ctx.get("pass") or "1")] = \
-                    row_count(self.store.meta(cid))
+                    self._shown_rows(cid)
             rows = sum(max(1, per.get((h.get("host", ""),
                                        h.get("pass") or "1"), 0))
                        for h in hosts)

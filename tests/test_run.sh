@@ -161,6 +161,9 @@ t_a_blank_value_stays_blank() {
     out="$(qd show latest --cols host,vm.swappiness,vm.dirty_ratio --format csv)"
     assert_contains "$out" "node02,60,20"
     assert_not_contains "$(qd show latest --format csv | head -1)" "group"
+    # and qd log counts the rows qd show has, not provost's long ones
+    n="$(qd show latest --format csv | tail -n +2 | wc -l | tr -d ' ')"
+    qd log latest | grep -qE "data +$n rows" || fail "qd log does not say $n rows"
 }
 
 t_json_number_and_csv_answers() {

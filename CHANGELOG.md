@@ -103,6 +103,9 @@ ssh had passed.
     (bytes, seconds) throughout -- `normalize_units`, `to_base` -- and a
     literal with a unit compares on it; export keeps a unit as written.
     Mixed times were dropped to their commonest unit; they are seconds now.
+  - `qd log` (and the web page's list) counted a run's `key: value`
+    answers by provost's long rows -- 9 for 3 hosts -- where the table has
+    a row a host; it counts the rows the table shows.
   - A TSV with an unbalanced quote (`"5 inch`) read every line after it
     into that one cell; a TSV is read line by line, such a quote a
     character. A header whose first cell is blank (pandas' and R's index
