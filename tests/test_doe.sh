@@ -99,6 +99,17 @@ t_a_factor_that_is_not_there_is_refused() {
     assert_eq "$(ssh_calls)" "0"
 }
 
+# the typo guard checks every point before any runs, and names the verb
+t_a_refused_point_runs_nothing() {
+    stand_in_doe
+    seed
+    config
+    qdf_rc doe run bench.json -s hosts.txt -- 'echo {streams}; [ {window} = 1024 ] && rm -rf /tmp/qd-nothing' 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "qd doe run --yes"
+    assert_eq "$(ssh_calls)" "0"
+}
+
 t_no_doe_says_how_to_get_it() {
     config
     QD_DOE=/nonexistent/doe PATH="/usr/bin:/bin" qd_rc doe plan bench.json 2> err
@@ -125,6 +136,7 @@ run_test "run measures every point, once"            t_run_measures_every_point_
 run_test "analyze hands doe the responses"           t_analyze_hands_doe_the_responses
 run_test "--blocks-by: a block per host group"       t_blocks_run_on_host_groups
 run_test "a {name} that is no factor: refused"       t_a_factor_that_is_not_there_is_refused
+run_test "a refused point: nothing runs"              t_a_refused_point_runs_nothing
 run_test "no doe: how to get it"                     t_no_doe_says_how_to_get_it
 run_test "with the real doe, where installed"        t_with_the_real_doe
 finish

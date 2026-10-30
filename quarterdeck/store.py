@@ -240,6 +240,7 @@ class Store(object):
         self.reset()
 
     def reset(self):
+        self._provost_env = None
         self._tables = {}
         self._index = {}
         self._meta = {}
@@ -282,13 +283,15 @@ class Store(object):
         """`provost WORDS` as typed to reach this store: with
         PROVOST_WORKSPACE in front when provost would not find it on its
         own (a store named by --store or QD_STORE)."""
-        cmd = "provost " + words
-        if os.path.realpath(provost_root()) != os.path.realpath(self.root):
-            where = self.shown()
-            if not re.match(r"^[\w~@%+=:,./-]+$", where):
-                where = shlex.quote(self.root)
-            cmd = "PROVOST_WORKSPACE=%s %s" % (where, cmd)
-        return cmd
+        if self._provost_env is None:
+            self._provost_env = ""
+            if os.path.realpath(provost_root()) != \
+                    os.path.realpath(self.root):
+                where = self.shown()
+                if not re.match(r"^[\w~@%+=:,./-]+$", where):
+                    where = shlex.quote(self.root)
+                self._provost_env = "PROVOST_WORKSPACE=%s " % where
+        return self._provost_env + "provost " + words
 
     # -- datasets -----------------------------------------------------------
 

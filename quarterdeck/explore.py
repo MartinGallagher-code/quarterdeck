@@ -833,7 +833,7 @@ class App(object):
             return
         items = []
         for e in entries:
-            cmd = e.meta.get("command") or ""
+            cmd = render.first_line(e.meta.get("command") or "")
             items.append(("%-32s %-7s %-12s %s" % (
                 e.id, e.meta.get("kind", ""), e.summary(), cmd[:60]), e))
         self.push(ListView(self, "runs in %s" % self.book.shown(),

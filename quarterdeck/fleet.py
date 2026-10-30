@@ -79,6 +79,14 @@ class Runner(object):
             return "sudo -n sh -c %s" % shlex.quote(command)
         return command
 
+    def command_for(self, command, pushed=False):
+        """What runs on a host, as --dry-run prints it: beside the pushed
+        files when there are any (so `--push x -- tool x` finds x), under
+        `sudo -n` with --sudo."""
+        if pushed:
+            command = "cd %s && %s" % (shlex.quote(self.remote_dir), command)
+        return self.wrap(command)
+
     def _exec(self, argv, timeout):
         """Bounded capture: one host in a log storm must not sink the run."""
         limit = int(self.max_output)
@@ -87,7 +95,8 @@ class Runner(object):
                                  stderr=subprocess.PIPE,
                                  stdin=subprocess.DEVNULL)
         except OSError as exc:
-            return 127, "", str(exc)
+            # ssh (or scp) itself would not start: no host was reached
+            return 255, "", "cannot run %s: %s" % (argv[0], exc)
         chunks = {p.stdout: [], p.stderr: []}
         sizes = {p.stdout: 0, p.stderr: 0}
         deadline = time.monotonic() + timeout
@@ -167,12 +176,9 @@ class Runner(object):
                     r.outcome = UNREACHABLE
                 r.duration = time.monotonic() - t0
                 return r
-        if push:
-            # the command runs where its files were put, so `--push x --
-            # tool x` finds x by its own name
-            command = "cd %s && %s" % (shlex.quote(self.remote_dir), command)
-        rc, out, err = self._exec(self.ssh_argv(host, self.wrap(command)),
-                                  self.timeout)
+        rc, out, err = self._exec(
+            self.ssh_argv(host, self.command_for(command, bool(push))),
+            self.timeout)
         r.rc, r.stdout, r.stderr = rc, out, err
         if push and cleanup:
             self._exec(self.ssh_argv(
@@ -187,6 +193,7 @@ class Runner(object):
             low = (err or "").lower()
             r.outcome = UNREACHABLE if (
                 "connect" in low or "resolve" in low or "route" in low
+                or "cannot run" in low
                 or "refused" in low or "timed out" in low
                 or "permission denied" in low or "no such host" in low
                 or not out) else FAILED

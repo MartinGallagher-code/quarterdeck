@@ -325,6 +325,45 @@ t_a_big_run_is_filed_in_chunks() {
     assert_contains "$(qd log latest)" "3 captures"
 }
 
+# --dry-run prints what will run: with pushed files, from beside them
+t_dry_run_shows_where_pushed_files_run() {
+    seed
+    echo hello > payload.txt
+    out="$(qdf run -s hosts.txt --dry-run --push payload.txt --remote-dir rd -- cat payload.txt)"
+    assert_contains "$out" "cd rd && cat payload.txt"
+    assert_eq "$(ssh_calls)" "0"
+}
+
+# an ssh that will not start is refused before any host, not filed as a
+# fleet of failures
+t_an_ssh_that_will_not_start_is_refused() {
+    seed
+    qd_rc run -s hosts.txt --ssh /nonexistent/ssh -- true 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "cannot run /nonexistent/ssh"
+    assert_eq "$(qd log 2>&1 | grep -c ' run ')" "0"
+}
+
+# a chunk of a big run provost fails on is said input by input, and the
+# rest -- the run's own row with them -- are still filed
+t_a_failed_chunk_still_files_the_run() {
+    has_batch || { echo "  (this provost files one capture at a time)"; return 0; }
+    seed
+    cat > flaky-provost <<EOF
+#!/bin/sh
+if [ "\$1" = batch ]; then
+  n=\$(cat "$PWD/calls" 2>/dev/null || echo 0); n=\$((n + 1)); echo \$n > "$PWD/calls"
+  [ \$n -eq 2 ] && exit 1
+fi
+exec $PROVOST_CMD "\$@"
+EOF
+    chmod +x flaky-provost
+    QD_FILE_CHUNK=2 QD_PROVOST="$PWD/flaky-provost" run_qd -- cat kernel > out 2> err
+    assert_contains "$(cat out err)" "provost batch failed (exit 1)"
+    assert_contains "$(qd log latest)" "cat kernel"
+    assert_contains "$(qd show latest --cols host,status --format csv)" "node09,unreachable"
+}
+
 t_mutation_guard_and_limit() {
     seed
     run_qd -- rm -rf /var/log 2> err
@@ -409,6 +448,9 @@ run_test "--push: the command runs beside its files"  t_push_runs_beside_the_fil
 run_test "command not found is failed, not unreachable" t_command_not_found_is_failed_not_unreachable
 run_test "provost tips name a store it cannot find"   t_provost_tips_name_the_store
 run_test "a big run is filed in chunks"               t_a_big_run_is_filed_in_chunks
+run_test "--dry-run shows where pushed files run"     t_dry_run_shows_where_pushed_files_run
+run_test "an ssh that will not start is refused"      t_an_ssh_that_will_not_start_is_refused
+run_test "a failed chunk still files the run"         t_a_failed_chunk_still_files_the_run
 run_test "mutation guard, --limit, --first 0"         t_mutation_guard_and_limit
 run_test "--no-store keeps nothing"                   t_no_store_keeps_nothing
 run_test "no provost: refused before any host"        t_no_provost_is_refused_before_any_host

@@ -54,6 +54,7 @@ import argparse
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -91,7 +92,9 @@ DANGER = [
 ]
 
 
-def check_danger(command, yes):
+def check_danger(command, yes, verb="run"):
+    """Refuse a command agree would refuse, unless --yes; `verb` is the qd
+    command to repeat with --yes (run, campaign new, doe run)."""
     for pat, label in DANGER:
         if re.search(pat, command):
             if yes:
@@ -101,8 +104,8 @@ def check_danger(command, yes):
                 extra = ("  (nothing is attached to this terminal, so there "
                          "is nobody to confirm)")
             die("refusing to run this on a fleet: it looks like %s.%s\n"
-                "  If you meant it, add --yes:\n    %s run --yes ... -- %s"
-                % (label, extra, PROG, command))
+                "  If you meant it, add --yes:\n    %s %s --yes ... -- %s"
+                % (label, extra, PROG, verb, command))
 
 
 # ---------------------------------------------------------------------------
@@ -355,8 +358,12 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
     if args.dry_run:
         for h in hs:
             out(" ".join(shlex.quote(a) for a in runner.ssh_argv(
-                h, runner.wrap(command))))
+                h, runner.command_for(command, bool(push)))))
         return None
+    for tool, why in ((runner.ssh, True), (runner.scp, bool(push))):
+        if why and not shutil.which(tool[0]):
+            die("cannot run %s: not found (--ssh/--scp, QD_SSH/QD_SCP) -- "
+                "no host was contacted" % tool[0])
     st = prov = None
     if store and not args.no_store:
         # before the fleet, not after: answers with nowhere to go are lost
@@ -1382,7 +1389,7 @@ def compare_report(res, args):
             for k in ("part", "factors"):
                 if m.get(k):
                     bits.append("%s %s" % (k, m[k]))
-            bits.append(m.get("command") or "")
+            bits.append(render.first_line(m.get("command") or ""))
         lines.append("  %-4s %s  %s" % (r["label"], r["id"],
                                         "  ".join(b for b in bits if b)))
     for n in res.notes:
@@ -1608,8 +1615,8 @@ def cmd_probe(args):
                 # run by python3, not as an executable: a file copied out
                 # of site-packages has no x bit
                 path = probes.script_path(how[0])
-                command = "python3 " + remote_script(args, path, how[1]) + \
-                    (how[2] if len(how) > 2 else "")
+                command = probes.script_command(
+                    how, "python3 " + remote_script(args, path, how[1]))
                 push = [path]
             else:
                 command, push = how, []
@@ -1682,7 +1689,7 @@ def cmd_campaign(args):
             die("a campaign runs a command: %s campaign new NAME -s hosts "
                 "--by rack -- COMMAND" % PROG)
         command = " ".join(cmd)
-        check_danger(command, args.yes)
+        check_danger(command, args.yes, "campaign new")
         prov = filing.Provost(st)
         prov.require("keep the campaign")
         if args.name in camp.load_all(st):
@@ -1886,11 +1893,16 @@ def doe_run(args, st, doemod):
                       in enumerate(groups))
     done = doemod.point_runs(st, name)
     worst, ran = 0, 0
+    # every point's command is checked before the first runs: a point the
+    # guard refuses half way through would leave the design half measured
+    for rid, blk, levels in pts:
+        if not done.get(rid) or args.redo:
+            check_danger(doemod.substitute(template, levels), args.yes,
+                         "doe run")
     for rid, blk, levels in pts:
         if done.get(rid) and not args.redo:
             continue
         command = doemod.substitute(template, levels)
-        check_danger(command, args.yes)
         hosts = blocks[blk] if blocks else hs
         factors = " ".join("%s=%s" % kv for kv in levels)
         job = fleet_run(args, hosts, command, name,

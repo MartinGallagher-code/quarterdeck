@@ -90,6 +90,20 @@ t_one_run_alone_is_refused() {
     assert_contains "$(cat err)" "only run"
 }
 
+# a command of several lines (a probe's) is its first line in the report
+t_a_multi_line_command_is_one_line() {
+    install_fake_ssh
+    for h in a b; do fake_host "$h"; done
+    printf 'a\nb\n' > hosts.txt
+    cmd="$(printf 'echo n: 1\ntrue second_line_of_the_script')"
+    qdf run -s hosts.txt -q --name ml -- "$cmd" > /dev/null
+    qdf run -s hosts.txt -q --name ml -- "$cmd" > /dev/null
+    out="$(qd compare ml --last 2)" || true
+    assert_contains "$out" "echo n: 1"
+    assert_not_contains "$out" "second_line_of_the_script"
+}
+
+run_test "a multi-line command is one line"           t_a_multi_line_command_is_one_line
 run_test "--last N, one column: summary and drift"    t_last_n_runs_one_column
 run_test "identical runs exit 0"                      t_identical_runs_exit_zero
 run_test "--drift threshold, --baseline"              t_drift_threshold_and_baseline

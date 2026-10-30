@@ -76,6 +76,21 @@ t_a_missing_tool_is_said_not_zeroed() {
     assert_not_contains "$(qd show packages --format csv | head -1)" "reboot"
 }
 
+# a tool that is there but fails is said too: not a count of nothing
+t_a_failing_tool_is_said_not_zeroed() {
+    seed
+    mkdir -p failbin
+    printf '#!/bin/sh\necho "permission denied" >&2\nexit 1\n' > failbin/ss
+    cp failbin/ss failbin/docker
+    chmod +x failbin/ss failbin/docker
+    PATH="$PWD/failbin:$(path_without netstat podman)" qdf probe listen containers -s hosts.txt -q > out
+    assert_contains "$(qd show listen --format csv)" "ss failed"
+    assert_not_contains "$(qd show listen --format csv | head -1)" "listening"
+    out="$(qd show containers --format csv)"
+    assert_contains "$out" "ps refused"
+    assert_not_contains "$(printf '%s\n' "$out" | head -1)" "docker_running"
+}
+
 # reachable's CSV goes where --csv says; its -o is the annotated host list
 t_reach_reads_reachables_csv() {
     seed
@@ -141,6 +156,7 @@ run_test "the catalogue lists itself"                t_the_catalogue_lists_itsel
 run_test "command probes: a run each, named"         t_command_probes_file_a_run_each
 run_test "a group expands to its probes"             t_a_group_expands
 run_test "a missing tool is said, never zeroed"     t_a_missing_tool_is_said_not_zeroed
+run_test "a failing tool is said, never zeroed"     t_a_failing_tool_is_said_not_zeroed
 run_test "reach reads reachable's CSV"              t_reach_reads_reachables_csv
 run_test "a fleet tool: run here, read back"         t_a_fleet_tool_is_run_here_and_read_back
 run_test "binnacle's scripts run on the hosts"       t_binnacle_scripts_run_on_the_hosts

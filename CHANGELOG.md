@@ -45,6 +45,23 @@ ssh had passed.
   each: provost's batch holds its store lock about 50 ms an input, so a
   thousand hosts in one batch kept any other writer (a second campaign
   worker) waiting past provost's 30 s lock timeout.
+- From a review of the above: `--dry-run` prints the command as it runs
+  (from beside pushed files); a chunk provost fails on is said input by
+  input while the rest -- the run's own row -- are still filed; an ssh or
+  scp that will not start is refused before any host rather than filed as
+  a fleet of failures; `facts` keeps why-slow's own exit status and stderr
+  through its filter; `packages` reports a pending reboot only from
+  needs-restarting's own answers (0, 1); `numa` gives no node count
+  without /sys/devices/system/node; `containers` and `listen` say when
+  docker ps or ss fails rather than counting none; `disks` calls an
+  optical drive `rom` and skips an idle network block device (its size
+  column is `size_bytes` now, in bytes, where 0.1.0's was `size`);
+  `qd compare` and `qd view` show a multi-line command (a probe's) as its
+  first line.
+- The typo guard (agree's) names the command to repeat with `--yes` --
+  `qd doe run`, `qd campaign new` -- where it said `qd run` for all, and
+  `qd doe run` checks every point's command before the first runs, rather
+  than refusing half way through a design.
 - A tip to read an answer with provost (`provost source N`) names the store
   when provost would not find it on its own (`--store`, `QD_STORE`):
   `PROVOST_WORKSPACE=... provost source N`.

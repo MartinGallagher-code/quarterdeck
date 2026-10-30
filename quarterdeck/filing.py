@@ -186,9 +186,15 @@ class Provost(object):
                 rc, _, err = self.call(args)
                 errs = complaints(err)
                 if rc != 0 and not errs:
-                    die("provost batch failed (exit %d)%s" % (
-                        rc, (" after filing %d of %d inputs" % (
-                            k, len(batch.inputs))) if k else ""))
+                    if k + size >= len(batch.inputs):
+                        # the last chunk holds qd's own tables: without
+                        # them the run is not one qd can list
+                        die("provost batch failed (exit %d)" % rc)
+                    # a chunk before it: said for each of its inputs, and
+                    # the rest still filed, the run's own row with them
+                    errs = ["%s: provost batch failed (exit %d)" % (
+                        os.path.basename(p), rc)
+                        for _, p in batch.inputs[k:k + size]]
                 problems.extend(errs)
             return problems
         # One capture at a time: the answers a few in parallel (provost
