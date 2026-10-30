@@ -644,18 +644,17 @@
     // they earn their place for words, and for numbers that repeat.
     const repeats = d.top && d.top.length && d.top[0][1] > 1;
     if (d.top && d.top.length && (d.kind !== "num" || (repeats && d.distinct <= 20))) {
-      const total = d.n + d.blank;
       const top = d.top[0][1];
       panel.append(h("h3", { text: d.top.length > 1 ? "Values, most common first" : "Value" }));
-      if (d.top.length > 1) panel.append(h("p", { class: "note", text: d.top[0][1] + " agree on the most common; " + (total - d.top[0][1]) + " do not" }));
-      panel.append(h("ul", { class: "vals" }, d.top.map(([v, n, labels, nlab]) => {
+      if (d.top.length > 1) panel.append(h("p", { class: "note", text: d.agree + " agree on the most common; " + d.disagree + " do not" }));
+      panel.append(h("ul", { class: "vals" }, d.top.map(([v, n, labels, nlab, pct]) => {
         const shown = v === "" ? "(blank)" : v.split("\n")[0] + (v.includes("\n") ? "  …" : "");
         const expr = quoteCol(d.name) + (v.includes("\n") ? "~" + quoteVal("^" + escRe(v.split("\n")[0])) :
           "=" + (v === "" ? "" : quoteVal(v)));
         const nexpr = quoteCol(d.name) + "!=" + (v === "" ? "" : quoteVal(v));
         return h("li", null,
           h("span", { class: "v", title: v.slice(0, 1000), text: shown }),
-          h("span", { class: "n", text: n + "  " + fmtNum(100 * n / Math.max(1, total)) + "%" }),
+          h("span", { class: "n", text: n + "  " + fmtNum(pct) + "%" }),
           h("div", { class: "track" }, h("div", { class: "fill", style: { width: (100 * n / top) + "%" } })),
           labels.length && d.top.length > 1 ? h("span", { class: "who", text: labels.join(" ") + (nlab > labels.length ? " +" + (nlab - labels.length) : "") }) : null,
           h("span", { class: "ops" },
@@ -1036,9 +1035,8 @@
       card.append(h("p", { class: "count", text: d.series.length + " series, drawn grey: point at a line to lift it, or pick one in the table below." }));
     }
     const rows = d.series.map((s, i) => {
-      const v = s.points.map((p) => p[2]).filter((x) => x !== null);
-      return [s.group, String(v.length), fmtNum(v[0]), fmtNum(v[v.length - 1]),
-        fmtNum(v.length ? Math.min(...v) : null), fmtNum(v.length ? Math.max(...v) : null), i];
+      const m = s.summary;
+      return [s.group, String(m.n), fmtNum(m.first), fmtNum(m.last), fmtNum(m.min), fmtNum(m.max), i];
     });
     const t = { columns: [d.by || "series", "n", "first", "last", "min", "max"],
       kinds: { n: "num", first: "num", last: "num", min: "num", max: "num" },
@@ -1078,13 +1076,12 @@
     const b = S.e + (S.t ? ":" + S.t : "");
     const d = await api("/api/diff", { a: a, b: b, where: S.where, key: S.p.key || null, tolerance: S.p.tol || null });
     renderCli(["qd diff", shq(a), shq(b), S.p.key ? "--key " + shq(S.p.key) : "", S.p.tol ? "--tolerance " + S.p.tol : "", whereArgs()].filter(Boolean).join(" "));
-    const both = d.changed_total + d.same;
     view.append(h("div", { class: "tiles" },
       tile("Changed", d.changed_total, d.changed_total ? "serious" : "good"),
       tile("The same", d.same, null), tile("Only in A (gone)", d.only_a.length, d.only_a.length ? "critical" : null),
       tile("Only in B (new)", d.only_b.length, null)));
     view.append(h("ul", { class: "notes" },
-      h("li", { text: "A " + d.a + " (" + d.a_rows + " rows) → B " + d.b + " (" + d.b_rows + " rows), matched on " + d.key.join(", ") + "; " + both + " keys in both" }),
+      h("li", { text: "A " + d.a + " (" + d.a_rows + " rows) → B " + d.b + " (" + d.b_rows + " rows), matched on " + d.key.join(", ") + "; " + d.both + " keys in both" }),
       h("li", { text: "compared: " + (d.cols.join(", ") || "nothing") }),
       d.ignored.length ? h("li", { text: "ignored, as they differ on every run by construction: " + d.ignored.join(", ") }) : null,
       d.notes.map((n) => h("li", { text: n }))));

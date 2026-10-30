@@ -44,6 +44,22 @@ def group_name(prefix, value):
     return "%s%s" % (prefix, v) if prefix else v
 
 
+def unique(groups):
+    """Each group a name of its own.  rack=a/b and rack=a_b both clean to
+    rack-a_b, and one host file would overwrite the other (one campaign
+    part, one doe block, take the other's hosts); so would rack-R1 and
+    rack-r1 on a file system that ignores case."""
+    seen, out = set(), []
+    for g, hs in groups:
+        name, k = g, 2
+        while name.lower() in seen:
+            name = "%s-%d" % (g, k)
+            k += 1
+        seen.add(name.lower())
+        out.append((name, hs))
+    return out
+
+
 def by_attr(hosts, attr):
     groups, order = {}, []
     for h in hosts:
@@ -59,8 +75,8 @@ def by_attr(hosts, attr):
             attr, ", ".join(sorted(set(k for h in hosts for k, _ in h.attrs)))
             or "none"))
     from .stats import natural_sorted
-    return [(group_name("%s-" % slug(attr), v), groups[v])
-            for v in natural_sorted(order)]
+    return unique([(group_name("%s-" % slug(attr), v), groups[v])
+                   for v in natural_sorted(order)])
 
 
 def into(hosts, n, deal=False):
@@ -199,11 +215,18 @@ def by_answers(hosts, entry):
     from the store rather than asked again)."""
     t = entry.load("hosts")
     names = dict((h.name, h) for h in hosts)
-    groups, order = {}, []
+    # a run of several passes has a row per host per pass: a host's answer
+    # is its last one, and each host goes in one list once
+    last, seen = {}, []
     for r in t.rows:
         host = r[t.index("host")]
-        if host not in names:
-            continue
+        if host in names:
+            if host not in last:
+                seen.append(host)
+            last[host] = r
+    groups, order = {}, []
+    for host in seen:
+        r = last[host]
         status = r[t.index("status")]
         cap = r[t.index("capture")] if t.has("capture") else ""
         if status != "ok":
@@ -225,7 +248,7 @@ def by_answers(hosts, entry):
     w = len(str(len(ok)))
     out = [("answer-%0*d" % (w, i + 1), groups[k]) for i, k in enumerate(ok)]
     out += [(group_name("", k[1]), groups[k]) for k in bad]
-    return out
+    return unique(out)
 
 
 def as_table(groups):
@@ -243,14 +266,15 @@ def as_table(groups):
     return Table(["group", "host"] + attrs, rows, "split")
 
 
-def write_lists(groups, out_dir, prefix="", how=""):
-    """One host file per group; returns their paths."""
+def write_lists(groups, out_dir, prefix="", how="", plain=False):
+    """One host file per group; returns their paths.  `plain` leaves the
+    attributes off, for the tools that read every word as a host."""
     paths = []
     for g, hs in groups:
         path = os.path.join(out_dir, "%s%s.txt" % (prefix, g))
         body = ["# %s: %d host(s)%s" % (g, len(hs), (" -- " + how) if how
                                        else "")]
-        body += [h.token() for h in hs]
+        body += [h.token(plain=plain) for h in hs]
         write_text(path, "\n".join(body) + "\n")
         paths.append(path)
     return paths

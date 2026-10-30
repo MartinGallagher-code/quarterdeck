@@ -56,6 +56,20 @@ t_hosts_warn_when_an_attribute_looks_like_a_host() {
     assert_not_contains "$out" "attribute"
 }
 
+# a host line is split on spaces, here and by every tool of the suite: a
+# value with a space in it, written as it is, would read back as a host
+t_a_host_line_reads_back_as_its_host() {
+    printf 'dc A\n' > floor.dc
+    printf '%s\n' '#!/bin/sh' \
+        'echo "name,path,kind,role,room,row,rack,slot"' \
+        'echo "wr01r01u01,A/wr01/A/r01/u01,node,gpu server,wr01,A,r01,u01"' \
+        > "$FAKE_BIN/manifest-ok"
+    chmod +x "$FAKE_BIN/manifest-ok"
+    QD_MANIFEST="$FAKE_BIN/manifest-ok" qd hosts --layout floor.dc 'rack[1]' > hosts.txt
+    assert_contains "$(cat hosts.txt)" "role=gpu_server"
+    assert_eq "$(qd hosts -s hosts.txt --plain)" "wr01r01u01"
+}
+
 t_hosts_layout_asks_manifest() {
     printf 'dc A\n' > floor.dc
     # binnacle's manifest, played by a stand-in that answers its --csv
@@ -161,6 +175,9 @@ t_a_blank_value_stays_blank() {
     out="$(qd show latest --cols host,vm.swappiness,vm.dirty_ratio --format csv)"
     assert_contains "$out" "node02,60,20"
     assert_not_contains "$(qd show latest --format csv | head -1)" "group"
+    # and qd log counts the rows qd show has, not provost's long ones
+    n="$(qd show latest --format csv | tail -n +2 | wc -l | tr -d ' ')"
+    qd log latest | grep -qE "data +$n rows" || fail "qd log does not say $n rows"
 }
 
 t_json_number_and_csv_answers() {
@@ -272,8 +289,166 @@ t_script_is_pushed_run_and_cleaned_up() {
     out="$(qd show latest --where status=ok --cols host,A --format csv)"
     assert_contains "$out" "node02,args:hello:node02"
     assert_no_file "$FAKE_ROOT/node02/rd"
-    run_qd --script probe.sh --remote-dir rd --keep-remote -- x > /dev/null
-    assert_file_exists "$FAKE_ROOT/node02/rd/probe.sh"
+    run_qd --script probe.sh --remote-dir rd --keep-remote -- x > /dev/null 2> err
+    assert_contains "$(cat err)" "left on each host in rd/qd."
+    kept="$(sed -n 's/.*left on each host in \(rd\/qd\.[0-9a-f]*\).*/\1/p' err)"
+    assert_file_exists "$FAKE_ROOT/node02/$kept/probe.sh"
+}
+
+# port is the ssh port's column: an attribute by that name is attr_port
+t_a_port_attribute_is_not_the_port() {
+    out="$(qd hosts -s 'web1=10.0.0.1:2222 port=8080' --csv)"
+    assert_contains "$out" "host,addr,port,attr_port"
+    assert_contains "$out" "web1,10.0.0.1,2222,8080"
+}
+
+# a host spec on the command line reads as a host file's line: the words
+# after a host are its attributes, never an address to ssh to
+t_an_inline_spec_is_a_host_line() {
+    out="$(qd hosts -s 'web[1-2] rack=r1')"
+    assert_eq "$out" "$(printf 'web1 rack=r1\nweb2 rack=r1')"
+    out="$(qdf run --dry-run -S 'db1 role=primary' -- uptime)"
+    assert_contains "$out" " db1 uptime"
+    assert_not_contains "$out" " primary uptime"
+    assert_eq "$(QD_SERVERS='web01 web02' qd hosts --plain)" "$(printf 'web01\nweb02')"
+}
+
+# --remote-dir is where the run makes a directory of its own: what was
+# there before stays, and two runs at once never clean up each other's
+t_the_remote_dir_is_never_removed() {
+    seed
+    mkdir -p "$FAKE_ROOT/node02/bin"
+    echo mine > "$FAKE_ROOT/node02/bin/mytool"
+    echo hello > payload.txt
+    run_qd --push payload.txt --remote-dir bin -- cat payload.txt > /dev/null
+    assert_contains "$(qd show latest --cols host,A --format csv)" "node02,hello"
+    assert_eq "$(cat "$FAKE_ROOT/node02/bin/mytool")" "mine"
+    assert_eq "$(ls "$FAKE_ROOT/node02/bin")" "mytool"
+    # a slow run and a quick one, side by side, on the same hosts
+    run_qd --push payload.txt --remote-dir rd -- 'sleep 2; cat payload.txt' \
+        > /dev/null &
+    sleep 0.7
+    echo other > other.txt
+    run_qd --push other.txt --remote-dir rd -- true > /dev/null
+    wait
+    slow="$(qd log | grep -- '-sleep ' | cut -d' ' -f1)"
+    assert_contains "$(qd show "$slow" --cols host,A --format csv)" "node02,hello"
+    assert_no_file "$FAKE_ROOT/node02/rd"
+}
+
+# two runs of one command at once, into one store: two runs, each with
+# its own hosts, never one id holding both
+t_runs_at_once_are_two_runs() {
+    install_fake_ssh
+    for h in a b c d; do fake_host "$h"; done
+    qdf run -q -S a,b -- 'echo v: 1' > /dev/null &
+    qdf run -q -S c,d -- 'echo v: 1' > /dev/null
+    wait
+    assert_eq "$(qd log | grep -c -- '-echo')" "2"
+    for id in $(qd log | grep -- '-echo' | cut -d' ' -f1); do
+        assert_eq "$(qd show "$id" --cols host --format csv | tail -n +2 | wc -l | tr -d ' ')" "2"
+    done
+    # the claims live in qd's cache, never in the store provost commits
+    assert_eq "$(git -C "$QD_STORE" status --porcelain)" ""
+}
+
+# a command on the host that exits 124 itself (timeout N check) answered:
+# failed, not a qd timeout
+t_an_exit_of_124_is_the_host_s() {
+    seed
+    run_qd -- 'echo checked; exit 124' > /dev/null
+    out="$(qd show latest --cols host,status,rc --format csv)"
+    assert_contains "$out" "node02,failed,124"
+    assert_not_contains "$out" "timeout"
+}
+
+# A pushed file is beside the command, by its own name, wherever
+# --remote-dir puts it
+t_push_runs_beside_the_files() {
+    seed
+    echo hello > payload.txt
+    run_qd --push payload.txt --remote-dir rd -- cat payload.txt > /dev/null
+    assert_contains "$(qd show latest --cols host,A --format csv)" "node02,hello"
+    assert_no_file "$FAKE_ROOT/node02/rd"
+}
+
+# 127 is the remote shell's "command not found": the host answered, so it
+# failed rather than being unreachable (sudo missing, on real hosts)
+t_command_not_found_is_failed_not_unreachable() {
+    seed
+    run_qd -- nosuchcommand > /dev/null
+    out="$(qd show latest --cols host,status,rc --format csv)"
+    assert_contains "$out" "node02,failed,127"
+    assert_contains "$out" "node09,unreachable"
+}
+
+# A store provost would not find on its own (QD_STORE, --store): the tip
+# to read an answer with provost names it, so it works as printed
+t_provost_tips_name_the_store() {
+    seed
+    run_qd -- cat kernel > out
+    assert_contains "$(cat out)" "PROVOST_WORKSPACE=$QD_STORE provost source"
+    n="$(sed -n 's/.*PROVOST_WORKSPACE=[^ ]* provost source \([0-9]*\).*/\1/p' out | head -1)"
+    # shellcheck disable=SC2086  # QD_PROVOST may be a command line
+    assert_contains "$(env PROVOST_WORKSPACE="$QD_STORE" $PROVOST_CMD source "$n")" "6.1.0"
+    # where provost finds the store itself, the tip is plain
+    out="$(PROVOST_WORKSPACE="$QD_STORE" qd log latest)"
+    assert_contains "$out" "answers   provost source"
+    assert_not_contains "$out" "PROVOST_WORKSPACE="
+}
+
+# A big run is filed a few hundred inputs at a time, each a commit, so
+# provost's lock is never held for the whole fleet; nothing is lost
+t_a_big_run_is_filed_in_chunks() {
+    has_batch || { echo "  (this provost files one capture at a time)"; return 0; }
+    seed
+    QD_FILE_CHUNK=2 run_qd -- cat kernel > out
+    assert_status "$QD_RC" 1
+    assert_eq "$(git -C "$QD_STORE" log --oneline | grep -c ' batch: ')" "3"
+    out="$(qd show latest --cols host,status,A --format csv)"
+    assert_contains "$out" "node03,ok,6.1.0-13"
+    assert_contains "$out" "node09,unreachable"
+    assert_contains "$(qd log latest)" "3 captures"
+}
+
+# --dry-run prints what will run: with pushed files, from beside them
+t_dry_run_shows_where_pushed_files_run() {
+    seed
+    echo hello > payload.txt
+    out="$(qdf run -s hosts.txt --dry-run --push payload.txt --remote-dir rd -- cat payload.txt)"
+    assert_contains "$out" "cd rd/qd."
+    assert_contains "$out" " && cat payload.txt"
+    assert_eq "$(ssh_calls)" "0"
+}
+
+# an ssh that will not start is refused before any host, not filed as a
+# fleet of failures
+t_an_ssh_that_will_not_start_is_refused() {
+    seed
+    qd_rc run -s hosts.txt --ssh /nonexistent/ssh -- true 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "cannot run /nonexistent/ssh"
+    assert_eq "$(qd log 2>&1 | grep -c ' run ')" "0"
+}
+
+# a chunk of a big run provost fails on is said input by input, and the
+# rest -- the run's own row with them -- are still filed
+t_a_failed_chunk_still_files_the_run() {
+    has_batch || { echo "  (this provost files one capture at a time)"; return 0; }
+    seed
+    cat > flaky-provost <<EOF
+#!/bin/sh
+if [ "\$1" = batch ]; then
+  n=\$(cat "$PWD/calls" 2>/dev/null || echo 0); n=\$((n + 1)); echo \$n > "$PWD/calls"
+  [ \$n -eq 2 ] && exit 1
+fi
+exec $PROVOST_CMD "\$@"
+EOF
+    chmod +x flaky-provost
+    QD_FILE_CHUNK=2 QD_PROVOST="$PWD/flaky-provost" run_qd -- cat kernel > out 2> err
+    assert_contains "$(cat out err)" "provost batch failed (exit 1)"
+    assert_contains "$(qd log latest)" "cat kernel"
+    assert_contains "$(qd show latest --cols host,status --format csv)" "node09,unreachable"
 }
 
 t_mutation_guard_and_limit() {
@@ -339,6 +514,12 @@ t_lang_c_and_utf8_output_survive() {
     assert_contains "$out" "caf"
 }
 
+run_test "a port attribute is not the port"        t_a_port_attribute_is_not_the_port
+run_test "two runs at once are two runs"          t_runs_at_once_are_two_runs
+run_test "an inline host spec is a host line"      t_an_inline_spec_is_a_host_line
+run_test "--remote-dir itself is never removed"     t_the_remote_dir_is_never_removed
+run_test "exit 124 on the host is the host's"       t_an_exit_of_124_is_the_host_s
+run_test "a host line reads back as its host"        t_a_host_line_reads_back_as_its_host
 run_test "version, --help and help"                 t_version_and_help
 run_test "hosts: ranges, attributes, order"           t_hosts_ranges_attrs_and_order
 run_test "hosts: warn on an attribute that is a host" t_hosts_warn_when_an_attribute_looks_like_a_host
@@ -356,6 +537,13 @@ run_test "df: one row per filesystem"                 t_df_table_is_one_row_per_
 run_test "--every/--count: a time series"             t_repeated_passes_make_a_time_series
 run_test "--dry-run and --sudo contact nothing"       t_dry_run_and_sudo_contact_nothing
 run_test "--script: pushed, run, cleaned up"          t_script_is_pushed_run_and_cleaned_up
+run_test "--push: the command runs beside its files"  t_push_runs_beside_the_files
+run_test "command not found is failed, not unreachable" t_command_not_found_is_failed_not_unreachable
+run_test "provost tips name a store it cannot find"   t_provost_tips_name_the_store
+run_test "a big run is filed in chunks"               t_a_big_run_is_filed_in_chunks
+run_test "--dry-run shows where pushed files run"     t_dry_run_shows_where_pushed_files_run
+run_test "an ssh that will not start is refused"      t_an_ssh_that_will_not_start_is_refused
+run_test "a failed chunk still files the run"         t_a_failed_chunk_still_files_the_run
 run_test "mutation guard, --limit, --first 0"         t_mutation_guard_and_limit
 run_test "--no-store keeps nothing"                   t_no_store_keeps_nothing
 run_test "no provost: refused before any host"        t_no_provost_is_refused_before_any_host

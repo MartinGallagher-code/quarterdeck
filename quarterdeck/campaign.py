@@ -25,6 +25,7 @@ carried on from another that shares the store and the pool.
 
 import os
 import re
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -132,33 +133,37 @@ def define(st, prov, name, groups, command, split_how, pool):
     for part, hs in groups:
         for h in hs:
             rows.append([name, part, h.token(plain=True),
-                         " ".join("%s=%s" % kv for kv in h.attrs), command,
+                         storemod.join_attrs(h.attrs), command,
                          split_how, pool, created])
-    b = filing.Batch()
-    b.add_own(CAMPAIGNS, filing.own_tsv(COLUMNS, rows))
-    try:
-        filing.notes_of(prov, b, "campaign")
-    finally:
-        b.cleanup()
-    # the pool: one item per part, muster's to hand out
-    d = os.path.dirname(pool)
-    if d and not os.path.isdir(d):
-        os.makedirs(d)
+    # the pool first -- one item per part, muster's to hand out -- so a
+    # campaign is only defined once muster has taken it: a definition with
+    # no pool (muster not installed, the pool already there) would hold the
+    # name and hand out nothing
     if os.path.exists(pool):
         die("the pool %s already exists: a campaign of that name was "
             "started before (`qd campaign status %s`, or another --pool)"
             % (pool, name))
+    d = os.path.dirname(pool)
+    if d and not os.path.isdir(d):
+        os.makedirs(d)
     tmp = tempfile.mkdtemp(prefix="qd-campaign-")
     try:
         lst = os.path.join(tmp, "parts.txt")
         write_text(lst, "".join(p + "\n" for p, hs in groups if hs))
         muster(["add", lst], pool)
     finally:
-        try:
-            os.remove(lst)
-            os.rmdir(tmp)
-        except OSError:
-            pass
+        shutil.rmtree(tmp, ignore_errors=True)
+    b = filing.Batch()
+    b.add_own(CAMPAIGNS, filing.own_tsv(COLUMNS, rows))
+    try:
+        filing.notes_of(prov, b, "campaign")
+    except BaseException:
+        # not defined after all: the pool goes too, so the name is free
+        if os.path.exists(pool):
+            os.remove(pool)
+        raise
+    finally:
+        b.cleanup()
 
 
 def take(c, lease):

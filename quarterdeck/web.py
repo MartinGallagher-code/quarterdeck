@@ -36,7 +36,7 @@ from . import VERSION
 from . import campaign as camp, compare as comparemod, diff as diffmod, \
     doe as doemod, query, stats, table as tablemod, tools
 from .common import PROG, QdError, die, env_float, write_text
-from .store import cache_root, describe_entry, split_ref
+from .store import cache_root, describe_entry, shown_attrs, split_ref
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 
@@ -128,7 +128,7 @@ class Api(object):
                         "summary": e.summary(), "hosts": m.get("hosts"),
                         "rc": m.get("rc"), "group": m.get("group", ""),
                         "part": m.get("part", ""),
-                        "factors": m.get("factors", ""),
+                        "factors": shown_attrs(m.get("factors")),
                         "tables": [{"name": t["name"],
                                     "rows": t.get("rows", 0),
                                     "from": t.get("from", "")}
@@ -172,8 +172,7 @@ class Api(object):
         out = {"name": c, "kind": kind, "n": len(filled),
                "blank": len(vals) - len(filled),
                "distinct": len(set(filled)),
-               "unit": (dict(t.tests.get(c, [])).get("unit")
-                        if t.tests else None) or tools.guess_unit(c)}
+               "unit": tools.column_unit(t, s, c)}
         if kind in ("num", "mixed"):
             sm = stats.summary(s.numbers(c))
             out["summary"] = dict((k, v) for k, v in sm.items())
@@ -192,8 +191,12 @@ class Api(object):
                               else z, side] for k, v, _, rel, z, side
                              in rows[:50]]}
         fr = stats.freq(s, c)
-        out["top"] = [[v, n, labels[:12], len(labels)]
+        rows = max(1, len(vals))
+        # [value, rows, labels, how many labels, % of the rows]
+        out["top"] = [[v, n, labels[:12], len(labels), 100.0 * n / rows]
                       for v, n, labels in fr[:30]]
+        out["agree"] = fr[0][1] if fr else 0
+        out["disagree"] = len(vals) - out["agree"]
         out["more_values"] = max(0, len(fr) - 30)
         out["over"] = stats.default_over(s)
         return out
@@ -235,6 +238,7 @@ class Api(object):
         # An empty `over` is a choice -- row order -- not a missing one.
         over = q.get("over")
         over = stats.default_over(s) if over is None else (over[0] or None)
+        s = tablemod.normalize_units([s], [c])[0]
         vi = s.index(c)
         oi = s.index(over) if over else None
         bi = s.index(by) if by else None
@@ -267,7 +271,13 @@ class Api(object):
         series = []
         for g in stats.natural_sorted(order):
             pts = sorted(groups[g], key=lambda p: p[0])
-            series.append({"group": g, "points": pts})
+            ys = [p[2] for p in pts if p[2] is not None]
+            # the series table's figures, worked out here, not in the page
+            series.append({"group": g, "points": pts, "summary": {
+                "n": len(ys), "first": ys[0] if ys else None,
+                "last": ys[-1] if ys else None,
+                "min": min(ys) if ys else None,
+                "max": max(ys) if ys else None}})
         return {"column": c, "by": by, "over": over, "series": series,
                 "numeric_x": numeric and oi is not None,
                 "x_labels": labels}
@@ -313,6 +323,7 @@ class Api(object):
                 "only_b": [list(k) for k in res.only_b],
                 "same": res.same, "changed": changed,
                 "changed_total": len(res.changed),
+                "both": len(res.changed) + res.same,
                 "col_summary": res.col_summary}
 
     def compare(self, q):
@@ -340,7 +351,7 @@ class Api(object):
             runs.append({"label": r["label"], "id": r["id"],
                          "created": r["created"], "rows": r["rows"],
                          "part": m.get("part", ""),
-                         "factors": m.get("factors", ""),
+                         "factors": shown_attrs(m.get("factors")),
                          "command": m.get("command", ""),
                          "hosts_ok": ("%d/%d" % (h.get("ok", 0),
                                                  h.get("total", 0)))
@@ -429,8 +440,8 @@ class Api(object):
             die("only a run in the store can be put on the floor plan")
         o = tools.to_overlay(s, e.id)
         name = "overlay.tsv" if t.name == "data" else \
-            "overlay-%s.tsv" % t.name
-        sub = re.sub(r"[^\w.@-]+", "_", e.id)
+            "overlay-%s.tsv" % re.sub(r"[^\w@-]+", "_", t.name)
+        sub = re.sub(r"[^\w@-]+", "_", e.id)
         path = os.path.join(floor_root(), sub, name)
         write_text(path, tablemod.to_results(o))
         url = None
@@ -492,10 +503,27 @@ ROUTES = {"/api/entries": "entries", "/api/entry": "entry_info",
           "/api/groups": "groups"}
 
 
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
 class Handler(BaseHTTPRequestHandler):
     api = None
     quiet = False
+    loopback = True
     server_version = "quarterdeck/" + VERSION
+
+    def host_ok(self):
+        """Bound to this machine, the server answers only requests made to
+        a loopback name: a page elsewhere that points its own name at
+        127.0.0.1 (DNS rebinding) is turned away."""
+        if not self.loopback:
+            return True
+        host = (self.headers.get("Host") or "").strip().lower()
+        if host.startswith("["):
+            host = host[1:].split("]", 1)[0]
+        else:
+            host = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+        return host in LOOPBACK
 
     def log_message(self, fmt, *args):
         if not self.quiet:
@@ -523,6 +551,10 @@ class Handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self):
+        if not self.host_ok():
+            self.send_json(403, {"error": "this server answers requests "
+                                 "to 127.0.0.1 or localhost only"})
+            return
         url = urlparse(self.path)
         path = url.path
         q = parse_qs(url.query, keep_blank_values=True)
@@ -626,6 +658,7 @@ def serve(book, host="127.0.0.1", port=8100, layout=None, open_browser=True,
 
     Bound.api = api
     Bound.quiet = quiet
+    Bound.loopback = host in LOOPBACK
     port = free_port(host, port)
     httpd = ThreadingServer((host, port), Bound)
     shown = "[%s]" % host if ":" in host else host
@@ -635,7 +668,7 @@ def serve(book, host="127.0.0.1", port=8100, layout=None, open_browser=True,
         sys.stderr.write("%s web: the floor-plan viewer is at %sfloor/\n"
                          % (PROG, url))
     sys.stderr.write("%s web: %s   (Ctrl+C to stop)\n" % (PROG, url))
-    if host not in ("127.0.0.1", "localhost", "::1"):
+    if host not in LOOPBACK:
         sys.stderr.write("%s web: listening beyond this machine: anyone who "
                          "can reach %s:%d can read the store\n"
                          % (PROG, host, port))

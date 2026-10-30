@@ -97,6 +97,25 @@ t_multiline_text_gets_a_unified_diff() {
     assert_contains "$out" "+L2"
 }
 
+# a key reduced from repeated rows is not rounded against one that is not
+t_a_reduced_key_is_not_rounded() {
+    printf 'host,lat\na,940.25\nb,12.3456\n' > b.csv
+    printf 'host,lat\na,940.2\na,940.3\nb,12.3456\nb,12.3456\n' > a.csv
+    qd_rc diff a.csv b.csv > out
+    assert_status "$QD_RC" 0
+}
+
+# 980M then 1.1G is a rise, not a fall to 1.1 of something
+t_a_change_of_unit_is_not_a_change() {
+    printf 'host,used\na,512M\nd,980M\n' > a.csv
+    printf 'host,used\na,512M\nd,1.1G\n' > b.csv
+    out="$(qd diff a.csv b.csv)" || true
+    assert_contains "$out" "+14.9%"
+    assert_not_contains "$out" "-99"
+}
+
+run_test "a change of unit is not a change"         t_a_change_of_unit_is_not_a_change
+run_test "a reduced key is not rounded"             t_a_reduced_key_is_not_rounded
 run_test "host keys: changed, gone, new, CSV"           t_host_keyed_changes_gone_and_new
 run_test "identical exits 0; --tolerance"               t_identical_exits_zero_and_tolerance
 run_test "worse status first; went blank named"         t_worse_status_ranks_first_and_blank_is_named

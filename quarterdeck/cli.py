@@ -54,6 +54,7 @@ import argparse
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -91,7 +92,9 @@ DANGER = [
 ]
 
 
-def check_danger(command, yes):
+def check_danger(command, yes, verb="run"):
+    """Refuse a command agree would refuse, unless --yes; `verb` is the qd
+    command to repeat with --yes (run, campaign new, doe run)."""
     for pat, label in DANGER:
         if re.search(pat, command):
             if yes:
@@ -101,8 +104,8 @@ def check_danger(command, yes):
                 extra = ("  (nothing is attached to this terminal, so there "
                          "is nobody to confirm)")
             die("refusing to run this on a fleet: it looks like %s.%s\n"
-                "  If you meant it, add --yes:\n    %s run --yes ... -- %s"
-                % (label, extra, PROG, command))
+                "  If you meant it, add --yes:\n    %s %s --yes ... -- %s"
+                % (label, extra, PROG, verb, command))
 
 
 # ---------------------------------------------------------------------------
@@ -228,11 +231,44 @@ def new_run_id(st, label):
     base = "%s-%s" % (stamp, tablemod.slug(label or "")[:32].strip("_")
                       or "run")
     taken = st.run_ids()
+    held = id_claims(st)
     rid, k = base, 2
-    while rid in taken:
+    while rid in taken or not claim_id(held, rid):
         rid = "%s-%d" % (base, k)
         k += 1
     return rid
+
+
+def id_claims(st):
+    """Where run ids are claimed for a store.  Two qd processes filing into
+    one store each pick an id before either has filed, so the store alone
+    cannot tell the second its id is taken -- two runs of `echo` in the
+    same second were filed as one.  Kept in qd's cache, never the store,
+    which provost commits whole; claims older than a day are dropped."""
+    import hashlib
+    d = os.path.join(storemod.cache_root(), "ids", hashlib.sha1(
+        st.root.encode("utf-8")).hexdigest()[:16])
+    try:
+        os.makedirs(d, exist_ok=True)
+        old = time.time() - 86400
+        for name in os.listdir(d):
+            p = os.path.join(d, name)
+            if os.path.getmtime(p) < old:
+                os.rmdir(p)
+    except OSError:
+        pass
+    return d
+
+
+def claim_id(held, rid):
+    """mkdir is atomic: of two processes claiming one id, one gets it."""
+    try:
+        os.mkdir(os.path.join(held, rid))
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        return True         # no cache to claim in: the store's word only
 
 
 def run_row(rid, kind, name, command, created, **kw):
@@ -247,11 +283,14 @@ def run_row(rid, kind, name, command, created, **kw):
 
 def host_row(rid, r):
     h = r.host
-    addr = h.addr + (":%d" % h.port if h.port else "")
+    # as a host line writes it, so it reads back the same: fd00::1:2222
+    # would be another address, on port 22
+    addr = ("[%s]" % h.addr if ":" in h.addr and h.port else h.addr) + (
+        ":%d" % h.port if h.port else "")
     return [rid, h.name, addr if (h.addr != h.name or h.port) else "",
             str(r.pass_no), "%d" % int(r.started), r.outcome, str(r.rc),
             "%.2f" % r.duration, str(len(r.stdout.encode("utf-8"))),
-            r.error(), " ".join("%s=%s" % kv for kv in h.attrs),
+            r.error(), storemod.join_attrs(h.attrs),
             r.stderr[:STDERR_KEEP]]
 
 
@@ -314,8 +353,11 @@ def check_limit(args, hs):
 
 
 def remote_script(args, script, words):
+    """A pushed script as the command runs it: from the directory it was
+    pushed to (the run's own, in `--remote-dir`), where a command with
+    pushed files runs."""
     return " ".join(
-        [shlex.quote("%s/%s" % (args.remote_dir, os.path.basename(script)))] +
+        [shlex.quote("./" + os.path.basename(script))] +
         [shlex.quote(a) for a in words])
 
 
@@ -353,8 +395,12 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
     if args.dry_run:
         for h in hs:
             out(" ".join(shlex.quote(a) for a in runner.ssh_argv(
-                h, runner.wrap(command))))
+                h, runner.command_for(command, bool(push)))))
         return None
+    for tool, why in ((runner.ssh, True), (runner.scp, bool(push))):
+        if why and not shutil.which(tool[0]):
+            die("cannot run %s: not found (--ssh/--scp, QD_SSH/QD_SCP) -- "
+                "no host was contacted" % tool[0])
     st = prov = None
     if store and not args.no_store:
         # before the fleet, not after: answers with nowhere to go are lost
@@ -370,19 +416,30 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
         args.jobs, count, args.every or 0)
     if not results:
         die("interrupted before any pass finished; nothing was kept", 130)
+    if push and args.keep_remote:
+        warn("the pushed files are left on each host in %s"
+             % runner.work_dir)
     took = round(time.time() - t0, 2)
     passes = max(r.pass_no for r in results)
     last = [r for r in results if r.pass_no == passes]
     if st is None:
         return Job(results, interrupted, None, unfiled_table(results, passes))
-    rid = new_run_id(st, label)
+    # a part of a campaign or a design point carries its part in its id:
+    # two workers on one campaign finish parts in the same second
+    part = (extra or {}).get("part")
+    rid = new_run_id(st, ("%s-%s" % (label, part)) if part else label)
     ds = filing.dataset_name(label)
     b = filing.Batch()
+    # a host attribute by the name of something the run set (a design's
+    # factor: mtu=9000 on the host, mtu=1500 the point) would overwrite it
+    # in the rows -- provost keeps the last -- so it is carried as attr_
+    set_here = set(k for k, _ in context)
     for r in results:
         if r.stdout.strip():
             pairs = [("run", rid), ("host", r.host.name)] + (
                 [("pass", str(r.pass_no))] if passes > 1 else []) + \
-                list(context) + list(r.host.attrs)
+                list(context) + [(("attr_" + k) if k in set_here else k, v)
+                                 for k, v in r.host.attrs]
             b.add(ds, filing.prologue(pairs) + filing.body(r.stdout))
     ncap = len(b.inputs)
     b.add_own(storemod.HOSTS, filing.own_tsv(
@@ -539,7 +596,7 @@ def run_next_steps(t, dcols, entry, bad, passes):
         caps = entry.captures()
         n = storemod.first_row(entry.store.meta(caps[0])) if caps else None
         if n is not None:
-            tips.append(("provost source %d" % n,
+            tips.append((entry.store.provost("source %d" % n),
                          "one host's answer exactly as it came back"))
     tips.append(("%s view %s" % (PROG, ref), "explore it full-screen"))
     return next_steps(tips)
@@ -561,6 +618,53 @@ def next_steps(tips):
 # ---------------------------------------------------------------------------
 # do: a tool from the toolchain, run here and filed
 # ---------------------------------------------------------------------------
+
+def written_mark(path):
+    """What is at path now -- each file's name, size, mtime and inode --
+    to tell afterwards whether a run wrote it; None when nothing is.  A
+    comparison of two marks, never of a mark against the clock, so a
+    file server's clock cannot make fresh output look old."""
+    if not os.path.exists(path):
+        return None
+    if not os.path.isdir(path):
+        s = os.stat(path)
+        return ((path, s.st_size, s.st_mtime, s.st_ino),)
+    marks = []
+    for root, dirs, files in os.walk(path):
+        dirs.sort()
+        for f in sorted(files):
+            p = os.path.join(root, f)
+            try:
+                s = os.stat(p)
+            except OSError:
+                continue
+            marks.append((p, s.st_size, s.st_mtime, s.st_ino))
+    return tuple(marks)
+
+
+def only_added(path, size, tables, log):
+    """The rows a run added to a file it appends to: the file as it is,
+    less the rows its first `size` bytes -- what it held before -- read to.
+    A header and a !test block stay the file's own."""
+    with open(path, "rb") as fh:
+        was = fh.read(size).decode("utf-8-sig", "replace")
+    try:
+        old = tablemod.parse_text(was, tables[0].name if tables else "data",
+                                  path) if was.strip() else []
+    except QdError:
+        old = []
+    n = sum(len(t.rows) for t in old)
+    out = []
+    for t in tables:
+        k = min(n, len(t.rows))
+        n -= k
+        if t.rows[k:]:
+            t.rows = t.rows[k:]
+            out.append(t)
+    log.append("  - %s: appended to; only the rows this run added are "
+               "filed" % path)
+    return out
+
 
 def run_teed(argv):
     """Run argv with stdout shown live and kept; stderr and stdin stay the
@@ -593,9 +697,11 @@ def run_teed(argv):
 
 def resolve_argv(cmd):
     """A bare tool name that is not on PATH but is installed as a module
-    (or named by QD_<TOOL>) runs from there."""
-    name, _ = tools.tool_of(cmd)
-    if os.path.sep not in cmd[0] and name in tools.TOOL_NAMES:
+    (or named by QD_<TOOL>) runs from there.  `python3 ./mx` and `./mx`
+    already say where it is, and are run as they are."""
+    name, rest = tools.tool_of(cmd)
+    if len(cmd) - len(rest) == 1 and os.path.sep not in cmd[0] \
+            and name in tools.TOOL_NAMES:
         import shutil
         if env(name.upper().replace("-", "_")) or not shutil.which(cmd[0]):
             found = tools.find_tool(name)
@@ -655,8 +761,17 @@ def _do(args, cmd, st, prov, name, label, cmdline, work):
     plan = tools.plan(cmd, work)
     if args.no_import:
         plan.imports, plan.after = [], []
+    # what the tool's outputs were before it ran: one it did not write is
+    # an earlier run's, and is not this one's to file (--import is the
+    # user's word, and is read whatever it holds)
+    before = dict((path, written_mark(path)) for path, _ in plan.imports)
+    # what an appended-to file held before: those rows are earlier runs'
+    held = dict((path, os.path.getsize(path)) for path in plan.appends
+                if os.path.isfile(path))
     for path in args.import_ or []:
-        plan.imports.append((path, None))
+        before.pop(path, None)
+        if path not in [p for p, _ in plan.imports]:
+            plan.imports.append((path, None))
     shown = " ".join(shlex.quote(a) for a in plan.argv)
     sys.stderr.write("%s do: %s\n" % (PROG, shown))
     for n in plan.notes:
@@ -666,7 +781,16 @@ def _do(args, cmd, st, prov, name, label, cmdline, work):
     rc, stdout = run_teed(plan.argv)
     took = round(time.time() - t0, 2)
     log = []
+    # the follow-ups read what the tool left (mx export reads reports/):
+    # from an earlier run's, they would file its numbers as this one's
+    stale = [p for p, mark in before.items()
+             if mark is not None and written_mark(p) == mark]
     for argv, outpath, tname in plan.after:
+        if stale:
+            log.append("  - %s: not run; it reads %s, which this run did "
+                       "not write" % (" ".join(shlex.quote(a) for a in argv),
+                                      ", ".join(stale)))
+            continue
         log.append("  + %s" % " ".join(shlex.quote(a) for a in argv))
         try:
             p = subprocess.Popen(argv, stdout=subprocess.PIPE,
@@ -686,8 +810,15 @@ def _do(args, cmd, st, prov, name, label, cmdline, work):
         if not os.path.exists(path):
             log.append("  - %s: not there, nothing read" % path)
             continue
+        if before.get(path) is not None and written_mark(path) == before[path]:
+            log.append("  - %s: not written by this run (an earlier run's), "
+                       "not filed; --import %s files it as it is"
+                       % (path, shlex.quote(path)))
+            continue
         try:
             got = importers.read_path(path)
+            if held.get(path):
+                got = only_added(path, held[path], got, log)
         except QdError as exc:
             log.append("  - %s: %s" % (path, exc))
             continue
@@ -854,12 +985,10 @@ def _one_column_report(t, s, col, args):
     lines.append("  kind      %s" % kind)
     lines.append("  measured  %d   blank %d   distinct %d"
                  % (len(filled), len(vals) - len(filled), len(set(filled))))
-    unit = dict(t.tests.get(name, [])).get("unit") if t.tests else None
+    unit = tools.column_unit(t, s, name)
     if s.is_results() and name == "value" and s.rows:
         tests = sorted(set(s.values("test")))
-        if len(tests) == 1:
-            unit = dict(t.tests.get(tests[0], [])).get("unit")
-        else:
+        if len(tests) > 1:
             lines.append("  note      value mixes %d tests here (%s); "
                          "--where test=NAME reads one" % (
                              len(tests), ", ".join(tests[:4]) +
@@ -1377,10 +1506,12 @@ def compare_report(res, args):
         bits = []
         if e is not None:
             m = e.meta
-            for k in ("part", "factors"):
-                if m.get(k):
-                    bits.append("%s %s" % (k, m[k]))
-            bits.append(m.get("command") or "")
+            if m.get("part"):
+                bits.append("part %s" % m["part"])
+            if m.get("factors"):
+                # as read, not as stored: args=-w 1M, not args='-w 1M'
+                bits.append("factors " + storemod.shown_attrs(m["factors"]))
+            bits.append(render.first_line(m.get("command") or ""))
         lines.append("  %-4s %s  %s" % (r["label"], r["id"],
                                         "  ".join(b for b in bits if b)))
     for n in res.notes:
@@ -1522,7 +1653,7 @@ def cmd_split(args):
     paths = []
     if args.out:
         paths = splitmod.write_lists(groups, args.out, args.prefix or "",
-                                     how)
+                                     how, plain=args.plain)
     lines = ["%s split -- %s into %s, %s" % (
         PROG, plural(len(hs), "host"), plural(len(groups), "list"), how)]
     rows = []
@@ -1606,7 +1737,8 @@ def cmd_probe(args):
                 # run by python3, not as an executable: a file copied out
                 # of site-packages has no x bit
                 path = probes.script_path(how[0])
-                command = "python3 " + remote_script(args, path, how[1])
+                command = probes.script_command(
+                    how, "python3 " + remote_script(args, path, how[1]))
                 push = [path]
             else:
                 command, push = how, []
@@ -1631,7 +1763,8 @@ def probe_tool(args, name, how, hs):
     work = tempfile.mkdtemp(prefix="qd-probe-")
     try:
         hosts_file = os.path.join(work, "hosts.txt")
-        write_text(hosts_file, "".join(h.token(plain=True) + "\n"
+        plain = tool not in tools.READS_ATTRIBUTES
+        write_text(hosts_file, "".join(h.token(plain=plain) + "\n"
                                        for h in hs))
         cmd = [tool] + [w.replace("{hosts}", hosts_file).replace(
             "{out}", os.path.join(work, name + ".tsv")) for w in words]
@@ -1679,7 +1812,7 @@ def cmd_campaign(args):
             die("a campaign runs a command: %s campaign new NAME -s hosts "
                 "--by rack -- COMMAND" % PROG)
         command = " ".join(cmd)
-        check_danger(command, args.yes)
+        check_danger(command, args.yes, "campaign new")
         prov = filing.Provost(st)
         prov.require("keep the campaign")
         if args.name in camp.load_all(st):
@@ -1739,6 +1872,22 @@ def cmd_campaign(args):
         return 0
     if what != "run":
         die("unknown campaign action %r (new, run, status, retry, ls)" % what)
+    if args.dry_run:
+        # what a run would do, part by part -- nothing taken from the pool,
+        # so nothing is marked done
+        states, _ = camp.pool_states(c, quiet=True)
+        shown = 0
+        for part, hs in c.parts:
+            if states and states.get(part) != "available":
+                continue
+            if args.parts and shown >= args.parts:
+                break
+            out("# part %s" % part)
+            fleet_run(args, hs, c.command, c.name,
+                      context=[("campaign", c.name), ("part", part)],
+                      extra={"group": c.name, "part": part})
+            shown += 1
+        return 0
     filing.Provost(st).require("keep the parts")
     done, worst = 0, 0
     limit = args.parts or 10 ** 9
@@ -1781,7 +1930,7 @@ def cmd_doe(args):
     what = args.action
     if what == "plan":
         cfg = doemod.read_config(args.target)
-        matrix = doemod.generate(cfg, args.seed)
+        matrix = doemod.generate(cfg, doemod.seed_of(cfg, args.seed))
         pts = doemod.points(matrix)
         names = matrix.get("factor_names") or []
         rows = [[str(rid), str(blk)] + [v for _, v in lv]
@@ -1855,16 +2004,19 @@ def doe_run(args, st, doemod):
     name = doemod.design_name(cfg, args.target, args.name)
     prov = filing.Provost(st)
     prov.require("keep the measurements")
-    if doemod.exists(st, name):
+    new = not doemod.exists(st, name)
+    if not new:
         row, _, matrix = doemod.load(st, name)
         if row.get("command") != template:
             die("the design %s was run with another command (%s): --name "
                 "a new one for this command" % (name, row.get("command")))
+        if (row.get("blocks_by") or "") != (args.blocks_by or ""):
+            die("the design %s was run %s: give the same, or --name a new "
+                "design" % (name, ("--blocks-by " + row["blocks_by"])
+                            if row.get("blocks_by") else "without --blocks-by"))
     else:
-        matrix = doemod.generate(cfg, args.seed)
-        doemod.file_design(st, prov, name, template, args.seed,
-                           args.blocks_by, cfg, matrix)
-        st.reset()
+        seed = doemod.seed_of(cfg, args.seed)
+        matrix = doemod.generate(cfg, seed)
     pts = doemod.points(matrix)
     left = doemod.unused(template, pts[0][2] if pts else [])
     if left:
@@ -1881,15 +2033,32 @@ def doe_run(args, st, doemod):
                 % (nblocks, args.blocks_by, plural(len(groups), "group")))
         blocks = dict((i + 1, members) for i, (_, members)
                       in enumerate(groups))
+        if len(groups) > nblocks:
+            warn("the design has %s and --blocks-by %s gives %d groups: %s "
+                 "will not be measured" % (
+                     plural(nblocks, "block"), args.blocks_by, len(groups),
+                     ", ".join(g for g, _ in groups[nblocks:])))
     done = doemod.point_runs(st, name)
     worst, ran = 0, 0
+    # every point's command is checked before the first runs: a point the
+    # guard refuses half way through would leave the design half measured
+    for rid, blk, levels in pts:
+        if not done.get(rid) or args.redo:
+            check_danger(doemod.substitute(template, levels), args.yes,
+                         "doe run")
+    if new:
+        # filed only now, every check passed: a run refused before here
+        # leaves no design behind tied to the command it refused
+        doemod.file_design(st, prov, name, template, seed, args.blocks_by,
+                           cfg, matrix)
+        st.reset()
+        done = doemod.point_runs(st, name)
     for rid, blk, levels in pts:
         if done.get(rid) and not args.redo:
             continue
         command = doemod.substitute(template, levels)
-        check_danger(command, args.yes)
         hosts = blocks[blk] if blocks else hs
-        factors = " ".join("%s=%s" % kv for kv in levels)
+        factors = storemod.join_attrs(levels)
         job = fleet_run(args, hosts, command, name,
                         context=[("design", name), ("point", str(rid))] +
                         [(k, v) for k, v in levels],
@@ -2125,11 +2294,11 @@ def add_ssh(sp):
                    help="scp transport (QD_SCP)")
     g.add_argument("--sudo", action="store_true",
                    help="run the command under sudo -n")
-    g.add_argument("--remote-dir", default=env("REMOTE_DIR", "/var/tmp/qd"),
-                   help="where pushed files go, removed afterwards "
-                   "(QD_REMOTE_DIR, /var/tmp/qd)")
+    g.add_argument("--remote-dir", default=env("REMOTE_DIR", "/var/tmp"),
+                   help="pushed files go in a directory of the run's own "
+                   "in here, removed afterwards (QD_REMOTE_DIR, /var/tmp)")
     g.add_argument("--keep-remote", action="store_true",
-                   help="leave pushed files on the hosts")
+                   help="leave the run's directory on the hosts")
     return g
 
 
@@ -2425,6 +2594,9 @@ def build_parser():
     sp.add_argument("--out", metavar="DIR",
                     help="write each list to DIR/NAME.txt")
     sp.add_argument("--prefix", metavar="P", help="file names start with P")
+    sp.add_argument("--plain", action="store_true",
+                    help="names only in the files: for agree, mx and "
+                    "iperf_orchestrator, which read an attribute as a host")
     add_format(sp)
     sp.set_defaults(fn=cmd_split)
 

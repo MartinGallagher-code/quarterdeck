@@ -36,6 +36,7 @@ import binascii
 import json
 import os
 import re
+import shlex
 import time
 
 from .common import die, env, read_text
@@ -125,9 +126,32 @@ def read_table_line(text):
     return {}
 
 
+def join_attrs(pairs):
+    """key=value words, as split_attrs reads them back: a value with a
+    space or a quote in it is quoted (a design level `-w 1M`)."""
+    return " ".join("%s=%s" % (k, shlex.quote(v) if re.search(r"[\s'\"]", v)
+                               else v) for k, v in pairs)
+
+
+def shown_attrs(text):
+    """Stored key=value words as one reads them: args=-w 1M."""
+    return " ".join("%s=%s" % kv for kv in split_attrs(text))
+
+
 def split_attrs(text):
+    text = text or ""
+    words = text.split()
+    if "='" in text or '="' in text:
+        # a quoted value (join_attrs): shell words, backslashes as written
+        lex = shlex.shlex(text, posix=True)
+        lex.whitespace_split = True
+        lex.escape = ""
+        try:
+            words = list(lex)
+        except ValueError:
+            pass                    # an unbalanced quote: words as written
     out = []
-    for w in (text or "").split():
+    for w in words:
         k, sep, v = w.partition("=")
         if sep and k:
             out.append((k, v))
@@ -157,6 +181,35 @@ def context_columns(meta):
     return out
 
 
+# provost's record number in a run's rows, kept apart from a data column
+# that happens to be called n (see provost_columns)
+REC = "\x00n"
+
+
+def provost_columns(columns, context=()):
+    """The indexes of the columns provost puts first in a dataset -- '#',
+    its capture id, its record number -- found by place, under whatever its
+    clash rule named them (`_capture`, `_n` beside a data column of that
+    name), past the capture's context columns (`context`, which provost
+    puts between the capture id and the record number).  A data column
+    called n or capture is data."""
+    pats = (r"^#$", r"^_*capture$", r"^_*n$")
+    out, k = [], 0
+    for i, c in enumerate(columns):
+        if i and c in context:
+            continue
+        while k < len(pats) and not re.match(pats[k], c):
+            k += 1
+        if k == len(pats):
+            break
+        out.append(i)
+        k += 1
+    return out
+
+
+# what provost takes for a dataset's name: letters, digits, '.', '_', '-'
+DATASET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
 LONG_KEYS = ("field", "key", "name")
 # What provost files beside a long key and value: its row number, and a
 # group -- a `key:` line with nothing after it (a setting not measured on
@@ -171,7 +224,7 @@ def widen(records):
     are not that shape (a real table stays a table)."""
     if not records:
         return None
-    cols = [c for c, _ in records[0] if c not in LONG_EXTRA]
+    cols = [c for c, _ in records[0] if c not in LONG_EXTRA and c != REC]
     if len(cols) != 2 or cols[0] not in LONG_KEYS or cols[1] != "value":
         return None
     out, seen = [], set()
@@ -197,9 +250,19 @@ def read_dataset(path, name):
 
 
 def default_root():
-    for v in (env("STORE"), os.environ.get("PROVOST_WORKSPACE")):
-        if v:
-            return os.path.abspath(os.path.expanduser(v))
+    v = env("STORE")
+    if v:
+        return os.path.abspath(os.path.expanduser(v))
+    return provost_root()
+
+
+def provost_root():
+    """The store provost finds on its own: PROVOST_WORKSPACE, the controlled
+    directory around here, PROVOST_HOME, ~/.provost -- qd's rule less
+    --store and QD_STORE, which provost does not read."""
+    v = os.environ.get("PROVOST_WORKSPACE")
+    if v:
+        return os.path.abspath(os.path.expanduser(v))
     d = os.getcwd()
     while True:
         if os.path.isfile(os.path.join(d, ".provost", "CONTROLLED")):
@@ -229,6 +292,7 @@ class Store(object):
         self.reset()
 
     def reset(self):
+        self._provost_env = None
         self._tables = {}
         self._index = {}
         self._meta = {}
@@ -267,6 +331,20 @@ class Store(object):
             root = "~" + root[len(home):]
         return root
 
+    def provost(self, words):
+        """`provost WORDS` as typed to reach this store: with
+        PROVOST_WORKSPACE in front when provost would not find it on its
+        own (a store named by --store or QD_STORE)."""
+        if self._provost_env is None:
+            self._provost_env = ""
+            if os.path.realpath(provost_root()) != \
+                    os.path.realpath(self.root):
+                where = self.shown()
+                if not re.match(r"^[\w~@%+=:,./-]+$", where):
+                    where = shlex.quote(self.root)
+                self._provost_env = "PROVOST_WORKSPACE=%s " % where
+        return self._provost_env + "provost " + words
+
     # -- datasets -----------------------------------------------------------
 
     def dataset_names(self):
@@ -277,7 +355,9 @@ class Store(object):
         return sorted(n[:-4] for n in names if n.endswith(".tsv"))
 
     def has_dataset(self, name):
-        return os.path.isfile(self.path("datasets", name + ".tsv"))
+        # a provost name, never a path: `ds:../../x` is not a dataset
+        return bool(DATASET_RE.match(name or "")) and ".." not in name \
+            and os.path.isfile(self.path("datasets", name + ".tsv"))
 
     def dataset(self, name):
         if name not in self._tables:
@@ -443,6 +523,9 @@ class Store(object):
         """latest, latest~N, a run id or a unique part of one, a run's
         --name (its latest), ds:NAME or a dataset no run is named."""
         if ref.startswith("ds:"):
+            if not self.has_dataset(ref[3:]):
+                die("no dataset %r in %s (provost ls lists them)"
+                    % (ref[3:], self.shown()))
             return Dataset(self, ref[3:])
         entries = self.entries()
         m = re.match(r"^(latest|last|prev)?(?:~(\d+))?$", ref)
@@ -483,13 +566,15 @@ class Store(object):
         if not isinstance(entry, Run):
             return None
         entries = self.entries()
-        key = (entry.meta.get("kind"), entry.meta.get("command"),
-               entry.meta.get("name"))
+        # a campaign's parts run one command under one name: the part is
+        # what tells them apart, so rack-r2 is compared with rack-r2
+        def key(e):
+            return (e.meta.get("kind"), e.meta.get("command"),
+                    e.meta.get("name"), e.meta.get("part") or "")
         ids = [e.id for e in entries]
         earlier = entries[:ids.index(entry.id)] if entry.id in ids else []
         for e in reversed(earlier):
-            if (e.meta.get("kind"), e.meta.get("command"),
-                    e.meta.get("name")) == key:
+            if key(e) == key(entry):
                 return e
         return None
 
@@ -567,6 +652,23 @@ class Run(object):
             return 2
         return int(self.meta.get("captures") or 0)
 
+    def _shown_rows(self, cid):
+        """How many rows a capture is in the run's table: provost's count,
+        or one where its rows are `key: value` lines filed long, which the
+        table widens into one row (see widen)."""
+        m = self.store.meta(cid)
+        n = row_count(m)
+        names = [x for x in m.get("dataset", "").split(",") if x]
+        if n > 1 and len(names) == 1 and self.store.has_dataset(names[0]):
+            cols = self.store.dataset(names[0]).columns
+            ctx = context_columns(m)
+            own = provost_columns(cols, ctx)
+            rest = [c for i, c in enumerate(cols) if i not in own
+                    and c not in ctx and c not in LONG_EXTRA]
+            if len(rest) == 2 and rest[0] in LONG_KEYS and rest[1] == "value":
+                return 1
+        return n
+
     def _list(self):
         caps = self.captures()
         if self.meta.get("kind") == "run":
@@ -575,7 +677,7 @@ class Run(object):
             for cid in caps:
                 ctx = self.store.context(cid)
                 per[(ctx.get("host", ""), ctx.get("pass") or "1")] = \
-                    row_count(self.store.meta(cid))
+                    self._shown_rows(cid)
             rows = sum(max(1, per.get((h.get("host", ""),
                                        h.get("pass") or "1"), 0))
                        for h in hosts)
@@ -618,22 +720,27 @@ class Run(object):
         """The columns that say what was run where, not what came back:
         the design's factors and the hosts' attributes."""
         names = [k for k, _ in split_attrs(self.meta.get("factors"))]
+        factors = set(names)
         for h in self.store.host_rows(self.id):
-            names.extend(k for k, _ in split_attrs(h.get("attrs")))
+            names.extend(("attr_" + k) if k in factors else k
+                         for k, _ in split_attrs(h.get("attrs")))
         return set(names)
 
     def _host_lead(self, hosts):
         """host, addr, its attributes, the run's design factors, pass."""
+        factors = split_attrs(self.meta.get("factors"))
+        fnames = [k for k, _ in factors]
         attrs = []
         for h in hosts:
             for k, _ in split_attrs(h.get("attrs")):
                 if k not in attrs:
                     attrs.append(k)
-        factors = split_attrs(self.meta.get("factors"))
-        fnames = [k for k, _ in factors if k not in attrs]
+        # a host attribute named as a factor is shown as attr_<name>, as
+        # it was filed: the factor is what the point ran at
+        shown = [("attr_" + a) if a in fnames else a for a in attrs]
         show_addr = any(h.get("addr") for h in hosts)
         multi = int(self.meta.get("passes") or 1) > 1
-        cols = ["host"] + (["addr"] if show_addr else []) + attrs + \
+        cols = ["host"] + (["addr"] if show_addr else []) + shown + \
             fnames + (["pass", "ts"] if multi else [])
         fvals = dict(factors)
 
@@ -683,10 +790,13 @@ class Run(object):
                     if ds == "unsorted":
                         recs.append((ds, []))   # held: its text is raw
                         continue
+                    own = provost_columns(t.columns, drop)
+                    rec = own[-1] if own and re.match(
+                        r"^_*n$", t.columns[own[-1]]) else None
                     keep = [i for i, c in enumerate(t.columns)
-                            if c not in ("#", "capture") and c not in drop]
-                    pairs = [[(t.columns[i], r[i]) for i in keep]
-                             for r in t.rows]
+                            if (i not in own or i == rec) and c not in drop]
+                    pairs = [[(REC if i == rec else t.columns[i], r[i])
+                              for i in keep] for r in t.rows]
                     wide = widen(pairs)
                     recs.extend((ds, p) for p in
                                 ([wide] if wide is not None else pairs))
@@ -699,16 +809,19 @@ class Run(object):
         for _, _, recs in parts:
             for _, pairs in recs:
                 for c, v in pairs:
-                    if c == "n" and not many:
+                    if c == REC and not many:
                         continue
                     if c not in order:
                         order.append(c)
                     if v.strip():
                         filled.add(c)
-        datacols = [c for c in order if c in filled or c == "n"]
+        datacols = [c for c in order if c in filled or c == REC]
         names, taken = {}, set(lead) | {"dataset"}
-        for c in datacols:
-            m = c
+        # data columns keep their own names; provost's record number is n,
+        # or _n beside a data column called n
+        for c in [c for c in datacols if c != REC] + \
+                [c for c in datacols if c == REC]:
+            m = "n" if c == REC else c
             while m in taken:
                 m = "_" + m
             taken.add(m)
@@ -737,8 +850,9 @@ class Run(object):
         extra = read_table_line(self.store.context_text(cid))
         cols, rows = [], []
         for ds, t in self.store.capture_rows(cid):
-            keep = [c for c in t.columns
-                    if c not in ("#", "capture", "n") and c not in drop]
+            own = set(t.columns[i] for i in provost_columns(t.columns,
+                                                            drop))
+            keep = [c for c in t.columns if c not in own and c not in drop]
             for c in keep:
                 if c not in cols:
                     cols.append(c)
@@ -829,7 +943,8 @@ class Dataset(object):
 def source_label(store, cid):
     n = first_row(store.meta(cid))
     return "raw answer: capture %s%s" % (
-        cid, (", provost source %d" % n) if n is not None else "")
+        cid, (", " + store.provost("source %d" % n)) if n is not None
+        else "")
 
 
 def split_ref(ref):
@@ -896,8 +1011,9 @@ def describe_entry(e):
             lo, (".." + hi) if len(caps) > 1 else ""))
         n = first_row(e.store.meta(caps[0]))
         if n is not None:
-            out.append("  answers   provost source %d  (one per row: qd show "
-                       "%s --cols host,capture)" % (n, e.id))
+            out.append("  answers   %s  (one per row: qd show "
+                       "%s --cols host,capture)" % (
+                           e.store.provost("source %d" % n), e.id))
     out.append("  store     %s" % e.store.shown())
     out.append("  tables")
     for t in e.tables:

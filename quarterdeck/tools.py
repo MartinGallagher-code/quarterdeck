@@ -16,7 +16,8 @@ which are knowledge of where these tools put their output, not guesses:
   agree                   --json/--csv/--merge-csv files; with none, qd
                           adds --csv (and --merge-csv for `script`) into
                           the entry and says so
-  dcprobe                 -o FILE and --history FILE
+  dcprobe                 -o FILE (host_status.tsv after scan and watch,
+                          preflight.tsv after preflight) and --history
   reckon                  --overlay/--csv/--json FILE
   netmesh                 --reports DIR, --grid DIR
   any --csv PATH          that file; a bare --csv prints to stdout
@@ -24,13 +25,14 @@ which are knowledge of where these tools put their output, not guesses:
 """
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 
 from .common import env
-from .table import Table, slug, to_num
+from .table import Table, slug
 
 BINNACLE = ("binnacle", "why-slow", "agree", "logtriage", "netmesh",
             "reachable", "resolve", "during", "skew", "muster", "manifest",
@@ -82,7 +84,8 @@ def find_tool(name):
     """argv that runs `name`, or None."""
     over = env(name.upper().replace("-", "_"))
     if over:
-        argv = shlex.split(over)
+        # no shell reads it, so ~ is expanded here, as the shell would
+        argv = [os.path.expanduser(a) for a in shlex.split(over)]
         # an override naming nothing that exists is "not installed", said
         # as such, rather than an OSError at the first use
         if argv and (shutil.which(argv[0]) or os.path.isfile(argv[0])):
@@ -158,7 +161,11 @@ def install_hint(name):
 # ---------------------------------------------------------------------------
 
 def opt(argv, names):
-    """The last value given to any of these options, or None."""
+    """The last value given to any of these options, or None.  Nothing
+    after `--` is the tool's: `agree -- why-slow --csv x` is why-slow's
+    --csv, written on the far side."""
+    if "--" in argv:
+        argv = argv[:argv.index("--")]
     val = None
     for i, a in enumerate(argv):
         for n in names:
@@ -201,6 +208,19 @@ def tool_of(argv):
     return alias.get(base, base), argv[i + 1:]
 
 
+def iperf_results_base(argv, rest):
+    """Where iperf-orchestrator writes when not told: the installed command
+    sets ./results, but iperf_orchestrator.sh run as itself keeps them
+    beside the script (its SCRIPT_DIR/results)."""
+    script = argv[len(argv) - len(rest) - 1] if len(argv) > len(rest) else ""
+    if script.endswith(".sh"):
+        path = script if os.sep in script else (shutil.which(script) or "")
+        if path:
+            return os.path.join(os.path.dirname(os.path.realpath(path)),
+                                "results")
+    return "results"
+
+
 class Plan(object):
     """What to run, and what to read back afterwards."""
 
@@ -209,9 +229,19 @@ class Plan(object):
         self.imports = []          # (path, table name or None)
         self.after = []            # (argv, output path, table name)
         self.notes = []
+        # outputs the tool adds to rather than rewrites (dcprobe --history,
+        # --append): only what this run added is this run's
+        self.appends = set()
         self.tool = ""
 
 
+# Tools whose host files take `key=value` after a host: dcprobe judges a
+# NIC by its gbps=, mtu= and nic=.  The rest (reachable, agree, mx) read
+# every word as a host, and are given names only.
+READS_ATTRIBUTES = ("dcprobe",)
+
+DCPROBE_OUT = {"scan": "host_status.tsv", "watch": "host_status.tsv",
+               "preflight": "preflight.tsv"}
 IPERF_VERBS = ("run", "all", "summarize", "process", "parse-csv",
                "parse-cpu", "export-overlay", "results-summary")
 
@@ -239,10 +269,13 @@ def plan(argv, entry_dir):
             o = opt(rest, ["-o", "--output"])
             if o and o != "-":
                 p.imports.append((o, "mx_export"))
+                own = rest[:rest.index("--")] if "--" in rest else rest
+                if "--append" in own:
+                    p.appends.add(o)
     elif tool == "iperf-orchestrator":
         if any(v in rest for v in IPERF_VERBS):
             base = opt(rest, ["-o", "--output"]) or os.environ.get(
-                "RESULTS_BASE") or "results"
+                "RESULTS_BASE") or iperf_results_base(argv, rest)
             run = opt(rest, ["--run-id"]) or os.environ.get(
                 "IPERF_RUN_ID") or "latest"
             p.imports.append((os.path.join(base, run), None))
@@ -256,8 +289,10 @@ def plan(argv, entry_dir):
         given = [(v, n) for v, n in given if v and not v.startswith("-")]
         if given:
             p.imports.extend(given)
-        elif "--" in argv:
-            cut = argv.index("--")
+        elif verb in ("", "run", "script"):
+            # before the command, or at the end when there is none
+            # (`agree script why-slow -f hosts` takes no `--`)
+            cut = argv.index("--") if "--" in argv else len(argv)
             add = ["--csv", os.path.join(entry_dir, "agree.csv")]
             if verb == "script":
                 add += ["--merge-csv", os.path.join(entry_dir, "merged.csv")]
@@ -268,11 +303,17 @@ def plan(argv, entry_dir):
             p.notes.append("added %s so the groups are filed with the run"
                            % " ".join(add[::2]))
     elif tool == "dcprobe":
-        for names, tname in ((["-o", "--output"], None),
-                             (["--history"], "history")):
-            v = opt(rest, names)
+        # where dcprobe writes when not told: scan and watch the
+        # host_status.tsv the viewer opens, preflight its own file
+        default = DCPROBE_OUT.get(verb)
+        appending = "--append" in rest
+        for names, tname, dflt in ((["-o", "--output"], None, default),
+                                   (["--history"], "history", None)):
+            v = opt(rest, names) or dflt
             if v and v != "-":
                 p.imports.append((v, tname))
+                if tname == "history" or appending:
+                    p.appends.add(v)
     elif tool == "reckon":
         for names, tname in ((["--overlay"], "reckon_overlay"),
                              (["--csv"], "reckon_findings"),
@@ -311,6 +352,9 @@ UNITS = (("_pct", "%"), ("_percent", "%"), ("_us", "us"), ("_ms", "ms"),
          ("_c", "C"))
 
 
+PLAIN_NUMBER = re.compile(r"^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$")
+
+
 def guess_unit(col):
     s = slug(col)
     for suffix, unit in UNITS:
@@ -319,6 +363,26 @@ def guess_unit(col):
     if col.endswith("%"):
         return "%"
     return None
+
+
+def column_unit(t, s, name):
+    """The unit a column's figures are in, for the terminal and the page
+    alike: what its cells were put on (B where sizes were mixed, s where
+    times were, ms where every cell said ms), else what the !test lines
+    say, else what its name implies (rtt_us); None when nothing does.
+    `t` is the table, `s` the rows asked about."""
+    u = s.unit(name)
+    if u:
+        return u
+    meta = t.tests or {}
+    if s.is_results() and name == "value" and s.rows:
+        tests = set(s.values("test"))
+        if len(tests) != 1:
+            return None
+        u = dict(meta.get(tests.pop(), [])).get("unit")
+    else:
+        u = dict(meta.get(name, [])).get("unit")
+    return u or guess_unit(name)
 
 
 def to_overlay(table, run_label=None, prefix="qd_", target=None):
@@ -357,13 +421,15 @@ def to_overlay(table, run_label=None, prefix="qd_", target=None):
         kind = table.kind(c)
         name = prefix + (slug(c) or "value")
         if c == "status" or slug(c) == "status":
-            plan_cols.append((table.index(c), name, "status"))
+            plan_cols.append((table.index(c), name, "status", None))
             tests[name] = [("short", "STAT"),
                            ("label", "Answered (%s)" % c)]
         elif kind == "num":
-            plan_cols.append((table.index(c), name, "num"))
+            # the viewer reads a sample as a number: 512M and 2G go over
+            # as bytes, 900ms and 1.2s as seconds, and the unit is said
+            plan_cols.append((table.index(c), name, "num", table.numbers(c)))
             meta = []
-            u = guess_unit(c)
+            u = table.unit(c) or guess_unit(c)
             if u:
                 meta.append(("unit", u))
             meta.append(("label", c))
@@ -371,15 +437,15 @@ def to_overlay(table, run_label=None, prefix="qd_", target=None):
         elif kind == "text" and set(v.strip().upper() for v in
                                     table.values(c) if v.strip()) <= \
                 set(("PASS", "WARN", "FAIL")):
-            plan_cols.append((table.index(c), name, "verdict"))
+            plan_cols.append((table.index(c), name, "verdict", None))
             tests[name] = [("label", c)]
     rows = []
     meta_cols = (["peer"] if pcol else []) + (["run"] if run_label else [])
-    for r in table.rows:
+    for n, r in enumerate(table.rows):
         tgt = r[ti].strip()
         if not tgt:
             continue
-        for i, name, kind in plan_cols:
+        for i, name, kind, nums in plan_cols:
             v = r[i].strip()
             if not v:
                 continue
@@ -387,9 +453,12 @@ def to_overlay(table, run_label=None, prefix="qd_", target=None):
                 verdict = STATUS_VERDICT.get(v.lower(), "WARN")
                 v = verdict
             elif kind == "num":
-                if to_num(v) is None:
+                if nums[n] is None:
                     continue
-                v = v.rstrip("%").strip()
+                plain = v.rstrip("%").strip()
+                # as written where it is a number already (9.0, a counter
+                # past 2**53); put on the column's scale where it is not
+                v = plain if PLAIN_NUMBER.match(plain) else "%.15g" % nums[n]
             row = [name, tgt, v]
             if pcol:
                 row.append(r[pi])

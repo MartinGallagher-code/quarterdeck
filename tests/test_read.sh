@@ -113,6 +113,21 @@ t_grid_becomes_long_and_blank_cells_stay_out() {
     assert_contains "$out" "src"
 }
 
+# netmesh --grid: six grids of one header, six measures -- side by side,
+# never stacked into one column of rtt and loss and mtu
+t_a_directory_of_grids_is_one_row_per_pair() {
+    mkdir grids
+    printf 'src\\dst,a,b\na,,100\nb,150,\n' > grids/rtt_p50_grid.csv
+    printf 'src\\dst,a,b\na,,0.000\nb,1.500,\n' > grids/loss_grid.csv
+    printf 'src\\dst,a,b\na,,9000\nb,,\n' > grids/mtu_grid.csv
+    out="$(qd show grids --format csv)"
+    assert_contains "$out" "src,dst,loss,mtu,rtt_p50"
+    assert_contains "$out" "a,b,0.000,9000,100"
+    # b->a has no mtu: blank, not zero
+    assert_contains "$out" "b,a,1.500,,150"
+    assert_contains "$(qd stats grids rtt_p50)" "median 125"
+}
+
 t_reports_directory_stacks_by_header() {
     mkdir reports
     printf 'ts,host,dir,peer,pps\n1,alpha,tx,beta,100\n2,alpha,tx,beta,110\n' > reports/alpha.csv
@@ -177,6 +192,23 @@ t_export_formats_and_overlay() {
     assert_not_contains "$out" "qd_load1	b"
     qd export d.csv -o out.tsv
     assert_contains "$(cat out.tsv)" "host	status"
+    # a sample is a number: sizes in bytes, times in seconds, unit said
+    printf 'host,mem,lat,cpu\na,512M,900ms,37%%\nb,2G,1.2s,40%%\n' > u.csv
+    out="$(qd export u.csv --format overlay)"
+    assert_contains "$out" "qd_mem	a	536870912"
+    assert_contains "$out" "qd_mem	b	2147483648"
+    assert_contains "$out" "qd_lat	a	0.9"
+    assert_contains "$out" "qd_cpu	b	40"
+    assert_contains "$out" "unit=B"
+    assert_not_contains "$out" "512M"
+}
+
+# a quote in a cell is the cell's: kept through provost on either of
+# its paths (2.1.0's TSV reader drops quotes; its CSV reader does not)
+t_a_quote_in_a_cell_is_kept() {
+    printf 'host,os\na,"PRETTY_NAME=""Ubuntu 24.04"""\nb,plain\n' > q.csv
+    qd import q.csv > /dev/null
+    assert_contains "$(qd show latest --format json)" '"os": "PRETTY_NAME=\"Ubuntu 24.04\""'
 }
 
 t_as_overrides_detection() {
@@ -187,6 +219,52 @@ t_as_overrides_detection() {
     assert_contains "$out" "A,B,C"
 }
 
+# a data column called n is data: provost names its own record number _n
+# beside it, and qd must not drop the one for the other
+t_a_data_column_called_n_is_kept() {
+    printf 'host,n,mbps\na,4,940\nb,7,610\n' > n.csv
+    qd import n.csv > /dev/null
+    out="$(qd show latest --format csv)"
+    assert_contains "$out" "host,n,mbps"
+    assert_contains "$out" "b,7,610"
+    install_fake_ssh
+    for h in x y; do fake_host "$h"; printf 'dev,n\nsda,4\n' > "$FAKE_ROOT/$h/f"; done
+    printf 'x\ny\n' > hosts.txt
+    qdf run -s hosts.txt -q -- cat f > /dev/null
+    assert_contains "$(qd show latest --cols host,dev,n --format csv)" "y,sda,4"
+}
+
+# a log whose first line opens with [ is a log; JSON NaN is not measured
+t_brackets_and_nan() {
+    printf '[INFO] started\n[WARN] slow disk\n' > log.txt
+    assert_contains "$(qd show log.txt --format csv)" "[WARN]"
+    printf '[{"host":"a","mbps":NaN},{"host":"b","mbps":Infinity}]\n' > nan.json
+    out="$(qd show nan.json --format csv)"
+    assert_contains "$out" "a,"
+    assert_contains "$out" "b,inf"
+    assert_not_contains "$out" "nan"
+}
+
+# an unbalanced quote in a TSV is a character, not the start of a cell
+# that swallows every line after it
+t_an_unbalanced_quote_in_tsv() {
+    printf 'disk\tnote\tgb\nsda\t"5 inch\t100\nsdb\tok\t200\nsdc\tok\t300\n' > q.tsv
+    out="$(qd show q.tsv --format csv)"
+    assert_eq "$(printf '%s\n' "$out" | tail -n +2 | wc -l | tr -d ' ')" "3"
+    assert_contains "$out" "sdc,ok,300"
+}
+
+# a header whose first cell is blank (pandas' index column) is a header
+t_a_blank_first_header_cell() {
+    printf ',host,mbps\n0,a,940\n1,b,610\n' > pd.csv
+    assert_contains "$(qd show pd.csv --cols host,mbps --format csv)" "b,610"
+    assert_contains "$(qd stats pd.csv mbps)" "max 940"
+}
+
+run_test "a blank first header cell"                 t_a_blank_first_header_cell
+run_test "an unbalanced quote in a TSV"             t_an_unbalanced_quote_in_tsv
+run_test "[INFO] logs, and JSON NaN"                t_brackets_and_nan
+run_test "a data column called n is kept"            t_a_data_column_called_n_is_kept
 run_test "results format, !test lines, meta"            t_results_format_with_meta
 run_test "results round-trip through the store"         t_results_round_trip_through_the_store
 run_test "results without !test lines are detected"     t_results_without_meta_lines_are_detected
@@ -194,10 +272,12 @@ run_test "NDJSON samples, JSON documents and lists"     t_ndjson_samples_and_doc
 run_test "agree --json: groups and hosts"               t_agree_json_becomes_two_tables
 run_test "wide table, commented header, units"          t_wide_table_with_commented_header_and_units
 run_test "src\\dst grid to long, blanks left out"        t_grid_becomes_long_and_blank_cells_stay_out
+run_test "a directory of grids: a row per pair"         t_a_directory_of_grids_is_one_row_per_pair
 run_test "a reports/ directory stacks by header"        t_reports_directory_stacks_by_header
 run_test "no host column: source_file is added"         t_folder_without_host_column_gets_source_file
 run_test "iperf results/latest run directory"           t_iperf_run_directory_and_latest
 run_test "BOM, CRLF and a repeated header"              t_bom_crlf_and_repeated_headers
+run_test "a quote in a cell is kept"                   t_a_quote_in_a_cell_is_kept
 run_test "export: json, ndjson, md, overlay"            t_export_formats_and_overlay
 run_test "--as overrides detection"                     t_as_overrides_detection
 finish

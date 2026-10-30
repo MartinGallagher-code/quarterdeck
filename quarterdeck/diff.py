@@ -20,7 +20,7 @@ import difflib
 
 from .common import die
 from .stats import AGGS, SEVERITY, cell, check_aggs, mean, quantile
-from .table import Table, to_num
+from .table import Table, normalize_units, to_num
 
 VOLATILE = ("ts", "timestamp", "time", "date", "at", "run", "duration_s",
             "test_start", "started", "finished", "filename", "pass",
@@ -95,7 +95,10 @@ def _reduce(table, key_idx, cols, agg, side, notes):
             if len(cells) == 1:
                 vals[c] = cells[0].strip()
             else:
-                vals[c] = cell(AGGS[agg](cells))
+                v = AGGS[agg](cells)
+                # full precision: a single row on the other side is not
+                # rounded, so neither is this
+                vals[c] = ("%.15g" % v) if isinstance(v, float) else cell(v)
         out[k] = vals
     if multi:
         notes.append("%s: %d rows over %d keys -- %d keys repeat, so each "
@@ -111,6 +114,9 @@ def _severity(v):
 
 
 def diff_tables(a, b, key=None, cols=None, tolerance=0.0, agg="auto"):
+    # a column in mixed units, on either side (980M then 1.1G), on one
+    # scale for both, so the change is the change and not the unit's
+    a, b = normalize_units([a, b])
     res = DiffResult()
     check_aggs([agg])
     key = key or auto_key(a, b)

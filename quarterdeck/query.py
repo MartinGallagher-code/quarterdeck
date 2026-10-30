@@ -18,7 +18,7 @@ whitespace or a parenthesis.
 import re
 
 from .common import die
-from .table import to_num
+from .table import to_base, to_num
 
 TOKEN_RE = re.compile(r"""
     (?P<ws>\s+)
@@ -53,6 +53,11 @@ class Cond(object):
     def __init__(self, col, op, value):
         self.col, self.op, self.value = col, op, value
         self.num = to_num(value) if value else None
+        # a literal with a size or a time unit (600M, 1.5s) compares on the
+        # base scale with cells in any unit of that family
+        self.base, self.fam = to_base(value) if value else (None, None)
+        if self.fam not in ("size", "time"):
+            self.fam = None
         self.rx = None
         if op in ("~", "!~"):
             try:
@@ -81,6 +86,10 @@ class Cond(object):
         n = to_num(cell)
         if self.num is not None and n is not None:
             a, b = n, self.num
+            if self.fam:
+                cb, cf = to_base(cell)
+                if cf == self.fam:
+                    a, b = cb, self.base
         else:
             if op in ("<", "<=", ">", ">=") and not cell:
                 return False            # blank is not less than anything
@@ -246,7 +255,7 @@ def sort_rows(table, rows, spec):
     for i, desc in reversed(keys):
         def k(r, i=i):
             cell = r[i].strip()
-            n = to_num(cell)
+            n = to_base(cell)[0]            # 512M sorts before 2G
             if n is not None:
                 return (0, n, "")
             return (1, 0, cell.lower())

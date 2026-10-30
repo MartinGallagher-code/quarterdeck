@@ -19,6 +19,8 @@ PyPI) files them one capture at a time, a few in parallel, and qd puts
 the host back from each capture's prologue just the same.
 """
 
+import csv
+import io
 import os
 import re
 import shutil
@@ -64,7 +66,19 @@ def own_tsv(columns, rows):
 
 def table_tsv(t):
     """A table qd read, as plain TSV: tabs and newlines in a cell become
-    spaces, a blank stays blank."""
+    spaces, a blank stays blank.  One with a double quote in a cell goes
+    as quoted CSV instead: provost's TSV reader dropped every quote until
+    2.2.0 (PyPI's 2.1.0 still does) -- `PRETTY_NAME="Ubuntu"` came back
+    without them -- and its CSV reader never has."""
+    if len(t.columns) > 1 and any('"' in v for v in t.columns) or any(
+            '"' in v for r in t.rows for v in r):
+        if len(t.columns) > 1:
+            buf = io.StringIO()
+            w = csv.writer(buf, lineterminator="\n")
+            w.writerow([cell(c) for c in t.columns])
+            for r in t.rows:
+                w.writerow([cell(v) for v in r])
+            return buf.getvalue()
     lines = ["\t".join(cell(c) for c in t.columns)]
     for r in t.rows:
         lines.append("\t".join(cell(v) for v in r))
@@ -82,6 +96,11 @@ def body(text):
     """What follows a prologue.  An answer that itself starts with '#%'
     lines gets a blank line first, so provost keeps them as data."""
     return ("\n" + text) if text.startswith("#%") else text
+
+
+# Inputs per `provost batch` call (QD_FILE_CHUNK): each is a commit, under
+# one hold of the store lock.
+CHUNK = 200
 
 
 class Batch(object):
@@ -165,15 +184,32 @@ class Provost(object):
             return []
         jobs = jobs or env_int("FILE_JOBS", 0) or None
         if self.has_batch():
-            lst = os.path.join(batch.dir, "inputs.list")
-            write_text(lst, "".join("%s\t%s\n" % (n, p)
-                                    for n, p in batch.inputs))
-            args = ["batch", "-q", "--context-columns"] + (
-                ["-j", str(jobs)] if jobs else []) + ["--from", lst]
-            rc, _, err = self.call(args)
-            problems = complaints(err)
-            if rc != 0 and not problems:
-                die("provost batch failed (exit %d)" % rc)
+            # A batch holds provost's lock for its whole store half, about
+            # 50 ms an input: a thousand hosts in one would keep any other
+            # writer (a second campaign worker) past PROVOST_LOCK_TIMEOUT.
+            # So a few hundred at a time, a commit each, in order -- qd's
+            # own tables still last.
+            size = max(1, env_int("FILE_CHUNK", CHUNK))
+            problems = []
+            for k in range(0, len(batch.inputs), size):
+                lst = os.path.join(batch.dir, "inputs.%d.list" % k)
+                write_text(lst, "".join("%s\t%s\n" % (n, p) for n, p in
+                                        batch.inputs[k:k + size]))
+                args = ["batch", "-q", "--context-columns"] + (
+                    ["-j", str(jobs)] if jobs else []) + ["--from", lst]
+                rc, _, err = self.call(args)
+                errs = complaints(err)
+                if rc != 0 and not errs:
+                    if k + size >= len(batch.inputs):
+                        # the last chunk holds qd's own tables: without
+                        # them the run is not one qd can list
+                        die("provost batch failed (exit %d)" % rc)
+                    # a chunk before it: said for each of its inputs, and
+                    # the rest still filed, the run's own row with them
+                    errs = ["%s: provost batch failed (exit %d)" % (
+                        os.path.basename(p), rc)
+                        for _, p in batch.inputs[k:k + size]]
+                problems.extend(errs)
             return problems
         # One capture at a time: the answers a few in parallel (provost
         # parses outside its lock), then qd's own tables in order, the

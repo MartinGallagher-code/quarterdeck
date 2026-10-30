@@ -9,6 +9,8 @@
     a directory of reports      mx's reports/, netmesh's --reports, a
                                 folder of monitoring tables: files that
                                 share a header stack into one table
+    a directory of grids        netmesh's --grid: one row per pair, a
+                                column per grid (rtt_p50, loss, mtu)
 """
 
 import os
@@ -51,6 +53,33 @@ def read_iperf_run(d):
     return tables
 
 
+def join_grids(members, name, source):
+    """Grids side by side: one row per (src, dst), the value of each grid
+    in a column named for its file (rtt_p50_grid.csv is rtt_p50).  They
+    share the long form's header, but stacked, rtt and loss and mtu would
+    be one column; a pair one grid does not have stays blank there."""
+    names = []
+    for f, _ in members:
+        n = re.sub(r"[-_.]?grid$", "", os.path.splitext(f)[0]) or "value"
+        names.append(n if n not in names else os.path.splitext(f)[0])
+    cells, order = {}, []
+    for col, (f, t) in zip(names, members):
+        for src, dst, v in t.rows:
+            if (src, dst) not in cells:
+                cells[(src, dst)] = {}
+                order.append((src, dst))
+            cells[(src, dst)][col] = v
+    rows = [[s, d] + [cells[(s, d)].get(c, "") for c in names]
+            for s, d in order]
+    notes = []
+    for f, t in members:
+        notes.extend("%s: %s" % (f, n) for n in t.notes[:3])
+    t = Table(["src", "dst"] + names, rows, name, source, notes=notes)
+    t.notes.insert(0, "%d grids side by side: %s" % (
+        len(members), " ".join(f for f, _ in members)))
+    return t
+
+
 def read_dir(d, fmt=None):
     """Every data file directly in `d`; files sharing a header are one
     table, the way a folder of tables is one dashboard in the viewer."""
@@ -83,6 +112,10 @@ def read_dir(d, fmt=None):
             out.append(members[0][1])
             continue
         first = members[0][1]
+        name = base if len(order) == 1 else "%s_%s" % (base, "grids")
+        if all(getattr(t, "grid", False) for _, t in members):
+            out.append(join_grids(members, name, d))
+            continue
         tag = not (first.has("host") or first.has("target"))
         cols = list(first.columns) + (["source_file"] if tag else [])
         rows = []

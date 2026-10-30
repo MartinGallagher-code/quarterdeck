@@ -183,6 +183,23 @@ t_results_value_mixing_tests_is_refused_for_outliers() {
     assert_contains "$out" "per target"
 }
 
+# a column in mixed units is read on one scale everywhere, not cell by
+# cell: --where with a unit, sorting, a group's mean, times, export
+t_mixed_units_are_one_scale() {
+    printf 'host,rack,used,lat\na,r1,512M,900ms\nb,r1,2G,1.2s\nc,r2,1G,800ms\nd,r2,980M,1.1s\n' > u.csv
+    out="$(qd show u.csv --where 'used>600M' --cols host --format csv | tr '\n' ' ')"
+    assert_eq "$out" "host b c d "
+    out="$(qd show u.csv --sort -used --cols host --format csv | tr '\n' ' ')"
+    assert_eq "$out" "host b c d a "
+    # r1's mean of 512M and 2G is 1.25 GiB, in bytes -- not (512+2)/2
+    assert_contains "$(qd stats u.csv used --by rack)" "1342177280"
+    # 900ms beside 1.2s: seconds, every cell measured
+    assert_contains "$(qd stats u.csv lat)" "measured  4"
+    # a number with a unit is exported as written
+    assert_contains "$(qd export u.csv --format json)" '"used": "512M"'
+}
+
+run_test "mixed units are one scale"                t_mixed_units_are_one_scale
 run_test "--where: numbers, text, regex, blank, logic"  t_where_numbers_text_regex_blank
 run_test "--sort: numeric, blanks last, both ways"      t_sort_numeric_blank_last_both_ways
 run_test "stats: describe and one column"               t_stats_describe_and_one_column

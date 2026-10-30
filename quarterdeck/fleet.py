@@ -11,6 +11,7 @@ into columns and read back later.
 """
 
 import os
+import secrets
 import selectors
 import shlex
 import subprocess
@@ -23,6 +24,12 @@ SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
 
 OK, FAILED, TIMEOUT, UNREACHABLE, PUSH_FAILED = (
     "ok", "failed", "timeout", "unreachable", "push-failed")
+
+
+class TimedOut(int):
+    """qd's own timeout, 124 as `timeout` says it, but told apart from a
+    command on the host that exited 124 itself (`timeout 5 check` does):
+    that host answered."""
 
 
 class Result(object):
@@ -51,7 +58,7 @@ class Result(object):
 
 class Runner(object):
     def __init__(self, ssh="ssh", scp="scp", user=None, timeout=60,
-                 max_output=4 * 1024 * 1024, remote_dir="/var/tmp/qd",
+                 max_output=4 * 1024 * 1024, remote_dir="/var/tmp",
                  sudo=False):
         self.ssh = shlex.split(ssh)
         self.scp = shlex.split(scp)
@@ -59,6 +66,15 @@ class Runner(object):
         self.timeout = timeout
         self.max_output = max_output
         self.remote_dir = remote_dir
+        # Pushed files go in a directory of this run's own under
+        # --remote-dir, and only that is removed afterwards: never
+        # --remote-dir itself (~/bin, say, and everything in it), nor a
+        # directory another run or another user is working in.
+        self.work_dir = "%s/qd.%s" % (remote_dir.rstrip("/"),
+                                      secrets.token_hex(6))
+        # hosts where this run made the work directory, and where it made
+        # --remote-dir too (so that is removed again, if it is empty)
+        self._made = {}
         self.sudo = sudo
 
     def target(self, host):
@@ -79,6 +95,14 @@ class Runner(object):
             return "sudo -n sh -c %s" % shlex.quote(command)
         return command
 
+    def command_for(self, command, pushed=False):
+        """What runs on a host, as --dry-run prints it: beside the pushed
+        files when there are any (so `--push x -- tool x` finds x), under
+        `sudo -n` with --sudo."""
+        if pushed:
+            command = "cd %s && %s" % (shlex.quote(self.work_dir), command)
+        return self.wrap(command)
+
     def _exec(self, argv, timeout):
         """Bounded capture: one host in a log storm must not sink the run."""
         limit = int(self.max_output)
@@ -87,7 +111,8 @@ class Runner(object):
                                  stderr=subprocess.PIPE,
                                  stdin=subprocess.DEVNULL)
         except OSError as exc:
-            return 127, "", str(exc)
+            # ssh (or scp) itself would not start: no host was reached
+            return 255, "", "cannot run %s: %s" % (argv[0], exc)
         chunks = {p.stdout: [], p.stderr: []}
         sizes = {p.stdout: 0, p.stderr: 0}
         deadline = time.monotonic() + timeout
@@ -104,7 +129,7 @@ class Runner(object):
                 p.wait()
                 for f in (p.stdout, p.stderr):
                     f.close()
-                return 124, "", "timed out after %ss" % timeout
+                return TimedOut(124), "", "timed out after %ss" % timeout
             for key, _ in sel.select(left):
                 f = key.fileobj
                 chunk = os.read(f.fileno(), 65536)
@@ -139,22 +164,53 @@ class Runner(object):
         return rc, text(p.stdout), text(p.stderr)
 
     def push(self, host, files):
-        d = self.remote_dir
-        rc, _, err = self._exec(
-            self.ssh_argv(host, "mkdir -p %s" % shlex.quote(d)), 60)
+        d, w = shlex.quote(self.remote_dir), shlex.quote(self.work_dir)
+        # mkdir -m 700 refuses a path that is there already, so nothing
+        # someone else put there (a directory, a link) is written into; a
+        # later pass of a --keep-remote run finds its own directory again
+        cmd = ("{ [ -d %s ] || echo qd-made-parent; } && mkdir -p %s && "
+               "{ mkdir -m 700 %s 2>/dev/null || "
+               "{ [ -d %s ] && [ ! -L %s ] && [ -O %s ]; } || "
+               "{ echo %s >&2; exit 1; }; }") % (
+                   d, d, w, w, w, w, shlex.quote(
+                       "qd: %s is there already, and is not this run's"
+                       % self.work_dir))
+        rc, out, err = self._exec(self.ssh_argv(host, cmd), 60)
         if rc != 0:
             return rc, err
+        if host.name not in self._made:
+            self._made[host.name] = "qd-made-parent" in out
         argv = list(self.scp) + SSH_OPTS
         if host.port:
             argv += ["-P", str(host.port)]
-        argv += ["-q"] + list(files) + ["%s:%s/" % (self.scp_target(host), d)]
+        argv += ["-q"] + list(files) + ["%s:%s/" % (self.scp_target(host),
+                                                    self.work_dir)]
         rc, _, err = self._exec(argv, max(60, self.timeout))
         if rc != 0:
             return rc, err
-        names = " ".join(shlex.quote("%s/%s" % (d, os.path.basename(f)))
+        names = " ".join(shlex.quote("%s/%s" % (self.work_dir,
+                                                os.path.basename(f)))
                          for f in files)
         rc, _, err = self._exec(self.ssh_argv(host, "chmod +x %s" % names), 60)
         return rc, err
+
+    def cleanup(self, host):
+        """Remove this run's directory from a host -- under sudo when the
+        command ran under it, or what it made as root stays -- and
+        --remote-dir too if this run made it and it is empty now.
+        -> an error to report, or ''."""
+        if host.name not in self._made:
+            return ""
+        cmd = self.wrap("rm -rf %s" % shlex.quote(self.work_dir))
+        if self._made[host.name]:
+            cmd += " && { rmdir %s 2>/dev/null || true; }" % shlex.quote(
+                self.remote_dir)
+        rc, _, err = self._exec(self.ssh_argv(host, cmd), 60)
+        if rc == 0:
+            return ""
+        first = (err or "").strip().splitlines()
+        return "qd: could not remove %s from this host: %s" % (
+            self.work_dir, first[-1] if first else "exit %d" % rc)
 
     def run_one(self, host, command, push=None, cleanup=True, pass_no=1):
         r = Result(host, pass_no)
@@ -165,23 +221,33 @@ class Runner(object):
                 r.outcome, r.rc, r.stderr = PUSH_FAILED, rc, err
                 if rc == 255:
                     r.outcome = UNREACHABLE
+                elif cleanup:
+                    # what got there before it failed is not left behind
+                    left = self.cleanup(host)
+                    if left:
+                        r.stderr = (err or "").rstrip("\n") + "\n" + left
                 r.duration = time.monotonic() - t0
                 return r
-        rc, out, err = self._exec(self.ssh_argv(host, self.wrap(command)),
-                                  self.timeout)
+        rc, out, err = self._exec(
+            self.ssh_argv(host, self.command_for(command, bool(push))),
+            self.timeout)
         r.rc, r.stdout, r.stderr = rc, out, err
         if push and cleanup:
-            self._exec(self.ssh_argv(
-                host, "rm -rf %s" % shlex.quote(self.remote_dir)), 60)
+            left = self.cleanup(host)
+            if left:
+                r.stderr = (r.stderr.rstrip("\n") + "\n" if r.stderr
+                            else "") + left
         r.duration = time.monotonic() - t0
-        if rc == 124:
+        if isinstance(rc, TimedOut):
             r.outcome = TIMEOUT
-        elif rc == 255 or (rc == 127 and not out):
+        elif rc == 255:
             # 255 is ssh's own failure; anything from the remote shell
-            # comes back as that command's status instead.
+            # comes back as that command's status instead -- 127, command
+            # not found (sudo, say), is a host that answered.
             low = (err or "").lower()
             r.outcome = UNREACHABLE if (
                 "connect" in low or "resolve" in low or "route" in low
+                or "cannot run" in low
                 or "refused" in low or "timed out" in low
                 or "permission denied" in low or "no such host" in low
                 or not out) else FAILED

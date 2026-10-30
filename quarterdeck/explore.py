@@ -223,6 +223,8 @@ class ListView(View):
             self.on_enter(self.items[self.cur][1])
         else:
             return False
+        # an empty list has no line to be on: 0, never -1
+        self.cur = max(0, self.cur)
         return True
 
     def render(self, h, w):
@@ -247,9 +249,12 @@ class TableView(View):
     """The dataset itself, filtered and sorted however you have asked."""
 
     def __init__(self, app, t, where=None, sort=None, on_enter=None,
-                 title=None):
+                 title=None, derived=False):
         View.__init__(self, app)
         self.base = t
+        # worked out from the view under it (grouped, a pivot): nothing of
+        # its own to reload
+        self.derived = derived
         self.filters = list(where or [])
         self.sort = sort or ""
         self.hidden = set()
@@ -428,6 +433,10 @@ class TableView(View):
         self.app.message = "wrote %d rows to %s" % (len(self.view.rows), path)
 
     def reload(self):
+        if self.derived:
+            self.app.message = ("worked out from the table under it: "
+                                "q back to that, and r there")
+            return
         e = getattr(self.base, "entry", None)
         if e is None:
             from .store import load_ref
@@ -487,7 +496,7 @@ class TableView(View):
                     for f in self.filters]))))
         elif k == "D":
             a.push(TableView(a, stats.describe(v), title="every column of "
-                             "%s" % self.title))
+                             "%s" % self.title, derived=True))
         elif k == "c":
             fr = stats.freq(v, c)
             total = max(1, len(v.rows))
@@ -511,7 +520,7 @@ class TableView(View):
             g = stats.group_by(v, [c])
             a.push(TableView(a, g, title="%s grouped by %s" % (
                 self.title, c), on_enter=lambda gt, row, c=c: self.drill(
-                    c, row[0])))
+                    c, row[0]), derived=True))
         elif k == "h":
             lines, _ = cli.report_hist(opts(column=c), self.base, v)
             a.push(TextView(a, "histogram of %s" % c, lines))
@@ -521,7 +530,7 @@ class TableView(View):
             if ot.rows and key in self.base.columns:
                 a.push(TableView(a, ot, title="outliers in %s" % c,
                                  on_enter=lambda gt, row, key=key:
-                                 self.drill(key, row[0])))
+                                 self.drill(key, row[0]), derived=True))
                 a.message = lines[0]
             else:
                 a.push(TextView(a, "outliers in %s" % c, lines))
@@ -567,7 +576,8 @@ class TableView(View):
         lines, p = cli.report_pivot(opts(rows=parts[0], cols_=parts[1],
                                          values=parts[2] if len(parts) > 2
                                          else None), self.base, self.view)
-        self.app.push(TableView(self.app, p, title="pivot " + text))
+        self.app.push(TableView(self.app, p, title="pivot " + text,
+                                derived=True))
 
     def diff(self, ref):
         from . import cli, diff as diffmod
@@ -833,7 +843,7 @@ class App(object):
             return
         items = []
         for e in entries:
-            cmd = e.meta.get("command") or ""
+            cmd = render.first_line(e.meta.get("command") or "")
             items.append(("%-32s %-7s %-12s %s" % (
                 e.id, e.meta.get("kind", ""), e.summary(), cmd[:60]), e))
         self.push(ListView(self, "runs in %s" % self.book.shown(),

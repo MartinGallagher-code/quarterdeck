@@ -212,7 +212,7 @@ Ctrl-C, and every pass that finished is kept.
 | Flag | |
 |---|---|
 | `--script FILE -- ARGS` | push FILE, run it with ARGS, remove it again |
-| `--push FILE` | copy a file over first (repeatable) |
+| `--push FILE` | copy a file over first (repeatable); the command runs beside it, in a directory of the run's own in `--remote-dir` |
 | `--sudo` | run under `sudo -n` |
 | `--dry-run` | print the ssh command per host; contact nothing |
 | `--first N` | the first N hosts only, the canary before the fleet |
@@ -233,10 +233,11 @@ security.
 | `--timeout` | `QD_TIMEOUT` | 60 s per host |
 | `--max-output` | `QD_MAX_OUTPUT` | 4 MiB per host; past it the host is killed and reported |
 | `--ssh`, `--scp` | `QD_SSH`, `QD_SCP` | `ssh`, `scp` |
-| `--remote-dir` | `QD_REMOTE_DIR` | `/var/tmp/qd` |
+| `--remote-dir` | `QD_REMOTE_DIR` | `/var/tmp` |
 | `--store` | `QD_STORE` | provost's own choice |
 | | `QD_PROVOST` | `provost` on `PATH` |
 | | `QD_PROVOST_BATCH=0` | file one capture at a time even where provost has `batch` |
+| | `QD_FILE_CHUNK` | 200 inputs per `provost batch`, each a commit, so its lock is never held for a whole big fleet |
 
 Exit status is 0 when every host answered, 1 when one didn't, and 2 for a
 usage error.
@@ -268,6 +269,14 @@ each host, so the hosts need python3 and binnacle needs to be installed
 here, nowhere else. A probe whose tool isn't here says what to install
 before it contacts a host.
 
+The shell probes are POSIX sh, run the same under bash, dash and busybox
+ash, and read `/proc` and `/sys` where a command might be missing (`disks`
+from `/sys/block`, sizes in bytes; `mounts` from `/proc/self/mounts`). A
+host without what a probe asks says so (`listen_tool: none`, `system_state:
+no systemd`, `nvidia_smi: absent`), and a value it could not read is left
+out: blank, never 0 or "unknown". They were run against Debian 12, Ubuntu
+24.04, Rocky 9 and Alpine 3.20 over real ssh.
+
 ---
 
 ## Cutting a host list: `qd split`
@@ -276,6 +285,10 @@ before it contacts a host.
 qd split -s hosts.txt --by rack --out lists/     # lists/rack-r1.txt, rack-r2.txt, ...
 qd run -s lists/rack-r1.txt -- ...
 ```
+
+The lists keep each host's attributes, so qd and dcprobe read them as
+they were. `--plain` writes names only, for agree, mx and
+iperf_orchestrator, which would read `rack=r1` as a host.
 
 | Flag | Lists |
 |---|---|
@@ -389,13 +402,16 @@ qd do -- netmesh check --reports idle/ web03 db01
 | `mx export` | `-o FILE`, or what it printed |
 | `iperf-orchestrator` | `results/<run>/` after `run`, `all`, `summarize`, `process`, `parse-csv`, `export-overlay`: `iperf_results`, `cpu_summary` and the overlay |
 | `agree` | `--json`, `--csv`, `--merge-csv` files. With none of them, qd adds `--csv` (and `--merge-csv` for `script`) and says so |
-| `dcprobe` | `-o FILE` and `--history FILE` |
+| `dcprobe` | `-o FILE`, else where it writes unasked (`host_status.tsv` after `scan` and `watch`, `preflight.tsv` after `preflight`), and `--history FILE` |
 | `reckon` | `--overlay`, `--csv`, `--json` files |
 | `netmesh` | `--reports DIR`, `--grid DIR` |
 | any `--csv PATH` | that file; a bare `--csv` prints to stdout |
 | anything else | stdout, when it is a table, or when nothing else came back: filed for provost to read |
 
-`--import PATH` reads more files afterwards; `--no-import` reads nothing
+Only what the tool wrote this time is filed. A run that fails before it
+writes leaves the last run's `results/latest` where it was, and that is
+said and left alone, not filed as this run's. `--import PATH` reads more
+files afterwards, whatever they hold; `--no-import` reads nothing
 back. A tool is found on `PATH`, as an installed module, or wherever
 `QD_<TOOL>` points (`QD_MX="python3 ~/src/matrix_orchestrator/mx"`).
 `qd doctor` says which tools this machine can drive. The exit status is
@@ -408,7 +424,9 @@ TSV, its notes and display metadata kept with it.
 format below, mx's `reports/`, netmesh's
 `--reports`, an iperf `results/` directory (its `latest` run) or one run
 of it, or a folder of monitoring tables. Files in a folder that share a
-header stack into one table.
+header stack into one table. A folder of grids (netmesh's `--grid`)
+becomes one table with a row per pair and a column per grid: `rtt_p50`,
+`loss`, `mtu`. Stacking them would put rtt and loss in one column.
 
 ### Formats read
 

@@ -25,9 +25,10 @@ import sys
 from .common import die, env, read_text, warn
 
 # Columns a run writes itself.  An attribute by one of these names would
-# shadow a measurement, so it is carried as attr_<name> instead.
-RESERVED = {"host", "addr", "status", "rc", "duration_s", "error", "pass",
-            "ts", "stdout", "stderr", "line", "line_no", "value", "row",
+# shadow a measurement, so it is carried as attr_<name> instead.  `row` is
+# not one: it is where a server sits, as a layout says (room, row, rack).
+RESERVED = {"host", "addr", "port", "status", "rc", "duration_s", "error",
+            "pass", "ts", "stdout", "stderr", "line", "line_no", "value",
             "run", "capture", "n", "dataset", "bytes", "attrs"}
 
 ATTR_RE = re.compile(r"^[A-Za-z_][\w.-]*=")
@@ -55,7 +56,11 @@ class Host(object):
                              ":%d" % self.port if self.port else "")
         if plain:
             return t
-        return " ".join([t] + ["%s=%s" % kv for kv in self.attrs])
+        # a host line is split on spaces, by qd and every tool of the
+        # suite: `model=HGX H100` written as it is reads back as a host
+        # called H100, so a space in a value is written as _
+        return " ".join([t] + ["%s=%s" % (k, re.sub(r"\s+", "_", v.strip()))
+                               for k, v in self.attrs])
 
 
 # canonical copy of the range expander and the address parser:
@@ -160,6 +165,10 @@ def split_host_port(spec):
 
 def parse_host_token(tok, attrs=None):
     tok = tok.strip()
+    if re.search(r"\s", tok):
+        # ssh would be handed the last word as the address
+        die("bad host token %r: a host has no spaces in it (name[=addr]"
+            "[:port], then key=value attributes)" % tok)
     bare = "=" not in tok
     if bare:
         name = addr = tok
@@ -286,14 +295,17 @@ def collect_hosts(servers=None, inline=None, layout=None, selectors=None,
                   first=None, manifest_argv=None):
     """Every way of naming a fleet, expanded, in order, without repeats."""
     entries = []
+    # A spec on the command line reads as a host file's line does:
+    # `-s 'web[1-2] rack=r1'` is two hosts in rack r1, never a host called
+    # "web1 rack" at the address r1.
     for spec in (servers or []):
         got = read_host_file(spec)
         if got is not None:
             entries.extend(got)
         else:
-            entries.extend((t, []) for t in split_commas(spec))
+            entries.extend(parse_lines(spec))
     for spec in (inline or []):
-        entries.extend((t, []) for t in split_commas(spec))
+        entries.extend(parse_lines(spec))
     from_layout = []
     if layout:
         from_layout = layout_hosts(layout, selectors, manifest_argv)
@@ -304,7 +316,7 @@ def collect_hosts(servers=None, inline=None, layout=None, selectors=None,
         if default:
             got = read_host_file(default)
             if got is None:
-                entries.extend((t, []) for t in split_commas(default))
+                entries.extend(parse_lines(default))
             else:
                 entries.extend(got)
         else:
