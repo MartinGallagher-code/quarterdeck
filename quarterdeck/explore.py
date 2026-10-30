@@ -223,6 +223,8 @@ class ListView(View):
             self.on_enter(self.items[self.cur][1])
         else:
             return False
+        # an empty list has no line to be on: 0, never -1
+        self.cur = max(0, self.cur)
         return True
 
     def render(self, h, w):

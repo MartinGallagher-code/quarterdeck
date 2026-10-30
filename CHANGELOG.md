@@ -138,6 +138,9 @@ ssh had passed.
   column and its statistics mixed them. The grids are now joined: a row
   per pair, a column per grid, and blank where a grid has no value for
   that pair (`importers.py` `join_grids`).
+- `qd view` crashed when an empty list was moved in, for example the
+  counts of a column after a filter that matched nothing, then `j`. The
+  cursor went to -1 (`explore.py` `ListView`).
 
 ### Security
 
