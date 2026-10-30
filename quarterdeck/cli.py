@@ -384,7 +384,10 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
     last = [r for r in results if r.pass_no == passes]
     if st is None:
         return Job(results, interrupted, None, unfiled_table(results, passes))
-    rid = new_run_id(st, label)
+    # a part of a campaign or a design point carries its part in its id:
+    # two workers on one campaign finish parts in the same second
+    part = (extra or {}).get("part")
+    rid = new_run_id(st, ("%s-%s" % (label, part)) if part else label)
     ds = filing.dataset_name(label)
     b = filing.Batch()
     for r in results:
@@ -1749,6 +1752,22 @@ def cmd_campaign(args):
         return 0
     if what != "run":
         die("unknown campaign action %r (new, run, status, retry, ls)" % what)
+    if args.dry_run:
+        # what a run would do, part by part -- nothing taken from the pool,
+        # so nothing is marked done
+        states, _ = camp.pool_states(c, quiet=True)
+        shown = 0
+        for part, hs in c.parts:
+            if states and states.get(part) != "available":
+                continue
+            if args.parts and shown >= args.parts:
+                break
+            out("# part %s" % part)
+            fleet_run(args, hs, c.command, c.name,
+                      context=[("campaign", c.name), ("part", part)],
+                      extra={"group": c.name, "part": part})
+            shown += 1
+        return 0
     filing.Provost(st).require("keep the parts")
     done, worst = 0, 0
     limit = args.parts or 10 ** 9
@@ -1791,7 +1810,7 @@ def cmd_doe(args):
     what = args.action
     if what == "plan":
         cfg = doemod.read_config(args.target)
-        matrix = doemod.generate(cfg, args.seed)
+        matrix = doemod.generate(cfg, doemod.seed_of(cfg, args.seed))
         pts = doemod.points(matrix)
         names = matrix.get("factor_names") or []
         rows = [[str(rid), str(blk)] + [v for _, v in lv]
@@ -1865,16 +1884,15 @@ def doe_run(args, st, doemod):
     name = doemod.design_name(cfg, args.target, args.name)
     prov = filing.Provost(st)
     prov.require("keep the measurements")
-    if doemod.exists(st, name):
+    new = not doemod.exists(st, name)
+    if not new:
         row, _, matrix = doemod.load(st, name)
         if row.get("command") != template:
             die("the design %s was run with another command (%s): --name "
                 "a new one for this command" % (name, row.get("command")))
     else:
-        matrix = doemod.generate(cfg, args.seed)
-        doemod.file_design(st, prov, name, template, args.seed,
-                           args.blocks_by, cfg, matrix)
-        st.reset()
+        seed = doemod.seed_of(cfg, args.seed)
+        matrix = doemod.generate(cfg, seed)
     pts = doemod.points(matrix)
     left = doemod.unused(template, pts[0][2] if pts else [])
     if left:
@@ -1899,6 +1917,13 @@ def doe_run(args, st, doemod):
         if not done.get(rid) or args.redo:
             check_danger(doemod.substitute(template, levels), args.yes,
                          "doe run")
+    if new:
+        # filed only now, every check passed: a run refused before here
+        # leaves no design behind tied to the command it refused
+        doemod.file_design(st, prov, name, template, seed, args.blocks_by,
+                           cfg, matrix)
+        st.reset()
+        done = doemod.point_runs(st, name)
     for rid, blk, levels in pts:
         if done.get(rid) and not args.redo:
             continue

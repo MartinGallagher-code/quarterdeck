@@ -98,7 +98,42 @@ t_names_are_checked() {
     assert_contains "$(cat err)" "no campaign 'nosuch'"
 }
 
+# --dry-run says what each part would run, and takes nothing from the pool
+t_a_dry_run_takes_nothing() {
+    have_muster || { echo "  (no muster here: pip install binnacle)"; return 0; }
+    seed
+    out="$(qdf campaign run burn --dry-run)"
+    assert_contains "$out" "# part rack-r1"
+    assert_contains "$out" "cat v"
+    assert_eq "$(ssh_calls)" "0"
+    assert_contains "$(qd campaign status burn)" "0 of 2 parts done"
+    # each part's run is its own id, the part in it, though the parts share
+    # the campaign's name: two workers can finish in the same second
+    qdf campaign run burn > /dev/null
+    assert_contains "$(qd log)" "burn_rack_r1"
+    assert_contains "$(qd log)" "burn_rack_r2"
+}
+
+# a campaign is defined only once muster has its pool: a muster that fails
+# leaves no definition and no pool to hold the name
+t_a_failed_pool_leaves_no_campaign() {
+    install_fake_ssh
+    fake_host a
+    printf '#!/bin/sh\necho "muster: broken" >&2\nexit 3\n' > "$FAKE_BIN/muster"
+    chmod +x "$FAKE_BIN/muster"
+    QD_MUSTER="$FAKE_BIN/muster" qd_rc campaign new x -S a --into 1 -- true 2> err
+    assert_status "$QD_RC" 2
+    assert_not_contains "$(qd campaign ls 2>&1)" "x "
+    assert_no_file "$XDG_CACHE_HOME/quarterdeck/campaigns/x.csv"
+    if have_muster; then
+        qd campaign new x -S a --into 1 -- true > out
+        assert_contains "$(cat out)" "x: 1 part"
+    fi
+}
+
 run_test "without muster: refused, and why"          t_without_muster_it_says_so
+run_test "--dry-run takes nothing from the pool"     t_a_dry_run_takes_nothing
+run_test "a failed pool leaves no campaign"          t_a_failed_pool_leaves_no_campaign
 run_test "parts are handed out once, progress kept"  t_parts_are_handed_out_once
 run_test "failed parts come back on retry"           t_failed_parts_come_back_on_retry
 run_test "two workers never share a part"            t_two_workers_never_share_a_part

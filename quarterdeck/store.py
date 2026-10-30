@@ -158,6 +158,32 @@ def context_columns(meta):
     return out
 
 
+# provost's record number in a run's rows, kept apart from a data column
+# that happens to be called n (see provost_columns)
+REC = "\x00n"
+
+
+def provost_columns(columns, context=()):
+    """The indexes of the columns provost puts first in a dataset -- '#',
+    its capture id, its record number -- found by place, under whatever its
+    clash rule named them (`_capture`, `_n` beside a data column of that
+    name), past the capture's context columns (`context`, which provost
+    puts between the capture id and the record number).  A data column
+    called n or capture is data."""
+    pats = (r"^#$", r"^_*capture$", r"^_*n$")
+    out, k = [], 0
+    for i, c in enumerate(columns):
+        if i and c in context:
+            continue
+        while k < len(pats) and not re.match(pats[k], c):
+            k += 1
+        if k == len(pats):
+            break
+        out.append(i)
+        k += 1
+    return out
+
+
 LONG_KEYS = ("field", "key", "name")
 # What provost files beside a long key and value: its row number, and a
 # group -- a `key:` line with nothing after it (a setting not measured on
@@ -172,7 +198,7 @@ def widen(records):
     are not that shape (a real table stays a table)."""
     if not records:
         return None
-    cols = [c for c, _ in records[0] if c not in LONG_EXTRA]
+    cols = [c for c, _ in records[0] if c not in LONG_EXTRA and c != REC]
     if len(cols) != 2 or cols[0] not in LONG_KEYS or cols[1] != "value":
         return None
     out, seen = [], set()
@@ -709,10 +735,13 @@ class Run(object):
                     if ds == "unsorted":
                         recs.append((ds, []))   # held: its text is raw
                         continue
+                    own = provost_columns(t.columns, drop)
+                    rec = own[-1] if own and re.match(
+                        r"^_*n$", t.columns[own[-1]]) else None
                     keep = [i for i, c in enumerate(t.columns)
-                            if c not in ("#", "capture") and c not in drop]
-                    pairs = [[(t.columns[i], r[i]) for i in keep]
-                             for r in t.rows]
+                            if (i not in own or i == rec) and c not in drop]
+                    pairs = [[(REC if i == rec else t.columns[i], r[i])
+                              for i in keep] for r in t.rows]
                     wide = widen(pairs)
                     recs.extend((ds, p) for p in
                                 ([wide] if wide is not None else pairs))
@@ -725,16 +754,19 @@ class Run(object):
         for _, _, recs in parts:
             for _, pairs in recs:
                 for c, v in pairs:
-                    if c == "n" and not many:
+                    if c == REC and not many:
                         continue
                     if c not in order:
                         order.append(c)
                     if v.strip():
                         filled.add(c)
-        datacols = [c for c in order if c in filled or c == "n"]
+        datacols = [c for c in order if c in filled or c == REC]
         names, taken = {}, set(lead) | {"dataset"}
-        for c in datacols:
-            m = c
+        # data columns keep their own names; provost's record number is n,
+        # or _n beside a data column called n
+        for c in [c for c in datacols if c != REC] + \
+                [c for c in datacols if c == REC]:
+            m = "n" if c == REC else c
             while m in taken:
                 m = "_" + m
             taken.add(m)
@@ -763,8 +795,9 @@ class Run(object):
         extra = read_table_line(self.store.context_text(cid))
         cols, rows = [], []
         for ds, t in self.store.capture_rows(cid):
-            keep = [c for c in t.columns
-                    if c not in ("#", "capture", "n") and c not in drop]
+            own = set(t.columns[i] for i in provost_columns(t.columns,
+                                                            drop))
+            keep = [c for c in t.columns if c not in own and c not in drop]
             for c in keep:
                 if c not in cols:
                     cols.append(c)

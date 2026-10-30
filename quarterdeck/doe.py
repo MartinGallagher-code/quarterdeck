@@ -29,6 +29,7 @@ run_<id>.json beside the design's design_matrix.json -- and hands them to
 and numpy; qd runs it as a command, so qd itself keeps its 3.6 floor.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -83,6 +84,15 @@ def design_name(cfg, path, name=None):
     meta = cfg.get("metadata") or {}
     base = meta.get("name") or os.path.splitext(os.path.basename(path))[0]
     return filing.dataset_name(re.sub(r"\s+", "-", base.strip()).lower())
+
+
+def seed_of(cfg, seed=None):
+    """doe's run-order seed: the one given, else one drawn from the config
+    itself, so `qd doe plan` shows the order `qd doe run` will use."""
+    if seed is not None:
+        return seed
+    text = json.dumps(cfg, sort_keys=True).encode("utf-8")
+    return int(hashlib.sha1(text).hexdigest()[:8], 16) % 1000003
 
 
 def generate(cfg, seed=None):

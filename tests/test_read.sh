@@ -187,6 +187,22 @@ t_as_overrides_detection() {
     assert_contains "$out" "A,B,C"
 }
 
+# a data column called n is data: provost names its own record number _n
+# beside it, and qd must not drop the one for the other
+t_a_data_column_called_n_is_kept() {
+    printf 'host,n,mbps\na,4,940\nb,7,610\n' > n.csv
+    qd import n.csv > /dev/null
+    out="$(qd show latest --format csv)"
+    assert_contains "$out" "host,n,mbps"
+    assert_contains "$out" "b,7,610"
+    install_fake_ssh
+    for h in x y; do fake_host "$h"; printf 'dev,n\nsda,4\n' > "$FAKE_ROOT/$h/f"; done
+    printf 'x\ny\n' > hosts.txt
+    qdf run -s hosts.txt -q -- cat f > /dev/null
+    assert_contains "$(qd show latest --cols host,dev,n --format csv)" "y,sda,4"
+}
+
+run_test "a data column called n is kept"            t_a_data_column_called_n_is_kept
 run_test "results format, !test lines, meta"            t_results_format_with_meta
 run_test "results round-trip through the store"         t_results_round_trip_through_the_store
 run_test "results without !test lines are detected"     t_results_without_meta_lines_are_detected

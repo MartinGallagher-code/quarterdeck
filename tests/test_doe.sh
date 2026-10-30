@@ -110,6 +110,32 @@ t_a_refused_point_runs_nothing() {
     assert_eq "$(ssh_calls)" "0"
 }
 
+# a refused first run files no design: the command fixed, it runs
+t_a_refused_first_run_files_no_design() {
+    stand_in_doe
+    seed
+    config
+    qdf_rc doe run bench.json -s hosts.txt -- 'echo {streams} {window}; rm -rf /tmp/qd-x' 2> err
+    assert_status "$QD_RC" 2
+    qd_rc doe status stream-test 2> err
+    assert_contains "$(cat err)" "no design"
+    qdf_rc doe run bench.json -s hosts.txt -q -- "$BENCH" > out
+    assert_status "$QD_RC" 0
+    assert_contains "$(cat out)" "4 of 4 points measured"
+}
+
+# plan shows the order run measures in: the same seed, from the config
+t_plan_is_the_order_run_measures() {
+    stand_in_doe
+    seed
+    config
+    plan="$(qd doe plan bench.json | sed -n 's/^ *\([0-9]\) *1 *\([0-9]*\) *\([0-9]*\)$/\1 \2 \3/p')"
+    qdf doe run bench.json -s hosts.txt -q -- "$BENCH" > /dev/null
+    status="$(qd doe status stream-test | sed -n 's/^ *\([0-9]\) *1 *streams=\([0-9]*\) window=\([0-9]*\).*/\1 \2 \3/p')"
+    [ -n "$plan" ] || fail "no points read from plan"
+    assert_eq "$status" "$plan"
+}
+
 t_no_doe_says_how_to_get_it() {
     config
     QD_DOE=/nonexistent/doe PATH="/usr/bin:/bin" qd_rc doe plan bench.json 2> err
@@ -137,6 +163,8 @@ run_test "analyze hands doe the responses"           t_analyze_hands_doe_the_res
 run_test "--blocks-by: a block per host group"       t_blocks_run_on_host_groups
 run_test "a {name} that is no factor: refused"       t_a_factor_that_is_not_there_is_refused
 run_test "a refused point: nothing runs"              t_a_refused_point_runs_nothing
+run_test "a refused first run files no design"       t_a_refused_first_run_files_no_design
+run_test "plan is the order run measures"           t_plan_is_the_order_run_measures
 run_test "no doe: how to get it"                     t_no_doe_says_how_to_get_it
 run_test "with the real doe, where installed"        t_with_the_real_doe
 finish

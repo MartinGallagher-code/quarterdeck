@@ -62,6 +62,24 @@ ssh had passed.
   `qd doe run`, `qd campaign new` -- where it said `qd run` for all, and
   `qd doe run` checks every point's command before the first runs, rather
   than refusing half way through a design.
+- From a review of qd itself:
+  - A data column called `n` is data: provost names its own record number
+    `_n` beside one, and qd dropped the data's `n` and kept provost's
+    (`qd import` of `host,n,mbps` lost the n). provost's own columns are
+    found by place now (`provost_columns`), past the context columns.
+  - `qd campaign run --dry-run` took every part from muster's pool and
+    marked it done; it prints what each part would run and takes nothing.
+  - `qd campaign new` filed the campaign before muster had made its pool,
+    so a failure there (muster not installed) left the name taken and
+    nothing to hand out; the pool comes first, and a definition that cannot
+    be filed takes the pool away again.
+  - A campaign part's run id carries its part (`...-burn_rack_r1`): two
+    workers finishing parts in the same second took the same id.
+  - `qd doe run` filed a new design before its checks, so a run the typo
+    guard refused left the design tied to the refused command; and `qd doe
+    plan` showed a different run order from the one `run` used, both
+    drawing doe's random order unseeded. The default seed comes from the
+    config, so plan shows what run will do.
 - A tip to read an answer with provost (`provost source N`) names the store
   when provost would not find it on its own (`--store`, `QD_STORE`):
   `PROVOST_WORKSPACE=... provost source N`.

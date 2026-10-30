@@ -262,11 +262,17 @@ def opt(n):
 cfg = json.load(open(opt("--config")))
 out = cfg["settings"]["out_directory"]
 if a[0] == "generate":
+    import random
     names = [f["name"] for f in cfg["factors"]]
     base = list(itertools.product(*[f["levels"] for f in cfg["factors"]]))
+    # the run order is shuffled within each block, as the real one does,
+    # and the same for the same --seed
+    rnd = random.Random(int(opt("--seed"))) if opt("--seed") else random.Random()
     runs = []
     for b in range(int(cfg["settings"].get("block_count", 1))):
-        for combo in base:
+        order = list(base)
+        rnd.shuffle(order)
+        for combo in order:
             runs.append({"run_id": len(runs) + 1, "block_id": b + 1,
                          "factor_values": dict(zip(names, combo)),
                          "whole_plot_id": 0})
