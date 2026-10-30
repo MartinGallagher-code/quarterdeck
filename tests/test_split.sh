@@ -40,7 +40,7 @@ t_values_that_clean_alike_are_two_lists() {
     out="$(qd split -s hosts.txt --by room --out lists)"
     assert_contains "$out" "3 hosts into 3 lists"
     assert_contains "$out" "room-a_b-2"
-    assert_eq "$(ls lists | wc -l | tr -d ' ')" "3"
+    assert_eq "$(find lists -name '*.txt' | wc -l | tr -d ' ')" "3"
     assert_eq "$(cat lists/*.txt | grep -v '^#' | cut -d' ' -f1 | sort | tr '\n' ' ')" "n1 n2 n3 "
 }
 
