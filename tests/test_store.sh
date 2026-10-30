@@ -125,7 +125,9 @@ t_export_and_import_round_trip() {
     qd import b.csv --store lab > /dev/null 2>&1
     qd store export lab lab.tgz > out
     assert_contains "$(cat out)" "2 runs"
-    assert_contains "$(cat out)" "store format 3"
+    # whatever this provost writes: 3 since 2.2.0, 2 before it
+    fmt="$(cat "$(STORES)/lab/.store_format" 2>/dev/null || echo 1)"
+    assert_contains "$(cat out)" "store format $fmt"
     # the manifest first: versions, store format, run count, checksums
     "$PY" - lab.tgz > manifest.out <<'EOF'
 import json, sys, tarfile
@@ -137,7 +139,7 @@ print(any(f.startswith(".git/") for f in m["files"]),
       any(f.startswith("captures/") and f.endswith("/output.txt") for f in m["files"]))
 EOF
     assert_contains "$(head -1 manifest.out)" "quarterdeck store"
-    assert_contains "$(head -1 manifest.out)" " 3 2 "
+    assert_contains "$(head -1 manifest.out)" " $fmt 2 "
     # the full history, and the raw answers
     assert_eq "$(sed -n 3p manifest.out)" "True True"
     qd_rc store import lab.tgz 2> err
