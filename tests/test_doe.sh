@@ -170,6 +170,23 @@ t_unblocked_groups_are_said() {
     assert_contains "$(cat err)" "was run --blocks-by rack"
 }
 
+# a level with a space in it is read back whole: `-w 1M`, not `-w`
+t_a_level_with_a_space() {
+    stand_in_doe
+    seed
+    cat > win.json <<'EOF'
+{"metadata": {"name": "Window"},
+ "factors": [{"name": "args", "levels": ["-w 64K", "-w 1M"], "type": "categorical"}],
+ "responses": [{"name": "mbps", "optimize": "maximize"}],
+ "settings": {"operation": "full_factorial", "block_count": 1}}
+EOF
+    qdf doe run win.json -s hosts.txt -q -- 'echo "mbps: 1"; echo {args} > /dev/null' > /dev/null
+    out="$(qd compare --group window -c mbps)" || true
+    assert_contains "$out" "factors args=-w 1M"
+    assert_contains "$(qd show latest --cols host,args --format csv)" "a,-w "
+}
+
+run_test "a level with a space"                      t_a_level_with_a_space
 run_test "more groups than blocks: said"            t_unblocked_groups_are_said
 run_test "plan shows doe's design"                   t_plan_shows_the_design
 run_test "run measures every point, once"            t_run_measures_every_point_once

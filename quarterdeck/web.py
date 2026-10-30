@@ -36,7 +36,7 @@ from . import VERSION
 from . import campaign as camp, compare as comparemod, diff as diffmod, \
     doe as doemod, query, stats, table as tablemod, tools
 from .common import PROG, QdError, die, env_float, write_text
-from .store import cache_root, describe_entry, split_ref
+from .store import cache_root, describe_entry, shown_attrs, split_ref
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 
@@ -128,7 +128,7 @@ class Api(object):
                         "summary": e.summary(), "hosts": m.get("hosts"),
                         "rc": m.get("rc"), "group": m.get("group", ""),
                         "part": m.get("part", ""),
-                        "factors": m.get("factors", ""),
+                        "factors": shown_attrs(m.get("factors")),
                         "tables": [{"name": t["name"],
                                     "rows": t.get("rows", 0),
                                     "from": t.get("from", "")}
@@ -341,7 +341,7 @@ class Api(object):
             runs.append({"label": r["label"], "id": r["id"],
                          "created": r["created"], "rows": r["rows"],
                          "part": m.get("part", ""),
-                         "factors": m.get("factors", ""),
+                         "factors": shown_attrs(m.get("factors")),
                          "command": m.get("command", ""),
                          "hosts_ok": ("%d/%d" % (h.get("ok", 0),
                                                  h.get("total", 0)))

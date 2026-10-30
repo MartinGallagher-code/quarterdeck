@@ -133,7 +133,7 @@ def define(st, prov, name, groups, command, split_how, pool):
     for part, hs in groups:
         for h in hs:
             rows.append([name, part, h.token(plain=True),
-                         " ".join("%s=%s" % kv for kv in h.attrs), command,
+                         storemod.join_attrs(h.attrs), command,
                          split_how, pool, created])
     # the pool first -- one item per part, muster's to hand out -- so a
     # campaign is only defined once muster has taken it: a definition with

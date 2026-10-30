@@ -254,7 +254,7 @@ def host_row(rid, r):
     return [rid, h.name, addr if (h.addr != h.name or h.port) else "",
             str(r.pass_no), "%d" % int(r.started), r.outcome, str(r.rc),
             "%.2f" % r.duration, str(len(r.stdout.encode("utf-8"))),
-            r.error(), " ".join("%s=%s" % kv for kv in h.attrs),
+            r.error(), storemod.join_attrs(h.attrs),
             r.stderr[:STDERR_KEEP]]
 
 
@@ -1389,9 +1389,11 @@ def compare_report(res, args):
         bits = []
         if e is not None:
             m = e.meta
-            for k in ("part", "factors"):
-                if m.get(k):
-                    bits.append("%s %s" % (k, m[k]))
+            if m.get("part"):
+                bits.append("part %s" % m["part"])
+            if m.get("factors"):
+                # as read, not as stored: args=-w 1M, not args='-w 1M'
+                bits.append("factors " + storemod.shown_attrs(m["factors"]))
             bits.append(render.first_line(m.get("command") or ""))
         lines.append("  %-4s %s  %s" % (r["label"], r["id"],
                                         "  ".join(b for b in bits if b)))
@@ -1938,7 +1940,7 @@ def doe_run(args, st, doemod):
             continue
         command = doemod.substitute(template, levels)
         hosts = blocks[blk] if blocks else hs
-        factors = " ".join("%s=%s" % kv for kv in levels)
+        factors = storemod.join_attrs(levels)
         job = fleet_run(args, hosts, command, name,
                         context=[("design", name), ("point", str(rid))] +
                         [(k, v) for k, v in levels],

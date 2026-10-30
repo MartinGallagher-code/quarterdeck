@@ -126,9 +126,32 @@ def read_table_line(text):
     return {}
 
 
+def join_attrs(pairs):
+    """key=value words, as split_attrs reads them back: a value with a
+    space or a quote in it is quoted (a design level `-w 1M`)."""
+    return " ".join("%s=%s" % (k, shlex.quote(v) if re.search(r"[\s'\"]", v)
+                               else v) for k, v in pairs)
+
+
+def shown_attrs(text):
+    """Stored key=value words as one reads them: args=-w 1M."""
+    return " ".join("%s=%s" % kv for kv in split_attrs(text))
+
+
 def split_attrs(text):
+    text = text or ""
+    words = text.split()
+    if "='" in text or '="' in text:
+        # a quoted value (join_attrs): shell words, backslashes as written
+        lex = shlex.shlex(text, posix=True)
+        lex.whitespace_split = True
+        lex.escape = ""
+        try:
+            words = list(lex)
+        except ValueError:
+            pass                    # an unbalanced quote: words as written
     out = []
-    for w in (text or "").split():
+    for w in words:
         k, sep, v = w.partition("=")
         if sep and k:
             out.append((k, v))
