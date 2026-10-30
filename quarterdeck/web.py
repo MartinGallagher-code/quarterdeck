@@ -172,8 +172,7 @@ class Api(object):
         out = {"name": c, "kind": kind, "n": len(filled),
                "blank": len(vals) - len(filled),
                "distinct": len(set(filled)),
-               "unit": (dict(t.tests.get(c, [])).get("unit")
-                        if t.tests else None) or tools.guess_unit(c)}
+               "unit": tools.column_unit(t, s, c)}
         if kind in ("num", "mixed"):
             sm = stats.summary(s.numbers(c))
             out["summary"] = dict((k, v) for k, v in sm.items())

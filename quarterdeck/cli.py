@@ -902,12 +902,10 @@ def _one_column_report(t, s, col, args):
     lines.append("  kind      %s" % kind)
     lines.append("  measured  %d   blank %d   distinct %d"
                  % (len(filled), len(vals) - len(filled), len(set(filled))))
-    unit = dict(t.tests.get(name, [])).get("unit") if t.tests else None
+    unit = tools.column_unit(t, s, name)
     if s.is_results() and name == "value" and s.rows:
         tests = sorted(set(s.values("test")))
-        if len(tests) == 1:
-            unit = dict(t.tests.get(tests[0], [])).get("unit")
-        else:
+        if len(tests) > 1:
             lines.append("  note      value mixes %d tests here (%s); "
                          "--where test=NAME reads one" % (
                              len(tests), ", ".join(tests[:4]) +

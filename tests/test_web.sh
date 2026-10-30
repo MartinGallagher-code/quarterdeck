@@ -75,6 +75,18 @@ t_column_figures_match_the_cli() {
     assert_contains "$cli" "median 0.5"
 }
 
+# the unit is the scale the figures are on: 512M beside 2G are bytes
+t_column_unit_is_the_figures_scale() {
+    printf 'host,mem,lat\na,512M,900ms\nb,2G,1.2s\n' > u.csv
+    qd import u.csv > /dev/null
+    start_web
+    out="$(get '/api/column?e=latest&c=mem')"
+    assert_contains "$out" '"unit": "B"'
+    assert_contains "$out" '"max": 2147483648'
+    assert_contains "$(get '/api/column?e=latest&c=lat')" '"unit": "s"'
+    assert_contains "$(qd stats latest mem)" "max 2147483648  (B)"
+}
+
 t_group_pivot_trend() {
     seed
     start_web
@@ -258,6 +270,7 @@ t_empty_store_is_refused() {
 
 run_test "entries, rows, --where, a bad filter"     t_entries_rows_and_filters
 run_test "column figures match the CLI's"           t_column_figures_match_the_cli
+run_test "a column's unit is its figures' scale"    t_column_unit_is_the_figures_scale
 run_test "group, pivot, trend"                      t_group_pivot_trend
 run_test "diff defaults to the last same run"       t_diff_defaults_to_the_last_same_run
 run_test "compare: the terminal's verdict"           t_compare_is_the_terminal_s

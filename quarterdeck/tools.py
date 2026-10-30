@@ -332,6 +332,26 @@ def guess_unit(col):
     return None
 
 
+def column_unit(t, s, name):
+    """The unit a column's figures are in, for the terminal and the page
+    alike: what its cells were put on (B where sizes were mixed, s where
+    times were, ms where every cell said ms), else what the !test lines
+    say, else what its name implies (rtt_us); None when nothing does.
+    `t` is the table, `s` the rows asked about."""
+    u = s.unit(name)
+    if u:
+        return u
+    meta = t.tests or {}
+    if s.is_results() and name == "value" and s.rows:
+        tests = set(s.values("test"))
+        if len(tests) != 1:
+            return None
+        u = dict(meta.get(tests.pop(), [])).get("unit")
+    else:
+        u = dict(meta.get(name, [])).get("unit")
+    return u or guess_unit(name)
+
+
 def to_overlay(table, run_label=None, prefix="qd_", target=None):
     """A dataset as the viewer's results: one sample per host per number.
 

@@ -156,6 +156,11 @@ ssh had passed.
   `python3` was swapped for the override and the rest kept. Only a bare
   tool name is replaced now (`tools.py` `find_tool`, `cli.py`
   `resolve_argv`).
+- A column's unit, in `qd stats` and on the web page, came from the
+  `!test` lines or a guess from the column's name, never from its cells.
+  `512M` beside `2G` was summarised in bytes and labelled as nothing.
+  Both now read one function, which takes the scale of the figures
+  first (`tools.py` `column_unit`).
 
 ### Security
 
