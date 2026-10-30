@@ -203,6 +203,12 @@ ssh had passed.
   is cleaned up too, and a cleanup that fails is said in the host's
   stderr. `--keep-remote` says where it left the files (`fleet.py`
   `Runner.push`, `cleanup`).
+- A host spec on the command line (`-s` when it is not a file, `-S`,
+  `QD_SERVERS`) was split only on commas. So `-s 'web[1-2] rack=r1'` was
+  a host called "web1 rack" at the address `r1`, and the command went to
+  `r1`; `-S 'db1 role=primary'` went to `primary`. A spec now reads as a
+  host file's line does, and a host token with a space in it is refused
+  (`hosts.py` `collect_hosts`, `parse_host_token`).
 - A command on a host that exited 124 itself (`timeout 5 check`) was
   reported as a qd timeout and listed as not answering. qd's own timeout
   is now marked as such (`fleet.py` `TimedOut`).

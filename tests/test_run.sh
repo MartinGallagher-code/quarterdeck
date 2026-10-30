@@ -295,6 +295,17 @@ t_script_is_pushed_run_and_cleaned_up() {
     assert_file_exists "$FAKE_ROOT/node02/$kept/probe.sh"
 }
 
+# a host spec on the command line reads as a host file's line: the words
+# after a host are its attributes, never an address to ssh to
+t_an_inline_spec_is_a_host_line() {
+    out="$(qd hosts -s 'web[1-2] rack=r1')"
+    assert_eq "$out" "$(printf 'web1 rack=r1\nweb2 rack=r1')"
+    out="$(qdf run --dry-run -S 'db1 role=primary' -- uptime)"
+    assert_contains "$out" " db1 uptime"
+    assert_not_contains "$out" " primary uptime"
+    assert_eq "$(QD_SERVERS='web01 web02' qd hosts --plain)" "$(printf 'web01\nweb02')"
+}
+
 # --remote-dir is where the run makes a directory of its own: what was
 # there before stays, and two runs at once never clean up each other's
 t_the_remote_dir_is_never_removed() {
@@ -480,6 +491,7 @@ t_lang_c_and_utf8_output_survive() {
     assert_contains "$out" "caf"
 }
 
+run_test "an inline host spec is a host line"      t_an_inline_spec_is_a_host_line
 run_test "--remote-dir itself is never removed"     t_the_remote_dir_is_never_removed
 run_test "exit 124 on the host is the host's"       t_an_exit_of_124_is_the_host_s
 run_test "a host line reads back as its host"        t_a_host_line_reads_back_as_its_host
