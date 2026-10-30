@@ -314,8 +314,10 @@ def check_limit(args, hs):
 
 
 def remote_script(args, script, words):
+    """A pushed script as the command runs it: from the directory it was
+    pushed to (`--remote-dir`), where a command with pushed files runs."""
     return " ".join(
-        [shlex.quote("%s/%s" % (args.remote_dir, os.path.basename(script)))] +
+        [shlex.quote("./" + os.path.basename(script))] +
         [shlex.quote(a) for a in words])
 
 
@@ -539,7 +541,7 @@ def run_next_steps(t, dcols, entry, bad, passes):
         caps = entry.captures()
         n = storemod.first_row(entry.store.meta(caps[0])) if caps else None
         if n is not None:
-            tips.append(("provost source %d" % n,
+            tips.append((entry.store.provost("source %d" % n),
                          "one host's answer exactly as it came back"))
     tips.append(("%s view %s" % (PROG, ref), "explore it full-screen"))
     return next_steps(tips)
@@ -1606,7 +1608,8 @@ def cmd_probe(args):
                 # run by python3, not as an executable: a file copied out
                 # of site-packages has no x bit
                 path = probes.script_path(how[0])
-                command = "python3 " + remote_script(args, path, how[1])
+                command = "python3 " + remote_script(args, path, how[1]) + \
+                    (how[2] if len(how) > 2 else "")
                 push = [path]
             else:
                 command, push = how, []

@@ -276,6 +276,41 @@ t_script_is_pushed_run_and_cleaned_up() {
     assert_file_exists "$FAKE_ROOT/node02/rd/probe.sh"
 }
 
+# A pushed file is beside the command, by its own name, wherever
+# --remote-dir puts it
+t_push_runs_beside_the_files() {
+    seed
+    echo hello > payload.txt
+    run_qd --push payload.txt --remote-dir rd -- cat payload.txt > /dev/null
+    assert_contains "$(qd show latest --cols host,A --format csv)" "node02,hello"
+    assert_no_file "$FAKE_ROOT/node02/rd"
+}
+
+# 127 is the remote shell's "command not found": the host answered, so it
+# failed rather than being unreachable (sudo missing, on real hosts)
+t_command_not_found_is_failed_not_unreachable() {
+    seed
+    run_qd -- nosuchcommand > /dev/null
+    out="$(qd show latest --cols host,status,rc --format csv)"
+    assert_contains "$out" "node02,failed,127"
+    assert_contains "$out" "node09,unreachable"
+}
+
+# A store provost would not find on its own (QD_STORE, --store): the tip
+# to read an answer with provost names it, so it works as printed
+t_provost_tips_name_the_store() {
+    seed
+    run_qd -- cat kernel > out
+    assert_contains "$(cat out)" "PROVOST_WORKSPACE=$QD_STORE provost source"
+    n="$(sed -n 's/.*PROVOST_WORKSPACE=[^ ]* provost source \([0-9]*\).*/\1/p' out | head -1)"
+    # shellcheck disable=SC2086  # QD_PROVOST may be a command line
+    assert_contains "$(env PROVOST_WORKSPACE="$QD_STORE" $PROVOST_CMD source "$n")" "6.1.0"
+    # where provost finds the store itself, the tip is plain
+    out="$(PROVOST_WORKSPACE="$QD_STORE" qd log latest)"
+    assert_contains "$out" "answers   provost source"
+    assert_not_contains "$out" "PROVOST_WORKSPACE="
+}
+
 t_mutation_guard_and_limit() {
     seed
     run_qd -- rm -rf /var/log 2> err
@@ -356,6 +391,9 @@ run_test "df: one row per filesystem"                 t_df_table_is_one_row_per_
 run_test "--every/--count: a time series"             t_repeated_passes_make_a_time_series
 run_test "--dry-run and --sudo contact nothing"       t_dry_run_and_sudo_contact_nothing
 run_test "--script: pushed, run, cleaned up"          t_script_is_pushed_run_and_cleaned_up
+run_test "--push: the command runs beside its files"  t_push_runs_beside_the_files
+run_test "command not found is failed, not unreachable" t_command_not_found_is_failed_not_unreachable
+run_test "provost tips name a store it cannot find"   t_provost_tips_name_the_store
 run_test "mutation guard, --limit, --first 0"         t_mutation_guard_and_limit
 run_test "--no-store keeps nothing"                   t_no_store_keeps_nothing
 run_test "no provost: refused before any host"        t_no_provost_is_refused_before_any_host

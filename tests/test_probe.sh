@@ -49,6 +49,55 @@ t_a_group_expands() {
     assert_contains "$(qd show sysctl --cols host,vm.swappiness --format csv)" "a,"
 }
 
+# A host without the tool a probe asks: it says so in a column, and what it
+# could not read is left out -- never 0, never "unknown". On real hosts,
+# Alpine answered `listening: 0` with sshd listening (no ss), and Debian
+# without systemd `failed_units: 0`.
+t_a_missing_tool_is_said_not_zeroed() {
+    seed
+    nop="$(path_without ss netstat systemctl systemd-detect-virt \
+        dpkg-query rpm apk pacman)"
+    PATH="$nop" qdf_rc probe listen services os -s hosts.txt -q > out
+    assert_status "$QD_RC" 0
+    assert_contains "$(qd show listen --format csv)" "none (no ss, no netstat)"
+    assert_not_contains "$(qd show listen --format csv | head -1)" "listening"
+    out="$(qd show services --format csv)"
+    assert_contains "$out" "no systemd"
+    assert_not_contains "$(printf '%s\n' "$out" | head -1)" "failed_units"
+    assert_not_contains "$(qd show os --format csv | head -1)" "virt"
+    assert_not_contains "$(qd show os --format csv)" "unknown"
+    # the package manager a host has is the one counted: Alpine's apk
+    mkdir -p apkbin
+    printf '#!/bin/sh\nprintf "musl\\nbusybox\\nopenssh\\n"\n' > apkbin/apk
+    chmod +x apkbin/apk
+    PATH="$PWD/apkbin:$nop" qdf probe packages -s hosts.txt -q > out
+    assert_contains "$(qd show packages --cols host,manager,packages --format csv)" \
+        "a,apk,3"
+    assert_not_contains "$(qd show packages --format csv | head -1)" "reboot"
+}
+
+# reachable's CSV goes where --csv says; its -o is the annotated host list
+t_reach_reads_reachables_csv() {
+    seed
+    cat > "$FAKE_BIN/reachable" <<'EOF'
+#!/bin/sh
+hosts="$1"; csv=""; shift
+while [ $# -gt 0 ]; do
+  case "$1" in --csv) csv="$2"; shift 2;; *) shift;; esac
+done
+case "$csv" in ""|-*) echo "reachable: --csv wants a path here" >&2; exit 2;; esac
+{ echo "host,addr,ping,ssh,usable,outcome,detail,duration_s"
+  while read -r h _; do echo "$h,$h,yes,yes,yes,ok,,0.1"; done < "$hosts"
+} > "$csv"
+cat "$hosts"
+EOF
+    chmod +x "$FAKE_BIN/reachable"
+    QD_REACHABLE="$FAKE_BIN/reachable" qd_rc probe reach -s hosts.txt > out 2>&1
+    assert_status "$QD_RC" 0
+    assert_contains "$(qd show latest --cols host,usable,outcome --format csv)" \
+        "b,yes,ok"
+}
+
 t_a_fleet_tool_is_run_here_and_read_back() {
     seed
     # dcprobe, played by a stand-in that writes what its scan writes
@@ -76,8 +125,10 @@ t_binnacle_scripts_run_on_the_hosts() {
     if "$PY" -c 'import binnacle.why_slow' 2>/dev/null; then
         qdf_rc probe facts -s hosts.txt -q --remote-dir rd > out
         assert_status "$QD_RC" 0
-        # why-slow's readings, a column each
+        # why-slow's readings, a column each, and one row per host: a list
+        # in them (the top processes) is a cell of JSON, not rows
         assert_contains "$(qd show facts --cols host,cpu.count --format csv)" "a,"
+        assert_eq "$(qd show facts --cols host --format csv | tail -n +2 | wc -l | tr -d ' ')" "2"
     else
         qdf_rc probe facts -s hosts.txt 2> err
         assert_status "$QD_RC" 2
@@ -89,6 +140,8 @@ t_binnacle_scripts_run_on_the_hosts() {
 run_test "the catalogue lists itself"                t_the_catalogue_lists_itself
 run_test "command probes: a run each, named"         t_command_probes_file_a_run_each
 run_test "a group expands to its probes"             t_a_group_expands
+run_test "a missing tool is said, never zeroed"     t_a_missing_tool_is_said_not_zeroed
+run_test "reach reads reachable's CSV"              t_reach_reads_reachables_csv
 run_test "a fleet tool: run here, read back"         t_a_fleet_tool_is_run_here_and_read_back
 run_test "binnacle's scripts run on the hosts"       t_binnacle_scripts_run_on_the_hosts
 finish

@@ -167,6 +167,10 @@ class Runner(object):
                     r.outcome = UNREACHABLE
                 r.duration = time.monotonic() - t0
                 return r
+        if push:
+            # the command runs where its files were put, so `--push x --
+            # tool x` finds x by its own name
+            command = "cd %s && %s" % (shlex.quote(self.remote_dir), command)
         rc, out, err = self._exec(self.ssh_argv(host, self.wrap(command)),
                                   self.timeout)
         r.rc, r.stdout, r.stderr = rc, out, err
@@ -176,9 +180,10 @@ class Runner(object):
         r.duration = time.monotonic() - t0
         if rc == 124:
             r.outcome = TIMEOUT
-        elif rc == 255 or (rc == 127 and not out):
+        elif rc == 255:
             # 255 is ssh's own failure; anything from the remote shell
-            # comes back as that command's status instead.
+            # comes back as that command's status instead -- 127, command
+            # not found (sudo, say), is a host that answered.
             low = (err or "").lower()
             r.outcome = UNREACHABLE if (
                 "connect" in low or "resolve" in low or "route" in low

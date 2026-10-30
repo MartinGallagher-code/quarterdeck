@@ -14,6 +14,7 @@
 #   pv ARGS...              provost itself, on the case's store
 #   has_batch               whether that provost files a run as one batch
 #   stand_in_doe            a doe that designs and analyses as the real one
+#   path_without CMD...     this PATH without those commands
 #   nojq_path               this PATH without jq, for provost's own readers
 #
 # The harness is binnacle's (tests/test_helper.bash there), trimmed to what
@@ -105,27 +106,32 @@ has_batch() {
     [ "${QD_PROVOST_BATCH:-1}" != 0 ] && pv batch --help > /dev/null 2>&1
 }
 
-# This PATH without jq: a directory of links to everything else on it, made
-# once per suite. provost reads JSON with jq where it finds one and its own
-# awk where it does not; `command -v jq` sees functions as well as files, so
-# jq cannot be hidden any other way.
+# This PATH without some commands: a directory of links to everything else
+# on it. provost reads JSON with jq where it finds one and its own awk where
+# it does not, and a probe answers differently on a host without ss or
+# systemctl; `command -v` sees functions as well as files, so a command
+# cannot be hidden any other way.
+path_without() {
+    local d p f b x hide
+    d="$(mktemp -d "${TMPDIR:-/tmp}/qd-path.XXXXXX")"
+    local IFS=:
+    for p in $PATH; do
+        for f in "$p"/*; do
+            b="${f##*/}"
+            hide=0
+            for x in "$@"; do [ "$b" = "$x" ] && hide=1; done
+            if [ -x "$f" ] && [ ! -d "$f" ] && [ "$hide" = 0 ] && \
+                    [ ! -e "$d/$b" ]; then
+                ln -s "$f" "$d/$b"
+            fi
+        done
+    done
+    echo "$d"
+}
+
 _NOJQ_PATH=""
 nojq_path() {
-    if [ -z "$_NOJQ_PATH" ]; then
-        local d p f b
-        d="$(mktemp -d "${TMPDIR:-/tmp}/qd-nojq.XXXXXX")"
-        local IFS=:
-        for p in $PATH; do
-            for f in "$p"/*; do
-                b="${f##*/}"
-                if [ -x "$f" ] && [ ! -d "$f" ] && [ "$b" != jq ] && \
-                        [ ! -e "$d/$b" ]; then
-                    ln -s "$f" "$d/$b"
-                fi
-            done
-        done
-        _NOJQ_PATH="$d"
-    fi
+    [ -n "$_NOJQ_PATH" ] || _NOJQ_PATH="$(path_without jq)"
     echo "$_NOJQ_PATH"
 }
 

@@ -5,6 +5,51 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.1.1 — 2026-10-30
+
+What a fleet of real hosts found: qd run over real ssh against Debian 12,
+Ubuntu 24.04, Rocky 9 and Alpine 3.20 (busybox), where the suite's fake
+ssh had passed.
+
+### Fixed
+
+- `--push`: the command now runs in `--remote-dir`, beside the files, so
+  `--push x -- tool x` finds x; a pushed `--script` runs as `./name`, which
+  makes a relative `--remote-dir` work too.
+- A command that exits 127 (command not found -- `--sudo` where sudo is not
+  installed) is `failed`, not `unreachable`: the host answered.
+- Probes no longer report what they could not read as a value:
+  - `listen` said `listening: 0` where neither ss nor netstat is (Alpine,
+    with sshd listening); it reads ss, else netstat (busybox's too), else
+    says `listen_tool: none`. ss without `-H`, which older iproute lacks.
+  - `services` said `failed_units: 0` where systemd is not running; it
+    counts failed units only where systemd runs, and says `system_state: no
+    systemd` where there is none.
+  - `os` said `virt: unknown` where systemd-detect-virt is missing (now
+    blank), and on bare metal, where that tool prints `none` and exits 1,
+    added a stray `unknown` line.
+  - `numa`'s balancing and `packages`' reboot flag are left out where they
+    cannot be told.
+- `packages` knows apk and pacman as well as dpkg and rpm, and asks
+  `needs-restarting` on rpm hosts that have it.
+- `disks` reads `/sys/block` (`size_bytes`, exact) and `mounts`
+  `/proc/self/mounts`, so neither needs util-linux; on Alpine both came back
+  as a second table shape before.
+- `gpu` says `nvidia_smi: absent` rather than `gpu: none` where there is no
+  nvidia-smi: no NVIDIA tool is not no GPU.
+- `facts` is one row per host again: why-slow's list of top processes was
+  filed a row an element; it is a cell of JSON now.
+- `reach` gave reachable `-o`, which writes the annotated host list, where
+  its CSV path goes after `--csv`.
+- A tip to read an answer with provost (`provost source N`) names the store
+  when provost would not find it on its own (`--store`, `QD_STORE`):
+  `PROVOST_WORKSPACE=... provost source N`.
+
+### Tests
+
+- Cases for each of the above, with commands hidden from a fake host
+  (`path_without` in the helper); each fails on 0.1.0.
+
 ## 0.1.0 — 2026-10-29
 
 The first release.

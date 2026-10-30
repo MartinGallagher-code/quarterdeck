@@ -36,6 +36,7 @@ import binascii
 import json
 import os
 import re
+import shlex
 import time
 
 from .common import die, env, read_text
@@ -197,9 +198,19 @@ def read_dataset(path, name):
 
 
 def default_root():
-    for v in (env("STORE"), os.environ.get("PROVOST_WORKSPACE")):
-        if v:
-            return os.path.abspath(os.path.expanduser(v))
+    v = env("STORE")
+    if v:
+        return os.path.abspath(os.path.expanduser(v))
+    return provost_root()
+
+
+def provost_root():
+    """The store provost finds on its own: PROVOST_WORKSPACE, the controlled
+    directory around here, PROVOST_HOME, ~/.provost -- qd's rule less
+    --store and QD_STORE, which provost does not read."""
+    v = os.environ.get("PROVOST_WORKSPACE")
+    if v:
+        return os.path.abspath(os.path.expanduser(v))
     d = os.getcwd()
     while True:
         if os.path.isfile(os.path.join(d, ".provost", "CONTROLLED")):
@@ -266,6 +277,18 @@ class Store(object):
         if home not in ("", "/") and (root + "/").startswith(home + "/"):
             root = "~" + root[len(home):]
         return root
+
+    def provost(self, words):
+        """`provost WORDS` as typed to reach this store: with
+        PROVOST_WORKSPACE in front when provost would not find it on its
+        own (a store named by --store or QD_STORE)."""
+        cmd = "provost " + words
+        if os.path.realpath(provost_root()) != os.path.realpath(self.root):
+            where = self.shown()
+            if not re.match(r"^[\w~@%+=:,./-]+$", where):
+                where = shlex.quote(self.root)
+            cmd = "PROVOST_WORKSPACE=%s %s" % (where, cmd)
+        return cmd
 
     # -- datasets -----------------------------------------------------------
 
@@ -829,7 +852,8 @@ class Dataset(object):
 def source_label(store, cid):
     n = first_row(store.meta(cid))
     return "raw answer: capture %s%s" % (
-        cid, (", provost source %d" % n) if n is not None else "")
+        cid, (", " + store.provost("source %d" % n)) if n is not None
+        else "")
 
 
 def split_ref(ref):
@@ -896,8 +920,9 @@ def describe_entry(e):
             lo, (".." + hi) if len(caps) > 1 else ""))
         n = first_row(e.store.meta(caps[0]))
         if n is not None:
-            out.append("  answers   provost source %d  (one per row: qd show "
-                       "%s --cols host,capture)" % (n, e.id))
+            out.append("  answers   %s  (one per row: qd show "
+                       "%s --cols host,capture)" % (
+                           e.store.provost("source %d" % n), e.id))
     out.append("  store     %s" % e.store.shown())
     out.append("  tables")
     for t in e.tables:

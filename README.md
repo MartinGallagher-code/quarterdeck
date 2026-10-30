@@ -212,7 +212,7 @@ Ctrl-C, and every pass that finished is kept.
 | Flag | |
 |---|---|
 | `--script FILE -- ARGS` | push FILE, run it with ARGS, remove it again |
-| `--push FILE` | copy a file over first (repeatable) |
+| `--push FILE` | copy a file over first (repeatable); the command runs beside it, in `--remote-dir` |
 | `--sudo` | run under `sudo -n` |
 | `--dry-run` | print the ssh command per host; contact nothing |
 | `--first N` | the first N hosts only, the canary before the fleet |
@@ -267,6 +267,14 @@ binnacle tool is pushed with qd's own `--script` and run by `python3` on
 each host, so the hosts need python3 and binnacle needs to be installed
 here, nowhere else. A probe whose tool isn't here says what to install
 before it contacts a host.
+
+The shell probes are POSIX sh, run the same under bash, dash and busybox
+ash, and read `/proc` and `/sys` where a command might be missing (`disks`
+from `/sys/block`, sizes in bytes; `mounts` from `/proc/self/mounts`). A
+host without what a probe asks says so (`listen_tool: none`, `system_state:
+no systemd`, `nvidia_smi: absent`), and a value it could not read is left
+out: blank, never 0 or "unknown". They were run against Debian 12, Ubuntu
+24.04, Rocky 9 and Alpine 3.20 over real ssh.
 
 ---
 
