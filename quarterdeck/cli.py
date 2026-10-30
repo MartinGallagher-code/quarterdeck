@@ -1726,7 +1726,8 @@ def probe_tool(args, name, how, hs):
     work = tempfile.mkdtemp(prefix="qd-probe-")
     try:
         hosts_file = os.path.join(work, "hosts.txt")
-        write_text(hosts_file, "".join(h.token(plain=True) + "\n"
+        plain = tool not in tools.READS_ATTRIBUTES
+        write_text(hosts_file, "".join(h.token(plain=plain) + "\n"
                                        for h in hs))
         cmd = [tool] + [w.replace("{hosts}", hosts_file).replace(
             "{out}", os.path.join(work, name + ".tsv")) for w in words]

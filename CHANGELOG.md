@@ -217,6 +217,11 @@ ssh had passed.
   filed as one run holding both runs' hosts. A run id is now claimed with
   an atomic `mkdir` in qd's cache (never the store) before it is used
   (`cli.py` `new_run_id`, `claim_id`).
+- `qd probe health` and `preflight` handed dcprobe a host list with the
+  attributes stripped. dcprobe judges a NIC by the `gbps=`, `mtu=` and
+  `nic=` on its host line, so a host whose NICs had all dropped to 10G
+  passed. dcprobe now gets the attributes; `reachable` still gets names
+  only (`tools.py` `READS_ATTRIBUTES`).
 - A command on a host that exited 124 itself (`timeout 5 check`) was
   reported as a qd timeout and listed as not answering. qd's own timeout
   is now marked as such (`fleet.py` `TimedOut`).

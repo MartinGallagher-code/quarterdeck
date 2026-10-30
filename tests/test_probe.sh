@@ -122,6 +122,7 @@ out=""; servers=""
 while [ $# -gt 0 ]; do
   case "$1" in -o) out="$2"; shift 2;; --servers) servers="$2"; shift 2;; *) shift;; esac
 done
+cp "$servers" given.txt
 { printf '!test\thost_load1\tunit=load higher=bad\n'
   while read -r h _; do printf 'host_load1\t%s\t0.5\tat=2026-10-29T00:00:00Z\n' "$h"; done < "$servers"
 } > "$out"
@@ -133,6 +134,11 @@ EOF
     assert_contains "$csv" "test,target,value"
     assert_contains "$csv" "host_load1,b,0.5"
     assert_contains "$(qd log latest)" "health"
+    # dcprobe judges a NIC by the gbps= and mtu= on its host line: they
+    # are handed on, not stripped
+    printf 'a gbps=25 mtu=9000\n' > nics.txt
+    QD_DCPROBE="$FAKE_BIN/dcprobe" qd_rc probe health -s nics.txt > out 2>&1
+    assert_contains "$(cat given.txt)" "a gbps=25 mtu=9000"
 }
 
 t_binnacle_scripts_run_on_the_hosts() {

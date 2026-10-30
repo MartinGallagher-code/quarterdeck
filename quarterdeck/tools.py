@@ -219,6 +219,11 @@ class Plan(object):
         self.tool = ""
 
 
+# Tools whose host files take `key=value` after a host: dcprobe judges a
+# NIC by its gbps=, mtu= and nic=.  The rest (reachable, agree, mx) read
+# every word as a host, and are given names only.
+READS_ATTRIBUTES = ("dcprobe",)
+
 DCPROBE_OUT = {"scan": "host_status.tsv", "watch": "host_status.tsv",
                "preflight": "preflight.tsv"}
 IPERF_VERBS = ("run", "all", "summarize", "process", "parse-csv",
