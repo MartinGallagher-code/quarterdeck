@@ -628,9 +628,11 @@ def run_teed(argv):
 
 def resolve_argv(cmd):
     """A bare tool name that is not on PATH but is installed as a module
-    (or named by QD_<TOOL>) runs from there."""
-    name, _ = tools.tool_of(cmd)
-    if os.path.sep not in cmd[0] and name in tools.TOOL_NAMES:
+    (or named by QD_<TOOL>) runs from there.  `python3 ./mx` and `./mx`
+    already say where it is, and are run as they are."""
+    name, rest = tools.tool_of(cmd)
+    if len(cmd) - len(rest) == 1 and os.path.sep not in cmd[0] \
+            and name in tools.TOOL_NAMES:
         import shutil
         if env(name.upper().replace("-", "_")) or not shutil.which(cmd[0]):
             found = tools.find_tool(name)

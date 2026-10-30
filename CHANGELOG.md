@@ -149,6 +149,13 @@ ssh had passed.
   of its own, so the groups went unfiled. A tool's options now end at `--`.
   `agree script TOOL` with no `--` also gets the added `--csv` and
   `--merge-csv` (`tools.py` `opt`, `plan`).
+- `QD_<TOOL>` overrides: the README's own example,
+  `QD_MX="python3 ~/src/matrix_orchestrator/mx"`, could not run, because no
+  shell expands the `~`. qd now expands it. A command that spells out how
+  to run a tool (`python3 ./mx.py run`) was rewritten as well:
+  `python3` was swapped for the override and the rest kept. Only a bare
+  tool name is replaced now (`tools.py` `find_tool`, `cli.py`
+  `resolve_argv`).
 
 ### Security
 

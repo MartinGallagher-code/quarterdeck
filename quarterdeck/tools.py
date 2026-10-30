@@ -83,7 +83,8 @@ def find_tool(name):
     """argv that runs `name`, or None."""
     over = env(name.upper().replace("-", "_"))
     if over:
-        argv = shlex.split(over)
+        # no shell reads it, so ~ is expanded here, as the shell would
+        argv = [os.path.expanduser(a) for a in shlex.split(over)]
         # an override naming nothing that exists is "not installed", said
         # as such, rather than an OSError at the first use
         if argv and (shutil.which(argv[0]) or os.path.isfile(argv[0])):

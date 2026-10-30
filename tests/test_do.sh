@@ -198,6 +198,27 @@ t_qd_tool_variable_names_the_tool() {
     assert_contains "$out" "mx_pps,alpha,1000"
 }
 
+# QD_MX is read by no shell: its ~ is qd's to expand.  And a command that
+# says how to run the tool is run as it says, override or not
+t_qd_tool_variable_is_expanded_and_only_replaces_a_bare_name() {
+    fake_mx
+    # a home of the case's own: nothing is written to the real one
+    mkdir -p home/src
+    mv "$FAKE_BIN/mx" home/src/my-mx
+    # shellcheck disable=SC2088  # the ~ is qd's to expand, not this shell's
+    HOME="$PWD/home" QD_MX="bash ~/src/my-mx" qd "do" -- mx export > /dev/null 2> err
+    assert_contains "$(qd show latest --format csv)" "mx_pps,alpha,1000"
+    cat > mx.py <<'EOF2'
+import sys
+print('{"test": "mx_pps", "target": "alpha", "value": 1000}' if sys.argv[1:] == ["export"] else "mx 1.11.1")
+EOF2
+    # shellcheck disable=SC2088
+    HOME="$PWD/home" QD_MX="bash ~/nowhere/mx" qd "do" -- python3 ./mx.py export > /dev/null 2> err
+    assert_contains "$(cat err)" "./mx.py export"
+    assert_contains "$(qd show latest --format csv)" "mx_pps,alpha,1000"
+}
+
+run_test "QD_MX: ~ expanded, a bare name replaced"      t_qd_tool_variable_is_expanded_and_only_replaces_a_bare_name
 run_test "mx run: reports/ and mx export read back"     t_mx_run_reads_reports_and_exports
 run_test "mx export to stdout is read"                  t_mx_export_to_stdout_is_read
 run_test "iperf-orchestrator: results/latest read"      t_iperf_reads_the_latest_run
