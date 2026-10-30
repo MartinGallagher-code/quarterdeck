@@ -264,10 +264,20 @@ qd show facts --cols host,cpu.busy_pct,mem.available_pct
 
 Groups: `inventory` (os, disks, mounts, numa, gpu, packages), `settings`
 (sysctl, numa), `state` (services, listen, containers, pagecache). A
-binnacle tool is pushed with qd's own `--script` and run by `python3` on
-each host, so the hosts need python3 and binnacle needs to be installed
-here, nowhere else. A probe whose tool isn't here says what to install
-before it contacts a host.
+binnacle tool is sent to `python3 -` on each host over ssh's stdin, as
+why-slow's own `--ssh` sends itself: one connection per host, nothing
+copied there and nothing left behind. The hosts need python3, and binnacle
+needs to be installed here, nowhere else. A probe whose tool isn't here
+says what to install before it contacts a host.
+
+The probes you name run together. Every host is asked every probe at once,
+`--jobs` at a time in all. Every run is then filed by one provost call, in
+one commit, and each is still a run of its own name. Asked one after
+another, each probe paid its own round of ssh, its own 8 s wait on a host
+that is down, and its own provost call. On six hosts, `qd probe facts
+inventory` went from 41 s to 26 s. The tools that drive the fleet from here
+(`health`, `preflight`, `reach`) run after them, one at a time. With
+`--every` or `--count`, the probes run one after another as before.
 
 The shell probes are POSIX sh, run the same under bash, dash and busybox
 ash, and read `/proc` and `/sys` where a command might be missing (`disks`

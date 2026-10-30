@@ -294,14 +294,15 @@ def host_row(rid, r):
             r.stderr[:STDERR_KEEP]]
 
 
-def filed(st, rid, notes, batch):
+def filed(st, rid, notes, batch, cleanup=True):
     """The run just filed, read back from the store -- proof it is there.
     If it is not, the answers are still on disk, and how to file them is
     said: a fleet's answers are never thrown away for want of a store."""
     st.reset()
     for e in reversed(st.entries()):
         if e.id == rid:
-            batch.cleanup()
+            if cleanup:
+                batch.cleanup()
             if notes:
                 e.meta.setdefault("notes", []).extend(notes)
             return e
@@ -375,65 +376,34 @@ class Job(object):
         self.rc = 0 if all(r.outcome == fleet.OK for r in self.last) else 1
 
 
-def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
-              store=True):
-    """Run `command` on every host, as args says (ssh, jobs, timeout,
-    passes), and file what came back as one run named `label`.
+def new_runner(args):
+    return fleet.Runner(ssh=args.ssh, scp=args.scp, user=args.user,
+                        timeout=args.timeout, max_output=args.max_output,
+                        remote_dir=args.remote_dir, sudo=args.sudo)
 
-    context: (key, value) pairs every answer's prologue carries besides
-    run and host -- a campaign's part, a design point's factors -- so they
-    are columns of provost's rows too.  extra: fields of the qd.runs row
-    (group, part, factors).  Returns a Job, or None for --dry-run."""
-    if args.count < 0 or (args.count == 0 and not args.every):
-        die("--count wants 1 or more (0, meaning until Ctrl-C, needs "
-            "--every)")
-    if args.every is not None and args.every <= 0:
-        die("--every wants a number of seconds above 0")
-    runner = fleet.Runner(ssh=args.ssh, scp=args.scp, user=args.user,
-                          timeout=args.timeout, max_output=args.max_output,
-                          remote_dir=args.remote_dir, sudo=args.sudo)
-    if args.dry_run:
-        for h in hs:
-            out(" ".join(shlex.quote(a) for a in runner.ssh_argv(
-                h, runner.command_for(command, bool(push)))))
-        return None
-    for tool, why in ((runner.ssh, True), (runner.scp, bool(push))):
+
+def check_transport(runner, pushing):
+    for tool, why in ((runner.ssh, True), (runner.scp, pushing)):
         if why and not shutil.which(tool[0]):
             die("cannot run %s: not found (--ssh/--scp, QD_SSH/QD_SCP) -- "
                 "no host was contacted" % tool[0])
-    st = prov = None
-    if store and not args.no_store:
-        # before the fleet, not after: answers with nowhere to go are lost
-        st = store_of(args)
-        prov = filing.Provost(st)
-        prov.require("keep the answers")
-    count = args.count if args.count else 10 ** 9
-    t0 = time.time()
-    created = now_iso()
-    results, interrupted = fleet.run_passes(
-        hs, lambda h, k: runner.run_one(h, command, list(push) or None,
-                                        not args.keep_remote, k),
-        args.jobs, count, args.every or 0)
-    if not results:
-        die("interrupted before any pass finished; nothing was kept", 130)
-    if push and args.keep_remote:
-        warn("the pushed files are left on each host in %s"
-             % runner.work_dir)
-    took = round(time.time() - t0, 2)
-    passes = max(r.pass_no for r in results)
-    last = [r for r in results if r.pass_no == passes]
-    if st is None:
-        return Job(results, interrupted, None, unfiled_table(results, passes))
-    # a part of a campaign or a design point carries its part in its id:
-    # two workers on one campaign finish parts in the same second
-    part = (extra or {}).get("part")
-    rid = new_run_id(st, ("%s-%s" % (label, part)) if part else label)
+
+
+def dry_run_lines(runner, hs, command, push=(), stdin=None):
+    for h in hs:
+        out(" ".join(shlex.quote(a) for a in runner.ssh_argv(
+            h, runner.command_for(command, bool(push)))) +
+            (" < %s" % shlex.quote(stdin) if stdin else ""))
+
+
+def add_answers(b, rid, label, results, passes, context=()):
+    """A run's answers into a batch, one input each.  -> how many."""
     ds = filing.dataset_name(label)
-    b = filing.Batch()
     # a host attribute by the name of something the run set (a design's
     # factor: mtu=9000 on the host, mtu=1500 the point) would overwrite it
     # in the rows -- provost keeps the last -- so it is carried as attr_
     set_here = set(k for k, _ in context)
+    n = 0
     for r in results:
         if r.stdout.strip():
             pairs = [("run", rid), ("host", r.host.name)] + (
@@ -441,7 +411,15 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
                 list(context) + [(("attr_" + k) if k in set_here else k, v)
                                  for k, v in r.host.attrs]
             b.add(ds, filing.prologue(pairs) + filing.body(r.stdout))
-    ncap = len(b.inputs)
+            n += 1
+    return n
+
+
+def add_own_tables(b, rid, label, command, created, took, hs, results,
+                   interrupted, passes, every, ncap, extra=None):
+    """A run's qd.hosts rows and qd.runs row into a batch, after every
+    answer in it."""
+    last = [r for r in results if r.pass_no == passes]
     b.add_own(storemod.HOSTS, filing.own_tsv(
         storemod.HOST_COLUMNS, [host_row(rid, r) for r in results]))
     counts = outcome_counts(last)
@@ -453,15 +431,116 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
         timeout=counts.get(fleet.TIMEOUT, 0),
         unreachable=counts.get(fleet.UNREACHABLE, 0),
         push_failed=counts.get(fleet.PUSH_FAILED, 0), passes=passes,
-        every=args.every, captures=ncap,
+        every=every, captures=ncap,
         notes=("interrupted after %s" % plural(passes, "pass", "passes"))
         if interrupted else None, **fields)]))
+
+
+def say_filing(ncap):
     if ncap > 8 and sys.stderr.isatty():
         sys.stderr.write("%s: filing %s through provost ...\n"
                          % (PROG, plural(ncap, "answer")))
+
+
+def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
+              store=True, stdin=None):
+    """Run `command` on every host, as args says (ssh, jobs, timeout,
+    passes), and file what came back as one run named `label`.
+
+    context: (key, value) pairs every answer's prologue carries besides
+    run and host -- a campaign's part, a design point's factors -- so they
+    are columns of provost's rows too.  extra: fields of the qd.runs row
+    (group, part, factors).  stdin: a local file fed to the command on
+    every host.  Returns a Job, or None for --dry-run."""
+    if args.count < 0 or (args.count == 0 and not args.every):
+        die("--count wants 1 or more (0, meaning until Ctrl-C, needs "
+            "--every)")
+    if args.every is not None and args.every <= 0:
+        die("--every wants a number of seconds above 0")
+    runner = new_runner(args)
+    if args.dry_run:
+        dry_run_lines(runner, hs, command, push, stdin)
+        return None
+    check_transport(runner, bool(push))
+    st = prov = None
+    if store and not args.no_store:
+        # before the fleet, not after: answers with nowhere to go are lost
+        st = store_of(args)
+        prov = filing.Provost(st)
+        prov.require("keep the answers")
+    count = args.count if args.count else 10 ** 9
+    t0 = time.time()
+    created = now_iso()
+    results, interrupted = fleet.run_passes(
+        hs, lambda h, k: runner.run_one(h, command, list(push) or None,
+                                        not args.keep_remote, k, stdin),
+        args.jobs, count, args.every or 0)
+    if not results:
+        die("interrupted before any pass finished; nothing was kept", 130)
+    if push and args.keep_remote:
+        warn("the pushed files are left on each host in %s"
+             % runner.work_dir)
+    took = round(time.time() - t0, 2)
+    passes = max(r.pass_no for r in results)
+    if st is None:
+        return Job(results, interrupted, None, unfiled_table(results, passes))
+    # a part of a campaign or a design point carries its part in its id:
+    # two workers on one campaign finish parts in the same second
+    part = (extra or {}).get("part")
+    rid = new_run_id(st, ("%s-%s" % (label, part)) if part else label)
+    b = filing.Batch()
+    ncap = add_answers(b, rid, label, results, passes, context)
+    add_own_tables(b, rid, label, command, created, took, hs, results,
+                   interrupted, passes, args.every, ncap, extra)
+    say_filing(ncap)
     notes = file_batch(prov, b, "answers")
     entry = filed(st, rid, notes, b)
     return Job(results, interrupted, entry, entry.load("data"))
+
+
+def fleet_runs_together(args, hs, specs, extra=None):
+    """Several commands on every host at once, each filed as a run of its
+    own -- `qd probe facts inventory`.  Every (command, host) pair goes
+    through one pool of --jobs, and every run is filed in one provost call
+    and one commit.  One after another, each paid its own round of ssh,
+    its own wait on a dead host (8 s apiece), and its own provost call.
+
+    specs: [(label, command, stdin)].  One pass.  -> [Job]"""
+    runners = [new_runner(args) for _ in specs]
+    check_transport(runners[0], False)
+    st = store_of(args)
+    prov = filing.Provost(st)
+    prov.require("keep the answers")
+    tasks = [(i, h) for i in range(len(specs)) for h in hs]
+    t0 = time.time()
+    created = now_iso()
+
+    def one(task, k):
+        i, h = task
+        _, command, stdin = specs[i]
+        return runners[i].run_one(h, command, None, True, k, stdin)
+
+    results, interrupted = fleet.run_passes(tasks, one, args.jobs)
+    if not results:
+        die("interrupted before any host answered; nothing was kept", 130)
+    each = [[] for _ in specs]
+    for (i, _), r in zip(tasks, results):
+        each[i].append(r)
+    b = filing.Batch()
+    rids, ncaps = [], []
+    for (label, _, _), rs in zip(specs, each):
+        rids.append(new_run_id(st, label))
+        ncaps.append(add_answers(b, rids[-1], label, rs, 1))
+    for (label, command, _), rs, rid, ncap in zip(specs, each, rids, ncaps):
+        # a run took as long as its slowest host
+        took = round(max(r.started + r.duration for r in rs) - t0, 2)
+        add_own_tables(b, rid, label, command, created, took, hs, rs,
+                       False, 1, None, ncap, extra)
+    say_filing(sum(ncaps))
+    notes = file_batch(prov, b, "answers")
+    entries = [filed(st, rid, notes, b, cleanup=False) for rid in rids]
+    b.cleanup()
+    return [Job(rs, False, e, e.load("data")) for rs, e in zip(each, entries)]
 
 
 def unfiled_table(results, passes):
@@ -1728,28 +1807,40 @@ def cmd_probe(args):
     hs = collect(args)
     check_limit(args, hs)
     worst = 0
+    # the probes run on the hosts: (name, what, command, stdin)
+    on_hosts = []
+    for n in names:
+        name, kind, how, what, needs = probes.get(n)
+        if kind == "script":
+            # sent to `python3 -` on stdin, as why-slow --ssh sends itself:
+            # one connection per host, and nothing written there to clean
+            # up -- not a push, a chmod, a run and a removal
+            command = probes.script_command(how, " ".join(
+                ["python3", "-"] + [shlex.quote(a) for a in how[1]]))
+            on_hosts.append((name, what, command,
+                             probes.script_path(how[0])))
+        elif kind == "command":
+            on_hosts.append((name, what, how, None))
+    together = len(on_hosts) > 1 and args.count == 1 and not args.every \
+        and not args.dry_run and not args.no_store
+    if together:
+        jobs = fleet_runs_together(args, hs, [
+            (name, command, stdin) for name, _, command, stdin in on_hosts],
+            extra={"tool": "probe"})
+    else:
+        jobs = [fleet_run(args, hs, command, name, extra={"tool": "probe"},
+                          stdin=stdin)
+                for name, _, command, stdin in on_hosts]
+    for (name, what, _, _), job in zip(on_hosts, jobs):
+        if job is None:
+            continue
+        report_run(args, what, hs, job, title="%s probe %s" % (PROG, name))
+        worst = max(worst, job.rc)
+    # tools drive the fleet themselves, from here, one after another
     for n in names:
         name, kind, how, what, needs = probes.get(n)
         if kind == "tool":
-            rc = probe_tool(args, name, how, hs)
-        else:
-            if kind == "script":
-                # run by python3, not as an executable: a file copied out
-                # of site-packages has no x bit
-                path = probes.script_path(how[0])
-                command = probes.script_command(
-                    how, "python3 " + remote_script(args, path, how[1]))
-                push = [path]
-            else:
-                command, push = how, []
-            job = fleet_run(args, hs, command, name, push,
-                            extra={"tool": "probe"})
-            if job is None:
-                continue
-            report_run(args, what, hs, job,
-                       title="%s probe %s" % (PROG, name))
-            rc = job.rc
-        worst = max(worst, rc)
+            worst = max(worst, probe_tool(args, name, how, hs))
     return worst
 
 

@@ -5,6 +5,29 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.1.2 — 2026-10-30
+
+### Changed
+- **The probes named in one `qd probe` run together.** Each probe had run
+  on every host in parallel, but the probes ran one after another, and each
+  paid its own round of ssh, its own 8 s connect timeout on a host that is
+  down (56 s for a dead host over `facts inventory`), and its own provost
+  call and commit. Now every (probe, host) pair goes through one pool of
+  `--jobs`, and every run is filed by one provost call, in one commit. Each
+  probe is still a run of its own name. On six hosts, `qd probe facts
+  inventory` went from 41 s to 26 s; of what is left, 23 s is provost
+  reading the answers. With `--every` or `--count`, the probes still run one
+  after another (`cli.py` `fleet_runs_together`, `cmd_probe`).
+- **A binnacle probe (`facts`, `why-slow`, `skew`) is sent to `python3 -`
+  over ssh's stdin**, as why-slow's own `--ssh` sends itself. It used to be
+  pushed and run: mkdir, scp, chmod, the run and a cleanup, five
+  connections per host where one does. Nothing is copied to a host or left
+  on one (`fleet.py` `Runner._exec`, `run_one`).
+- **A probe is matched with its own earlier runs by its name**, not by the
+  command qd sent, which changes between versions (it just did, for the
+  binnacle probes). So `qd diff facts` still compares today's run with
+  yesterday's (`store.py` `previous_like`).
+
 ## 0.1.1 — 2026-10-30
 
 What a fleet of real hosts found: qd run over real ssh against Debian 12,

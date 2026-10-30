@@ -567,9 +567,12 @@ class Store(object):
             return None
         entries = self.entries()
         # a campaign's parts run one command under one name: the part is
-        # what tells them apart, so rack-r2 is compared with rack-r2
+        # what tells them apart, so rack-r2 is compared with rack-r2.  A
+        # probe is its name: how qd asks it (the command) changes between
+        # versions, and today's facts are still compared with yesterday's
         def key(e):
-            return (e.meta.get("kind"), e.meta.get("command"),
+            probe = e.meta.get("tool") == "probe"
+            return (e.meta.get("kind"), "" if probe else e.meta.get("command"),
                     e.meta.get("name"), e.meta.get("part") or "")
         ids = [e.id for e in entries]
         earlier = entries[:ids.index(entry.id)] if entry.id in ids else []
