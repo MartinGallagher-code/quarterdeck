@@ -10,7 +10,7 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
        qd campaign new|run|status|retry|ls     a system in parts, progress kept
        qd doe plan|run|status|analyze          designed experiments
        qd log [RUN]                            what the store holds
-       qd view [RUN]                           full-screen explorer
+       qd view [RUN]                           full-screen; ] [ page the store
        qd show|stats|freq|hist|outliers|pivot|trend RUN ...
        qd diff [OLD] NEW                       what changed between two
        qd compare RUN --last N -c COL          N runs side by side
@@ -2378,9 +2378,13 @@ def cmd_view(args):
     from . import explore
     book = store_of(args)
     ref = args.ref
-    if ref is None and not book.entries():
+    # no RUN: everything in the store, to page through; --where and --sort
+    # still mean the latest, as they did
+    if ref is None and not (book.entries() or book.dataset_names()):
         die("nothing to view: no runs in the store %s yet -- give a file, "
             "or make one with qd run / qd do / qd import" % book.shown())
+    if ref is None and not (args.where or args.sort or args.as_):
+        return explore.run(None, book)
     t = load_ref(book, ref or "latest", args.as_)
     return explore.run(t, book, where=args.where, sort=args.sort)
 
@@ -2462,7 +2466,7 @@ HINTS = [
     ("What changed since last time?", "qd diff latest"),
     ("One host's answer, exactly", "provost source cNNNN   (qd log latest names them)"),
     ("Every run of it, ever", "qd show ds:NAME   or   provost show NAME"),
-    ("Look around", "qd view latest"),
+    ("Look around", "qd view   (everything: ] [ page, Enter opens)"),
     ("On the floor plan", "qd floor latest --layout floor.dc"),
 ]
 
@@ -2989,8 +2993,10 @@ def build_parser():
                     help="write the overlay, print the dcviz command, stop")
     sp.set_defaults(fn=cmd_floor)
 
-    sp = verb("view", "explore a dataset full-screen")
-    sp.add_argument("ref", nargs="?", metavar="RUN")
+    sp = verb("view", "explore the store full-screen: everything in it, "
+              "] [ to page; or one RUN")
+    sp.add_argument("ref", nargs="?", metavar="RUN",
+                    help="open on this (default: the store's contents)")
     add_query(sp)
     sp.set_defaults(fn=cmd_view)
 

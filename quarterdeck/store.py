@@ -40,7 +40,7 @@ import re
 import shlex
 import time
 
-from .common import die, env, read_text
+from .common import die, env, plural, read_text
 from .table import Table
 
 RUNS, HOSTS = "qd.runs", "qd.hosts"
@@ -885,7 +885,7 @@ class Run(object):
         h = self.meta.get("hosts") or {}
         if h:
             return "%d/%d ok" % (h.get("ok", 0), h.get("total", 0))
-        return "%d rows" % sum(t.get("rows", 0) for t in self.tables)
+        return plural(sum(t.get("rows", 0) for t in self.tables), "row")
 
     def raw(self, host=None, pas=None, capture=None):
         """[(label, text)]: the answer a row came from, and its stderr."""
@@ -946,7 +946,20 @@ class Dataset(object):
         return out
 
     def summary(self):
-        return "%d rows" % len(self.store.dataset(self.name).rows)
+        return plural(len(self.store.dataset(self.name).rows), "row")
+
+    def row_count(self):
+        """Its rows, counted without reading them in: one a line, as
+        read_dataset takes them."""
+        if self.name in self.store._tables:
+            return len(self.store._tables[self.name].rows)
+        n = 0
+        with open(self.store.path("datasets", self.name + ".tsv"),
+                  "rb") as f:
+            for ln in f:
+                if ln.strip(b"\r\n"):
+                    n += 1
+        return max(0, n - 1)
 
     def raw(self, host=None, pas=None, capture=None):
         if capture:
