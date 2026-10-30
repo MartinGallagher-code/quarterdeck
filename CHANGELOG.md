@@ -132,6 +132,12 @@ ssh had passed.
   numbers now go over on its scale (bytes when sizes are mixed, seconds
   when times are), with its unit in the `!test` line. A plain number is
   still written as it was (`tools.py` `to_overlay`).
+- A directory of grids (netmesh `--grid`: `rtt_p50_grid.csv`,
+  `loss_grid.csv`, `mtu_grid.csv`, ...) was stacked like reports. Every grid
+  reads as `src,dst,value`, so rtt, loss and mtu landed in one `value`
+  column and its statistics mixed them. The grids are now joined: a row
+  per pair, a column per grid, and blank where a grid has no value for
+  that pair (`importers.py` `join_grids`).
 
 ### Security
 

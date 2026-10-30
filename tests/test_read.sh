@@ -113,6 +113,21 @@ t_grid_becomes_long_and_blank_cells_stay_out() {
     assert_contains "$out" "src"
 }
 
+# netmesh --grid: six grids of one header, six measures -- side by side,
+# never stacked into one column of rtt and loss and mtu
+t_a_directory_of_grids_is_one_row_per_pair() {
+    mkdir grids
+    printf 'src\\dst,a,b\na,,100\nb,150,\n' > grids/rtt_p50_grid.csv
+    printf 'src\\dst,a,b\na,,0.000\nb,1.500,\n' > grids/loss_grid.csv
+    printf 'src\\dst,a,b\na,,9000\nb,,\n' > grids/mtu_grid.csv
+    out="$(qd show grids --format csv)"
+    assert_contains "$out" "src,dst,loss,mtu,rtt_p50"
+    assert_contains "$out" "a,b,0.000,9000,100"
+    # b->a has no mtu: blank, not zero
+    assert_contains "$out" "b,a,1.500,,150"
+    assert_contains "$(qd stats grids rtt_p50)" "median 125"
+}
+
 t_reports_directory_stacks_by_header() {
     mkdir reports
     printf 'ts,host,dir,peer,pps\n1,alpha,tx,beta,100\n2,alpha,tx,beta,110\n' > reports/alpha.csv
@@ -249,6 +264,7 @@ run_test "NDJSON samples, JSON documents and lists"     t_ndjson_samples_and_doc
 run_test "agree --json: groups and hosts"               t_agree_json_becomes_two_tables
 run_test "wide table, commented header, units"          t_wide_table_with_commented_header_and_units
 run_test "src\\dst grid to long, blanks left out"        t_grid_becomes_long_and_blank_cells_stay_out
+run_test "a directory of grids: a row per pair"         t_a_directory_of_grids_is_one_row_per_pair
 run_test "a reports/ directory stacks by header"        t_reports_directory_stacks_by_header
 run_test "no host column: source_file is added"         t_folder_without_host_column_gets_source_file
 run_test "iperf results/latest run directory"           t_iperf_run_directory_and_latest

@@ -669,7 +669,9 @@ def parse_grid(text, name="data", source=""):
             cell = cell.strip()
             if cell:
                 out.append([src, d, cell])
-    return Table(["src", "dst", "value"], out, name, source, notes=notes)
+    t = Table(["src", "dst", "value"], out, name, source, notes=notes)
+    t.grid = True
+    return t
 
 
 def parse_lines_table(text, name="data", source=""):

@@ -420,7 +420,9 @@ TSV, its notes and display metadata kept with it.
 format below, mx's `reports/`, netmesh's
 `--reports`, an iperf `results/` directory (its `latest` run) or one run
 of it, or a folder of monitoring tables. Files in a folder that share a
-header stack into one table.
+header stack into one table. A folder of grids (netmesh's `--grid`)
+becomes one table with a row per pair and a column per grid: `rtt_p50`,
+`loss`, `mtu`. Stacking them would put rtt and loss in one column.
 
 ### Formats read
 
