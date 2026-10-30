@@ -41,6 +41,13 @@ t_values_that_clean_alike_are_two_lists() {
     assert_eq "$(cat lists/*.txt | grep -v '^#' | cut -d' ' -f1 | sort | tr '\n' ' ')" "n1 n2 n3 "
 }
 
+# row is where a server sits, from a host file as from a layout
+t_by_row_from_a_host_file() {
+    printf '%s\n' 'n1 row=A rack=r1' 'n2 row=B rack=r1' > hosts.txt
+    out="$(groups_of --by row)"
+    assert_eq "$out" "row-A:n1 row-B:n2 "
+}
+
 t_shards_deals_and_waves() {
     fleet
     assert_eq "$(groups_of --into 4)" "shard-1:n1 shard-1:n2 shard-2:n3 shard-2:n4 shard-3:n5 shard-4:n6 "
@@ -133,6 +140,7 @@ t_answers_of_a_multi_pass_run() {
 run_test "--answers: a multi-pass run"              t_answers_of_a_multi_pass_run
 run_test "--by ATTR, and the lists as files"          t_by_attribute_and_files
 run_test "values that clean alike: two lists"         t_values_that_clean_alike_are_two_lists
+run_test "--by row, from a host file"                 t_by_row_from_a_host_file
 run_test "--into, --deal, --size"                     t_shards_deals_and_waves
 run_test "--random: seeded, --stratify"               t_random_is_seeded_and_stratified
 run_test "--ab, --canary, --pairs, --ring"            t_ab_canary_and_pairs

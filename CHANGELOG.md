@@ -170,6 +170,11 @@ ssh had passed.
   `role=gpu server`, from manifest) was written as it was. Read back, the
   line held a second host, `server`, and qd would have sshed to it. The
   space is now written as `_` (`hosts.py` `Host.token`).
+- `row=A` in a host file became the attribute `attr_row`, while a
+  layout's `row` stayed `row`. So `qd split --by row` refused a host file
+  ("no host has a 'row' attribute"), and the overlay's skip list missed
+  it. `row` is no longer a reserved name; qd writes no column called that
+  (`hosts.py` `RESERVED`).
 
 ### Security
 
