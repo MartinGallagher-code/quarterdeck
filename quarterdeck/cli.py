@@ -746,7 +746,16 @@ def _do(args, cmd, st, prov, name, label, cmdline, work):
     rc, stdout = run_teed(plan.argv)
     took = round(time.time() - t0, 2)
     log = []
+    # the follow-ups read what the tool left (mx export reads reports/):
+    # from an earlier run's, they would file its numbers as this one's
+    stale = [p for p, mark in before.items()
+             if mark is not None and written_mark(p) == mark]
     for argv, outpath, tname in plan.after:
+        if stale:
+            log.append("  - %s: not run; it reads %s, which this run did "
+                       "not write" % (" ".join(shlex.quote(a) for a in argv),
+                                      ", ".join(stale)))
+            continue
         log.append("  + %s" % " ".join(shlex.quote(a) for a in argv))
         try:
             p = subprocess.Popen(argv, stdout=subprocess.PIPE,

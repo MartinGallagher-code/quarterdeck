@@ -125,7 +125,10 @@ ssh had passed.
   `results/latest` filed under its own id. An output is now filed only if
   the run changed it, judged by comparing each file's size, mtime and
   inode before and after the run (no clock is consulted). `--import` still
-  files what it names as it is (`cli.py` `written_mark`, `_do`).
+  files what it names as it is (`cli.py` `written_mark`, `_do`). The
+  follow-up `mx export` reads `reports/`, so it is not run when this run
+  did not write them. Before, it filed the last run's numbers as
+  `mx_export`.
 - The floor-plan overlay (`qd floor`, `qd export --format overlay`, the
   web page's) wrote a size or a time as it was written: `512M` and `900ms`
   went to the viewer as values it could not read as numbers. A column's

@@ -161,6 +161,22 @@ t_agree_s_own_options_end_at_the_double_dash() {
     assert_contains "$(qd show latest:agree_hosts --format csv)" "n2,2,unreachable"
 }
 
+# mx export reads reports/: after a run that wrote none, it would file
+# the last run's numbers as this one's
+t_mx_export_of_an_earlier_run_s_reports_is_not_run() {
+    fake_mx
+    PATH="$FAKE_BIN:$PATH" qd "do" -- mx run > /dev/null 2>&1
+    cat > "$FAKE_BIN/mx" <<'EOF2'
+#!/bin/bash
+if [ "$1" = "--version" ]; then echo "mx 1.11.1"; exit 0; fi
+if [ "$1" = "export" ]; then echo '{"test": "mx_pps", "target": "alpha", "value": 1000}' > "${@: -1}"; exit 0; fi
+echo "mx: cannot start: no matrix" >&2; exit 1
+EOF2
+    PATH="$FAKE_BIN:$PATH" qd "do" -- mx run > /dev/null 2> err || true
+    assert_contains "$(cat err)" "not run; it reads reports"
+    assert_not_contains "$(qd log latest)" "mx_export"
+}
+
 # dcprobe scan writes host_status.tsv when no -o says otherwise
 t_dcprobe_s_own_file_is_read() {
     cat > "$FAKE_BIN/dcprobe" <<'EOF2'
@@ -238,6 +254,7 @@ run_test "iperf-orchestrator: results/latest read"      t_iperf_reads_the_latest
 run_test "an earlier run's output is not filed"         t_an_earlier_run_s_output_is_not_filed
 run_test "agree: --csv added, exit status passed on"    t_agree_gets_csv_added_and_its_status_passes_through
 run_test "agree's own options end at --"                t_agree_s_own_options_end_at_the_double_dash
+run_test "mx export after a run that wrote nothing"     t_mx_export_of_an_earlier_run_s_reports_is_not_run
 run_test "dcprobe: its own file read, unasked"          t_dcprobe_s_own_file_is_read
 run_test "stdout table and --import"                    t_stdout_table_and_explicit_import
 run_test "plain text output is filed for provost"       t_plain_text_output_is_filed_for_provost_to_read
