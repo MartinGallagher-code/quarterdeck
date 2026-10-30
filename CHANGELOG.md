@@ -191,6 +191,22 @@ ssh had passed.
   writes names only, as `qd hosts --plain` does, and the README says
   which tools need it (`split.py` `write_lists`).
 
+- `qd run`'s cleanup ran `rm -rf` on `--remote-dir` itself, so
+  `--remote-dir ~/bin` deleted that directory, and whatever was in it, on
+  every host. Every run and every user also shared `/var/tmp/qd`, so the
+  first of two runs to finish deleted the other's pushed files under it.
+  Each run now makes a directory of its own, `--remote-dir/qd.<random>`,
+  with `mkdir -m 700`, which refuses a path that is there already. Only
+  that directory is removed, under `sudo` when the command ran under it,
+  and `--remote-dir` is removed only if the run made it and it is empty.
+  The default `--remote-dir` is now `/var/tmp`. A push that fails partway
+  is cleaned up too, and a cleanup that fails is said in the host's
+  stderr. `--keep-remote` says where it left the files (`fleet.py`
+  `Runner.push`, `cleanup`).
+- A command on a host that exited 124 itself (`timeout 5 check`) was
+  reported as a qd timeout and listed as not answering. qd's own timeout
+  is now marked as such (`fleet.py` `TimedOut`).
+
 ### Security
 
 - `qd web` read any `.tsv` file on the machine through a reference: `e=`

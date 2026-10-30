@@ -212,7 +212,7 @@ Ctrl-C, and every pass that finished is kept.
 | Flag | |
 |---|---|
 | `--script FILE -- ARGS` | push FILE, run it with ARGS, remove it again |
-| `--push FILE` | copy a file over first (repeatable); the command runs beside it, in `--remote-dir` |
+| `--push FILE` | copy a file over first (repeatable); the command runs beside it, in a directory of the run's own in `--remote-dir` |
 | `--sudo` | run under `sudo -n` |
 | `--dry-run` | print the ssh command per host; contact nothing |
 | `--first N` | the first N hosts only, the canary before the fleet |
@@ -233,7 +233,7 @@ security.
 | `--timeout` | `QD_TIMEOUT` | 60 s per host |
 | `--max-output` | `QD_MAX_OUTPUT` | 4 MiB per host; past it the host is killed and reported |
 | `--ssh`, `--scp` | `QD_SSH`, `QD_SCP` | `ssh`, `scp` |
-| `--remote-dir` | `QD_REMOTE_DIR` | `/var/tmp/qd` |
+| `--remote-dir` | `QD_REMOTE_DIR` | `/var/tmp` |
 | `--store` | `QD_STORE` | provost's own choice |
 | | `QD_PROVOST` | `provost` on `PATH` |
 | | `QD_PROVOST_BATCH=0` | file one capture at a time even where provost has `batch` |

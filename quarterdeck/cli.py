@@ -318,7 +318,8 @@ def check_limit(args, hs):
 
 def remote_script(args, script, words):
     """A pushed script as the command runs it: from the directory it was
-    pushed to (`--remote-dir`), where a command with pushed files runs."""
+    pushed to (the run's own, in `--remote-dir`), where a command with
+    pushed files runs."""
     return " ".join(
         [shlex.quote("./" + os.path.basename(script))] +
         [shlex.quote(a) for a in words])
@@ -379,6 +380,9 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
         args.jobs, count, args.every or 0)
     if not results:
         die("interrupted before any pass finished; nothing was kept", 130)
+    if push and args.keep_remote:
+        warn("the pushed files are left on each host in %s"
+             % runner.work_dir)
     took = round(time.time() - t0, 2)
     passes = max(r.pass_no for r in results)
     last = [r for r in results if r.pass_no == passes]
@@ -2210,11 +2214,11 @@ def add_ssh(sp):
                    help="scp transport (QD_SCP)")
     g.add_argument("--sudo", action="store_true",
                    help="run the command under sudo -n")
-    g.add_argument("--remote-dir", default=env("REMOTE_DIR", "/var/tmp/qd"),
-                   help="where pushed files go, removed afterwards "
-                   "(QD_REMOTE_DIR, /var/tmp/qd)")
+    g.add_argument("--remote-dir", default=env("REMOTE_DIR", "/var/tmp"),
+                   help="pushed files go in a directory of the run's own "
+                   "in here, removed afterwards (QD_REMOTE_DIR, /var/tmp)")
     g.add_argument("--keep-remote", action="store_true",
-                   help="leave pushed files on the hosts")
+                   help="leave the run's directory on the hosts")
     return g
 
 

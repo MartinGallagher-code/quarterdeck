@@ -289,8 +289,43 @@ t_script_is_pushed_run_and_cleaned_up() {
     out="$(qd show latest --where status=ok --cols host,A --format csv)"
     assert_contains "$out" "node02,args:hello:node02"
     assert_no_file "$FAKE_ROOT/node02/rd"
-    run_qd --script probe.sh --remote-dir rd --keep-remote -- x > /dev/null
-    assert_file_exists "$FAKE_ROOT/node02/rd/probe.sh"
+    run_qd --script probe.sh --remote-dir rd --keep-remote -- x > /dev/null 2> err
+    assert_contains "$(cat err)" "left on each host in rd/qd."
+    kept="$(sed -n 's/.*left on each host in \(rd\/qd\.[0-9a-f]*\).*/\1/p' err)"
+    assert_file_exists "$FAKE_ROOT/node02/$kept/probe.sh"
+}
+
+# --remote-dir is where the run makes a directory of its own: what was
+# there before stays, and two runs at once never clean up each other's
+t_the_remote_dir_is_never_removed() {
+    seed
+    mkdir -p "$FAKE_ROOT/node02/bin"
+    echo mine > "$FAKE_ROOT/node02/bin/mytool"
+    echo hello > payload.txt
+    run_qd --push payload.txt --remote-dir bin -- cat payload.txt > /dev/null
+    assert_contains "$(qd show latest --cols host,A --format csv)" "node02,hello"
+    assert_eq "$(cat "$FAKE_ROOT/node02/bin/mytool")" "mine"
+    assert_eq "$(ls "$FAKE_ROOT/node02/bin")" "mytool"
+    # a slow run and a quick one, side by side, on the same hosts
+    run_qd --push payload.txt --remote-dir rd -- 'sleep 2; cat payload.txt' \
+        > /dev/null &
+    sleep 0.7
+    echo other > other.txt
+    run_qd --push other.txt --remote-dir rd -- true > /dev/null
+    wait
+    slow="$(qd log | grep -- '-sleep ' | cut -d' ' -f1)"
+    assert_contains "$(qd show "$slow" --cols host,A --format csv)" "node02,hello"
+    assert_no_file "$FAKE_ROOT/node02/rd"
+}
+
+# a command on the host that exits 124 itself (timeout N check) answered:
+# failed, not a qd timeout
+t_an_exit_of_124_is_the_host_s() {
+    seed
+    run_qd -- 'echo checked; exit 124' > /dev/null
+    out="$(qd show latest --cols host,status,rc --format csv)"
+    assert_contains "$out" "node02,failed,124"
+    assert_not_contains "$out" "timeout"
 }
 
 # A pushed file is beside the command, by its own name, wherever
@@ -347,7 +382,8 @@ t_dry_run_shows_where_pushed_files_run() {
     seed
     echo hello > payload.txt
     out="$(qdf run -s hosts.txt --dry-run --push payload.txt --remote-dir rd -- cat payload.txt)"
-    assert_contains "$out" "cd rd && cat payload.txt"
+    assert_contains "$out" "cd rd/qd."
+    assert_contains "$out" " && cat payload.txt"
     assert_eq "$(ssh_calls)" "0"
 }
 
@@ -444,6 +480,8 @@ t_lang_c_and_utf8_output_survive() {
     assert_contains "$out" "caf"
 }
 
+run_test "--remote-dir itself is never removed"     t_the_remote_dir_is_never_removed
+run_test "exit 124 on the host is the host's"       t_an_exit_of_124_is_the_host_s
 run_test "a host line reads back as its host"        t_a_host_line_reads_back_as_its_host
 run_test "version, --help and help"                 t_version_and_help
 run_test "hosts: ranges, attributes, order"           t_hosts_ranges_attrs_and_order
