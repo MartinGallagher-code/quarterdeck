@@ -231,11 +231,44 @@ def new_run_id(st, label):
     base = "%s-%s" % (stamp, tablemod.slug(label or "")[:32].strip("_")
                       or "run")
     taken = st.run_ids()
+    held = id_claims(st)
     rid, k = base, 2
-    while rid in taken:
+    while rid in taken or not claim_id(held, rid):
         rid = "%s-%d" % (base, k)
         k += 1
     return rid
+
+
+def id_claims(st):
+    """Where run ids are claimed for a store.  Two qd processes filing into
+    one store each pick an id before either has filed, so the store alone
+    cannot tell the second its id is taken -- two runs of `echo` in the
+    same second were filed as one.  Kept in qd's cache, never the store,
+    which provost commits whole; claims older than a day are dropped."""
+    import hashlib
+    d = os.path.join(storemod.cache_root(), "ids", hashlib.sha1(
+        st.root.encode("utf-8")).hexdigest()[:16])
+    try:
+        os.makedirs(d, exist_ok=True)
+        old = time.time() - 86400
+        for name in os.listdir(d):
+            p = os.path.join(d, name)
+            if os.path.getmtime(p) < old:
+                os.rmdir(p)
+    except OSError:
+        pass
+    return d
+
+
+def claim_id(held, rid):
+    """mkdir is atomic: of two processes claiming one id, one gets it."""
+    try:
+        os.mkdir(os.path.join(held, rid))
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        return True         # no cache to claim in: the store's word only
 
 
 def run_row(rid, kind, name, command, created, **kw):

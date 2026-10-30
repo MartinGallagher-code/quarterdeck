@@ -209,6 +209,11 @@ ssh had passed.
   `r1`; `-S 'db1 role=primary'` went to `primary`. A spec now reads as a
   host file's line does, and a host token with a space in it is refused
   (`hosts.py` `collect_hosts`, `parse_host_token`).
+- Two qd processes running the same command into one store in the same
+  second chose the same run id, each before the other had filed, and were
+  filed as one run holding both runs' hosts. A run id is now claimed with
+  an atomic `mkdir` in qd's cache (never the store) before it is used
+  (`cli.py` `new_run_id`, `claim_id`).
 - A command on a host that exited 124 itself (`timeout 5 check`) was
   reported as a qd timeout and listed as not answering. qd's own timeout
   is now marked as such (`fleet.py` `TimedOut`).

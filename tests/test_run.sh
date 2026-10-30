@@ -329,6 +329,22 @@ t_the_remote_dir_is_never_removed() {
     assert_no_file "$FAKE_ROOT/node02/rd"
 }
 
+# two runs of one command at once, into one store: two runs, each with
+# its own hosts, never one id holding both
+t_runs_at_once_are_two_runs() {
+    install_fake_ssh
+    for h in a b c d; do fake_host "$h"; done
+    qdf run -q -S a,b -- 'echo v: 1' > /dev/null &
+    qdf run -q -S c,d -- 'echo v: 1' > /dev/null
+    wait
+    assert_eq "$(qd log | grep -c -- '-echo')" "2"
+    for id in $(qd log | grep -- '-echo' | cut -d' ' -f1); do
+        assert_eq "$(qd show "$id" --cols host --format csv | tail -n +2 | wc -l | tr -d ' ')" "2"
+    done
+    # the claims live in qd's cache, never in the store provost commits
+    assert_eq "$(git -C "$QD_STORE" status --porcelain)" ""
+}
+
 # a command on the host that exits 124 itself (timeout N check) answered:
 # failed, not a qd timeout
 t_an_exit_of_124_is_the_host_s() {
@@ -491,6 +507,7 @@ t_lang_c_and_utf8_output_survive() {
     assert_contains "$out" "caf"
 }
 
+run_test "two runs at once are two runs"          t_runs_at_once_are_two_runs
 run_test "an inline host spec is a host line"      t_an_inline_spec_is_a_host_line
 run_test "--remote-dir itself is never removed"     t_the_remote_dir_is_never_removed
 run_test "exit 124 on the host is the host's"       t_an_exit_of_124_is_the_host_s
