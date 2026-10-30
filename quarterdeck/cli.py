@@ -1570,7 +1570,7 @@ def cmd_split(args):
     paths = []
     if args.out:
         paths = splitmod.write_lists(groups, args.out, args.prefix or "",
-                                     how)
+                                     how, plain=args.plain)
     lines = ["%s split -- %s into %s, %s" % (
         PROG, plural(len(hs), "host"), plural(len(groups), "list"), how)]
     rows = []
@@ -2510,6 +2510,9 @@ def build_parser():
     sp.add_argument("--out", metavar="DIR",
                     help="write each list to DIR/NAME.txt")
     sp.add_argument("--prefix", metavar="P", help="file names start with P")
+    sp.add_argument("--plain", action="store_true",
+                    help="names only in the files: for agree, mx and "
+                    "iperf_orchestrator, which read an attribute as a host")
     add_format(sp)
     sp.set_defaults(fn=cmd_split)
 

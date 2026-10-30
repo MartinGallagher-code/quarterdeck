@@ -185,6 +185,11 @@ ssh had passed.
   the diff's keys-in-both. The API now gives each one: `top` entries
   carry their share, `agree` and `disagree`, each series a `summary`,
   and the diff `both` (`web.py`, `web/app.js`).
+- The lists `qd split --out` writes keep each host's attributes, and
+  agree reads every word on a line as a host. Handed a list, it would
+  have sshed to a host called `rack`, at address `r1`. `qd split --plain`
+  writes names only, as `qd hosts --plain` does, and the README says
+  which tools need it (`split.py` `write_lists`).
 
 ### Security
 

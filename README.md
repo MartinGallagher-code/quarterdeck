@@ -286,6 +286,10 @@ qd split -s hosts.txt --by rack --out lists/     # lists/rack-r1.txt, rack-r2.tx
 qd run -s lists/rack-r1.txt -- ...
 ```
 
+The lists keep each host's attributes, so qd and dcprobe read them as
+they were. `--plain` writes names only, for agree, mx and
+iperf_orchestrator, which would read `rack=r1` as a host.
+
 | Flag | Lists |
 |---|---|
 | `--by ATTR` | one per value of an attribute (with `--layout`, the manifest's room, row, rack, slot) |

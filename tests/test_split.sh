@@ -28,6 +28,9 @@ t_by_attribute_and_files() {
     assert_eq "$(qd hosts -s lists/rack-r1.txt --plain)" "$(printf 'n1\nn2\nn3')"
     qd_rc split -s hosts.txt --by role 2> err
     assert_contains "$(cat err)" "no host has a 'role' attribute"
+    # names only, for agree, which reads rack=r1 as a host
+    qd split -s hosts.txt --by rack --out plain --plain > /dev/null
+    assert_eq "$(grep -v '^#' plain/rack-r2.txt)" "$(printf 'n4\nn5\nn6')"
 }
 
 # two values that clean to one name are two lists, never one file

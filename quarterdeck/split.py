@@ -266,14 +266,15 @@ def as_table(groups):
     return Table(["group", "host"] + attrs, rows, "split")
 
 
-def write_lists(groups, out_dir, prefix="", how=""):
-    """One host file per group; returns their paths."""
+def write_lists(groups, out_dir, prefix="", how="", plain=False):
+    """One host file per group; returns their paths.  `plain` leaves the
+    attributes off, for the tools that read every word as a host."""
     paths = []
     for g, hs in groups:
         path = os.path.join(out_dir, "%s%s.txt" % (prefix, g))
         body = ["# %s: %d host(s)%s" % (g, len(hs), (" -- " + how) if how
                                        else "")]
-        body += [h.token() for h in hs]
+        body += [h.token(plain=plain) for h in hs]
         write_text(path, "\n".join(body) + "\n")
         paths.append(path)
     return paths
