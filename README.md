@@ -668,6 +668,18 @@ ssh -L 8100:127.0.0.1:8100 jumpbox qd web -n
 
 A full-screen explorer for when there's no browser: the same views, keyed.
 
+```bash
+qd view                # everything in the store: Enter opens, ] [ page
+qd view latest         # open on the latest run (q: the store's contents)
+qd view f.csv          # a file, without filing it
+```
+
+With no RUN it opens on the store's contents: every run, newest first,
+then every dataset provost keeps there. Nothing has to be known by name.
+Open one and `]` / `[` page to the next and previous table, a run's tables
+in turn and then the next run's, on through the datasets; `}` / `{` skip a
+whole run. `q` goes back to the contents, on the one you were looking at.
+
 | Keys | |
 |---|---|
 | arrows, `j` `k`, PgUp/PgDn, Home/End, `0` `$` | move |
@@ -683,10 +695,12 @@ A full-screen explorer for when there's no browser: the same views, keyed.
 | `p` | pivot: `rows,cols[,values]` |
 | `x` | diff against another run (default: the last of the same thing) |
 | Enter | every field of the row, and the host's raw answer |
-| `T`, `L` | another table of this run, the runs in the store |
+| `]` / `[` | the next / previous table in the store |
+| `}` / `{` | the next / previous run (or dataset) |
+| `T`, `L` | another table of this run, everything in the store |
 | `e`, `r` | export this view to a file, reload from disk |
 | `-`, `*`, `w` | hide a column, show them all, widen one |
-| `?`, `q`, `Q` | help, back, quit |
+| `?`, `q`, `Q` | help, back (from a table: to the contents), quit |
 
 The bottom line always has the current column's figures. A blank cell
 stays out of every one.

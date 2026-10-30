@@ -103,8 +103,81 @@ t_detail_help_and_quit() {
     assert_contains "$out" "h02"
     out="$(SCREEN=100x40 view '?')"
     assert_contains "$out" "keep rows with this cell's value"
-    out="$(view 'q')"
-    assert_eq "$out" ""
+    # q from the table: back to the store's contents; Q quits
+    assert_contains "$(view 'q')" "1 run, "
+    assert_eq "$(view 'Q')" ""
+    assert_eq "$(view 'qq')" ""
+}
+
+# two more runs and a dataset no run filed: everything there is to page
+seed_more() {
+    seed
+    printf 'host,load\nh01,0.5\nh02,0.7\n' > load.csv
+    qd import load.csv --name load > /dev/null
+    printf 'disk,used\nsda,40\n' > disks.csv
+    qd import disks.csv --name disks > /dev/null
+    printf 'a=1, b=2\n' | pv --name loose > /dev/null 2>&1
+}
+
+viewall() { QD_TEST_SCREEN="${SCREEN:-100x14}" QD_TEST_KEYS="$1" qd view; }
+
+t_no_run_opens_everything() {
+    seed_more
+    out="$(SCREEN=100x20 viewall '')"
+    assert_contains "$out" "3 runs, "
+    assert_contains "$out" "runs newest first, then datasets"
+    assert_contains "$out" "disks"
+    assert_contains "$out" "ds:loose"
+    assert_contains "$out" "1 row"
+    # the newest is first, and Enter opens it
+    out="$(viewall '<enter>')"
+    assert_contains "$out" "sda"
+    assert_contains "$out" "(1 of "
+}
+
+t_paging_through_the_store() {
+    seed_more
+    # ] from the newest: the next one down the contents, an older run
+    out="$(viewall '<enter>]')"
+    assert_contains "$out" "2 of "
+    assert_contains "$out" "h02"
+    assert_contains "$out" "0.7"
+    out="$(viewall '<enter>]]')"
+    assert_contains "$out" "9400"
+    out="$(viewall '<enter>]][')"
+    assert_contains "$out" "0.7"
+    assert_contains "$(viewall '<enter>[')" "that is the first thing in the store"
+    # past the runs: the datasets, one by one, to the last
+    out="$(SCREEN=100x14 viewall '<enter>}}}]]]]]]]]]]]]]]]]')"
+    assert_contains "$out" "that is the last thing in the store"
+    out="$(viewall '<enter>}}}')"
+    assert_contains "$out" "4 of "
+    assert_contains "$out" "in the store: ds:"
+    # a run's tables come one after the other: a qd import has one each,
+    # a dataset one; } skips the rest of a run, so the two agree here
+    assert_eq "$(viewall '<enter>}}' | head -3)" "$(viewall '<enter>]]' | head -3)"
+}
+
+t_back_to_the_contents() {
+    seed_more
+    # q: the contents, on what was being looked at, ready for the next
+    out="$(viewall '<enter>]]q')"
+    assert_contains "$out" "3 of "
+    out="$(viewall '<enter>]]q<down><enter>')"
+    assert_contains "$out" "(4 of "
+    # L from deep in a table's views: the contents
+    out="$(viewall '<enter><right>gdL')"
+    assert_contains "$out" "runs newest first"
+    # paging from a report pages its table
+    out="$(viewall '<enter><right>d]')"
+    assert_contains "$out" "2 of "
+    # a RUN named: that, with the contents under it
+    out="$(view '' latest~2)"
+    assert_contains "$out" "(3 of "
+    assert_contains "$(view 'q' latest~2)" "3 of "
+    # a file is not in the store: said, and L still lists the store
+    assert_contains "$(view ']' f.csv)" "page from a table in the store"
+    assert_contains "$(view 'L' f.csv)" "runs newest first"
 }
 
 t_needs_a_terminal_without_a_script() {
@@ -123,4 +196,7 @@ run_test "describe, counts, drill down"          t_describe_counts_and_drill_dow
 run_test "group by, and back"                    t_group_and_back
 run_test "row detail, help, quit"                t_detail_help_and_quit
 run_test "no terminal, no script: refused"       t_needs_a_terminal_without_a_script
+run_test "no RUN: everything in the store"        t_no_run_opens_everything
+run_test "] [ } { page through the store"        t_paging_through_the_store
+run_test "back to the contents, and files"       t_back_to_the_contents
 finish

@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Martin J. Gallagher
-"""qd view: a dataset on a full screen, to move around in and ask of.
+"""qd view: the store on a full screen, to move around in and ask of.
 
-The explorer is a stack of views -- the table, a column's statistics, the
-counts of its values, a group-by, a diff -- each a plain object that turns
-keys into state and state into lines of text.  curses only draws those
-lines, so the whole thing runs without a terminal too: QD_TEST_KEYS
+The explorer is a stack of views -- the store's contents, a table, a
+column's statistics, the counts of its values, a group-by, a diff -- each a
+plain object that turns keys into state and state into lines of text.  The
+contents is at the bottom whenever there is a store: every run, newest
+first, then every dataset, and `]` `[` page from one table to the next
+through all of it, so nothing has to be known by name.  curses only draws
+those lines, so the whole thing runs without a terminal too: QD_TEST_KEYS
 drives it with a script of keys (`fstatus!=ok<enter>d`) and the last
 screen is printed, which is how the suite tests it.
 
@@ -20,6 +23,7 @@ import sys
 
 from .common import PROG, QdError, die, plural, write_text
 from . import query, render, stats, table as tablemod
+from .store import Dataset
 
 HELP = """\
 qd view -- keys
@@ -42,9 +46,12 @@ qd view -- keys
                   p  pivot: rows,cols[,values]
                   x  diff against another entry (default: its last run)
   rows            Enter  every field of this row, and the host's raw answer
-  elsewhere       T  another table of this run     L  the runs in the store
-                  e  export this view to a file    r  reload from disk
-  leaving         q or Esc  back one view   Q  quit
+  the store       ]  the next table in the store   [  the one before
+                  }  the next run (or dataset)     {  the one before
+                  T  another table of this run     L  everything in the store
+  elsewhere       e  export this view to a file    r  reload from disk
+  leaving         q or Esc  back one view (from a table: to the store's
+                  contents)                        Q  quit
 
 A blank cell is "not measured" and stays out of every figure.
 Expressions: mbps<900  status!=ok  host~^wr01  rtt_p99=  not (a>1 or b=x)
@@ -243,6 +250,69 @@ class ListView(View):
     def status(self):
         return "%d of %d   %s   q back" % (
             self.cur + 1 if self.items else 0, len(self.items), self.hint)
+
+
+class StoreView(ListView):
+    """Everything in the store, in the order ] and [ page through it: the
+    runs, newest first, then every dataset provost keeps there."""
+
+    def __init__(self, app):
+        ListView.__init__(self, app, "", [], [], app.open_item,
+                          "Enter opens   ] [ page once open")
+        from . import stores
+        try:
+            name = stores.name_of(app.book.root)
+        except QdError:
+            name = None
+        self.title = "the store %s" % (
+            "%s (%s)" % (name, app.book.shown()) if name else app.book.shown())
+        self.shown_for = None
+        self.followed = None
+
+    def fill(self):
+        """The lines, again whenever provost has filed something since."""
+        everything = self.app.everything()
+        if everything is self.shown_for:
+            return
+        keep = self.items[self.cur][1].id if self.items else None
+        runs = [e for e in everything if not isinstance(e, Dataset)]
+        datasets = [e for e in everything if isinstance(e, Dataset)]
+        self.head = ["%s, %s: runs newest first, then datasets" % (
+            plural(len(runs), "run"), plural(len(datasets), "dataset"))]
+        self.items = [(entry_line(e), e) for e in everything]
+        ids = [e.id for e in everything]
+        self.cur = ids.index(keep) if keep in ids else 0
+        self.shown_for = everything
+
+    def render(self, h, w):
+        self.fill()
+        # back from a table: on what was being looked at
+        if self.app.last_id != self.followed:
+            self.followed = self.app.last_id
+            ids = [e.id for _, e in self.items]
+            if self.followed in ids:
+                self.cur = ids.index(self.followed)
+        return ListView.render(self, h, w)
+
+    def key(self, k):
+        self.fill()
+        return ListView.key(self, k)
+
+    def status(self):
+        return "%d of %d   %s   q quit" % (
+            self.cur + 1 if self.items else 0, len(self.items), self.hint)
+
+
+def entry_line(e):
+    if isinstance(e, Dataset):
+        return "%-32s %-8s %s" % (e.id, "dataset", plural(e.row_count(),
+                                                           "row"))
+    what = e.meta.get("name") or ""
+    cmd = render.first_line(e.meta.get("command") or "")
+    if cmd and cmd != what:
+        what = (what + "  " if what else "") + cmd
+    return "%-32s %-8s %-12s %s" % (e.id, e.meta.get("kind", ""),
+                                    e.summary(), what[:60])
 
 
 class TableView(View):
@@ -783,7 +853,99 @@ class App(object):
         self.prompt = None
         self.message = ""
         self.done = False
+        self._all = self._all_stamp = None
+        self.last_id = None
+        if book.exists() and self.everything():
+            self.push(StoreView(self))
+        if t is not None:
+            self.show(t, where, sort)
+
+    def everything(self):
+        """The runs, newest first, then the datasets: read again when
+        provost has filed something since."""
+        stamp = self.book.stamp()
+        if self._all is None or stamp != self._all_stamp:
+            self.book.refresh()
+            self._all = list(reversed(self.book.entries())) + [
+                Dataset(self.book, n) for n in self.book.dataset_names()]
+            self._all_stamp = stamp
+        return self._all
+
+    def show(self, t, where=None, sort=None):
         self.push(TableView(self, t, where, sort))
+        e = getattr(t, "entry", None)
+        if e is not None:
+            self.last_id = e.id
+
+    def open_item(self, e):
+        self.show(e.load(None))
+
+    def where_in_store(self, t):
+        """(position, of how many) of t's entry in the store, or None."""
+        e = getattr(t, "entry", None)
+        if e is None:
+            return None
+        ids = [x.id for x in self.everything()]
+        return (ids.index(e.id) + 1, len(ids)) if e.id in ids else None
+
+    def page(self, step, whole=False):
+        """The next table (step 1) or the one before (-1) in the store, in
+        place of the one being looked at; whole: the next run or dataset."""
+        at = None
+        for i in range(len(self.views) - 1, -1, -1):
+            v = self.views[i]
+            if isinstance(v, TableView) and not v.derived and \
+                    getattr(v.base, "entry", None) is not None:
+                at = i
+                break
+        if at is None:
+            self.message = ("] and [ page from a table in the store; L "
+                            "lists everything in it")
+            return
+        t = self.views[at].base
+        items = self.everything()
+        ids = [e.id for e in items]
+        if t.entry.id not in ids:
+            self.message = "%s is not in the store any more (L: what is)" % (
+                t.entry.id)
+            return
+        i = ids.index(t.entry.id)
+        names = items[i].table_names()
+        j = names.index(t.name) if t.name in names else 0
+        if not whole and 0 <= j + step < len(names):
+            e, name = items[i], names[j + step]
+        else:
+            e = name = None
+            k = i + step
+            while 0 <= k < len(items):
+                names = items[k].table_names()
+                if names:
+                    # back into a run: its last table, as paging left it
+                    e = items[k]
+                    name = names[-1] if step < 0 and not whole else names[0]
+                    break
+                k += step
+            if e is None:
+                self.message = "that is the %s thing in the store" % (
+                    "last" if step > 0 else "first")
+                return
+        nt = e.load(name)
+        del self.views[at:]
+        self.show(nt)
+        self.message = "%d of %d in the store: %s" % (
+            ids.index(e.id) + 1, len(ids), source_title(nt))
+
+    def contents(self):
+        """Back to the store's contents, on what was being looked at."""
+        for i, v in enumerate(self.views):
+            if isinstance(v, StoreView):
+                del self.views[i + 1:]
+                return
+        if not (self.book.exists() and self.everything()):
+            self.message = "nothing in the store %s yet" % self.book.shown()
+            return
+        self.views.insert(0, StoreView(self))
+        del self.views[1:]
 
     def push(self, view):
         self.views.append(view)
@@ -822,7 +984,11 @@ class App(object):
         elif k == "T":
             self.pick_table(top)
         elif k == "L":
-            self.pick_entry()
+            self.contents()
+        elif k in ("]", "["):
+            self.page(1 if k == "]" else -1)
+        elif k in ("}", "{"):
+            self.page(1 if k == "}" else -1, whole=True)
 
     def pick_table(self, top):
         base = getattr(top, "base", None)
@@ -836,24 +1002,11 @@ class App(object):
         self.push(ListView(self, "tables of %s" % e.id, [e.id], items,
                            lambda name: self.open_entry(e, name)))
 
-    def pick_entry(self):
-        entries = list(reversed(self.book.entries()))
-        if not entries:
-            self.message = "no runs in the store %s yet" % self.book.shown()
-            return
-        items = []
-        for e in entries:
-            cmd = render.first_line(e.meta.get("command") or "")
-            items.append(("%-32s %-7s %-12s %s" % (
-                e.id, e.meta.get("kind", ""), e.summary(), cmd[:60]), e))
-        self.push(ListView(self, "runs in %s" % self.book.shown(),
-                           ["newest first"], items,
-                           lambda e: self.open_entry(e, None)))
-
     def open_entry(self, e, name):
         t = e.load(name)
-        self.views = [v for v in self.views if not isinstance(v, ListView)]
-        self.push(TableView(self, t))
+        self.views = [v for v in self.views if isinstance(v, StoreView) or
+                      not isinstance(v, ListView)]
+        self.show(t)
 
     # -- drawing --------------------------------------------------------------
 
@@ -861,6 +1014,10 @@ class App(object):
         self.h, self.w = h, w
         top = self.views[-1]
         title = " %s view  %s" % (PROG, top.title)
+        pos = self.where_in_store(top.base) \
+            if isinstance(top, TableView) and not top.derived else None
+        if pos:
+            title += "   (%d of %d in the store: ] [ page)" % pos
         lines = [Line(fit(title, w), [(0, w, "title")])]
         strip = top.column_strip() if isinstance(top, TableView) else ""
         body_h = h - 2 - (1 if strip else 0)

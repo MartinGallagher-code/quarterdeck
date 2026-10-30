@@ -5,6 +5,27 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.3.0 — 2026-10-30
+
+### Changed
+- **`qd view` with no RUN opens on everything in the store**: every run,
+  newest first, then every dataset provost keeps there (`ds:NAME`, the
+  runs' own `qd.runs` and `qd.hosts` among them), each with its kind and
+  size. Enter opens one. `qd view RUN` opens on that run as before, with
+  the contents under it (`explore.py` `StoreView`, `cli.py` `cmd_view`).
+- **Page through the store without leaving the table**: `]` and `[` open
+  the next and the previous table, through a run's tables and on to the
+  next run's, then the datasets; `}` and `{` jump a whole run (or
+  dataset). The title says where you are, `3 of 40 in the store`. From a
+  report on a table (`d`, `c`, ...) they page that table. The contents
+  is read again when provost has filed something since (`App.page`,
+  `App.everything`).
+- **`q` from a table goes back to the contents**, on the one you were
+  looking at, ready for Enter on the next; `L` goes there from anywhere.
+  `Q` quits, as before. `L` used to list the runs only.
+- A run's size reads `1 row`, not `1 rows` (`qd log`, `qd web`, the
+  contents).
+
 ## 0.2.0 — 2026-10-30
 
 ### Added
