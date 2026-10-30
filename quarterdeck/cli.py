@@ -283,7 +283,10 @@ def run_row(rid, kind, name, command, created, **kw):
 
 def host_row(rid, r):
     h = r.host
-    addr = h.addr + (":%d" % h.port if h.port else "")
+    # as a host line writes it, so it reads back the same: fd00::1:2222
+    # would be another address, on port 22
+    addr = ("[%s]" % h.addr if ":" in h.addr and h.port else h.addr) + (
+        ":%d" % h.port if h.port else "")
     return [rid, h.name, addr if (h.addr != h.name or h.port) else "",
             str(r.pass_no), "%d" % int(r.started), r.outcome, str(r.rc),
             "%.2f" % r.duration, str(len(r.stdout.encode("utf-8"))),
@@ -427,11 +430,16 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
     rid = new_run_id(st, ("%s-%s" % (label, part)) if part else label)
     ds = filing.dataset_name(label)
     b = filing.Batch()
+    # a host attribute by the name of something the run set (a design's
+    # factor: mtu=9000 on the host, mtu=1500 the point) would overwrite it
+    # in the rows -- provost keeps the last -- so it is carried as attr_
+    set_here = set(k for k, _ in context)
     for r in results:
         if r.stdout.strip():
             pairs = [("run", rid), ("host", r.host.name)] + (
                 [("pass", str(r.pass_no))] if passes > 1 else []) + \
-                list(context) + list(r.host.attrs)
+                list(context) + [(("attr_" + k) if k in set_here else k, v)
+                                 for k, v in r.host.attrs]
             b.add(ds, filing.prologue(pairs) + filing.body(r.stdout))
     ncap = len(b.inputs)
     b.add_own(storemod.HOSTS, filing.own_tsv(

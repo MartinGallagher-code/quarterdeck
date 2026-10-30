@@ -295,6 +295,13 @@ t_script_is_pushed_run_and_cleaned_up() {
     assert_file_exists "$FAKE_ROOT/node02/$kept/probe.sh"
 }
 
+# port is the ssh port's column: an attribute by that name is attr_port
+t_a_port_attribute_is_not_the_port() {
+    out="$(qd hosts -s 'web1=10.0.0.1:2222 port=8080' --csv)"
+    assert_contains "$out" "host,addr,port,attr_port"
+    assert_contains "$out" "web1,10.0.0.1,2222,8080"
+}
+
 # a host spec on the command line reads as a host file's line: the words
 # after a host are its attributes, never an address to ssh to
 t_an_inline_spec_is_a_host_line() {
@@ -507,6 +514,7 @@ t_lang_c_and_utf8_output_survive() {
     assert_contains "$out" "caf"
 }
 
+run_test "a port attribute is not the port"        t_a_port_attribute_is_not_the_port
 run_test "two runs at once are two runs"          t_runs_at_once_are_two_runs
 run_test "an inline host spec is a host line"      t_an_inline_spec_is_a_host_line
 run_test "--remote-dir itself is never removed"     t_the_remote_dir_is_never_removed

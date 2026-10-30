@@ -232,6 +232,16 @@ ssh had passed.
   was absent, including hosts with nothing installed that would ever
   write it. It is now said only where update-notifier is there to write
   it (`probes.py`).
+- A host attribute named as a design factor (`mtu=9000` on the host, the
+  factor `mtu`) overwrote the factor: the point run at 1500 was filed and
+  shown as 9000. The attribute is now filed and shown as `attr_mtu`
+  (`cli.py` `fleet_run`, `store.py` `Run._host_lead`).
+- A host attribute named `port` doubled the ssh port's column
+  (`host,addr,port,port`); it is now `attr_port`, as other reserved
+  names are.
+- An IPv6 host with a port was written to the run's hosts table as
+  `fd00::1:2222`, which `split --answers` read back as another address
+  on port 22. It is written `[fd00::1]:2222`, as a host line writes it.
 - A command on a host that exited 124 itself (`timeout 5 check`) was
   reported as a qd timeout and listed as not answering. qd's own timeout
   is now marked as such (`fleet.py` `TimedOut`).

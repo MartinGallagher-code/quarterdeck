@@ -27,8 +27,8 @@ from .common import die, env, read_text, warn
 # Columns a run writes itself.  An attribute by one of these names would
 # shadow a measurement, so it is carried as attr_<name> instead.  `row` is
 # not one: it is where a server sits, as a layout says (room, row, rack).
-RESERVED = {"host", "addr", "status", "rc", "duration_s", "error", "pass",
-            "ts", "stdout", "stderr", "line", "line_no", "value",
+RESERVED = {"host", "addr", "port", "status", "rc", "duration_s", "error",
+            "pass", "ts", "stdout", "stderr", "line", "line_no", "value",
             "run", "capture", "n", "dataset", "bytes", "attrs"}
 
 ATTR_RE = re.compile(r"^[A-Za-z_][\w.-]*=")

@@ -186,6 +186,30 @@ EOF
     assert_contains "$(qd show latest --cols host,args --format csv)" "a,-w "
 }
 
+# a host attribute named as a factor is the host's, never the point's
+t_a_host_attribute_named_as_a_factor() {
+    stand_in_doe
+    install_fake_ssh
+    for h in a b; do fake_host "$h"; done
+    printf 'a mtu=9000\nb mtu=9000\n' > hosts.txt
+    cat > mtu.json <<'EOF'
+{"metadata": {"name": "MTU test"},
+ "factors": [{"name": "mtu", "levels": ["1500", "9000"], "type": "categorical"}],
+ "responses": [{"name": "mbps", "optimize": "maximize"}],
+ "settings": {"operation": "full_factorial", "block_count": 1}}
+EOF
+    # shellcheck disable=SC2016  # expanded on the far side, not here
+    qdf doe run mtu.json -s hosts.txt -q -- 'echo "mbps: {mtu}"' > /dev/null
+    for id in $(qd log | grep -- '-mtu_test' | cut -d' ' -f1); do
+        csv="$(qd show "$id" --cols mtu,mbps,attr_mtu --format csv | sed -n 2p)"
+        case "$csv" in
+            1500,1500,9000|9000,9000,9000) ;;
+            *) fail "point $id: mtu,mbps,attr_mtu = $csv" ;;
+        esac
+    done
+}
+
+run_test "a host attribute named as a factor"       t_a_host_attribute_named_as_a_factor
 run_test "a level with a space"                      t_a_level_with_a_space
 run_test "more groups than blocks: said"            t_unblocked_groups_are_said
 run_test "plan shows doe's design"                   t_plan_shows_the_design

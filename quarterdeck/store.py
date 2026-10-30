@@ -720,22 +720,27 @@ class Run(object):
         """The columns that say what was run where, not what came back:
         the design's factors and the hosts' attributes."""
         names = [k for k, _ in split_attrs(self.meta.get("factors"))]
+        factors = set(names)
         for h in self.store.host_rows(self.id):
-            names.extend(k for k, _ in split_attrs(h.get("attrs")))
+            names.extend(("attr_" + k) if k in factors else k
+                         for k, _ in split_attrs(h.get("attrs")))
         return set(names)
 
     def _host_lead(self, hosts):
         """host, addr, its attributes, the run's design factors, pass."""
+        factors = split_attrs(self.meta.get("factors"))
+        fnames = [k for k, _ in factors]
         attrs = []
         for h in hosts:
             for k, _ in split_attrs(h.get("attrs")):
                 if k not in attrs:
                     attrs.append(k)
-        factors = split_attrs(self.meta.get("factors"))
-        fnames = [k for k, _ in factors if k not in attrs]
+        # a host attribute named as a factor is shown as attr_<name>, as
+        # it was filed: the factor is what the point ran at
+        shown = [("attr_" + a) if a in fnames else a for a in attrs]
         show_addr = any(h.get("addr") for h in hosts)
         multi = int(self.meta.get("passes") or 1) > 1
-        cols = ["host"] + (["addr"] if show_addr else []) + attrs + \
+        cols = ["host"] + (["addr"] if show_addr else []) + shown + \
             fnames + (["pass", "ts"] if multi else [])
         fvals = dict(factors)
 

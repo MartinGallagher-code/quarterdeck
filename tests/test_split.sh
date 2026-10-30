@@ -120,6 +120,17 @@ t_by_answer_in_a_stored_run() {
     assert_contains "$out" "unreachable,n4"
 }
 
+# an IPv6 host with a port comes back from a stored run as the host it
+# was, not another address on port 22
+t_answers_keep_an_ipv6_port() {
+    install_fake_ssh
+    fake_host "fd00::1"
+    qdf run -q -S 'v6=[fd00::1]:2222' -- echo same > /dev/null
+    qd split --answers latest --out lists > /dev/null
+    assert_contains "$(cat lists/answer-1.txt)" "v6=[fd00::1]:2222"
+    assert_contains "$(qd hosts -s lists/answer-1.txt --csv)" "v6,fd00::1,2222"
+}
+
 t_one_way_at_a_time() {
     fleet
     qd_rc split -s hosts.txt 2> err
@@ -149,5 +160,6 @@ run_test "--random: seeded, --stratify"               t_random_is_seeded_and_str
 run_test "--ab, --canary, --pairs, --ring"            t_ab_canary_and_pairs
 run_test "--reachable: binnacle decides"              t_reachable_decides_up_and_down
 run_test "--answers: grouped by what hosts said"      t_by_answer_in_a_stored_run
+run_test "--answers keeps an IPv6 host's port"       t_answers_keep_an_ipv6_port
 run_test "one way of splitting at a time"             t_one_way_at_a_time
 finish
