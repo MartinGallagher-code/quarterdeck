@@ -45,6 +45,10 @@ for _i, _p in enumerate("kmgtpe", 1):
     for _sfx in ("", "b", "ib"):
         SIZE_UNITS[_p + _sfx] = 1024 ** _i
 
+# Times, in seconds: 900ms beside 1.2s is one scale, as 512M beside 2G is.
+TIME_UNITS = {"ns": 1e-9, "us": 1e-6, "ms": 1e-3, "s": 1.0, "sec": 1.0,
+              "min": 60.0, "h": 3600.0}
+
 # The other units a measurement arrives in.  A list, not any word: `3com`
 # and `2nd` are names.  Anything per second (`12/s`, `req/s`) counts too.
 UNITS = set(SIZE_UNITS) | {
@@ -85,13 +89,82 @@ def to_num(text):
     return split_unit(text)[0]
 
 
+def unit_family(unit):
+    """"size" or "time" for a unit that has a base scale (bytes, seconds),
+    else None."""
+    u = (unit or "").lower()
+    if u in SIZE_UNITS:
+        return "size"
+    if u in TIME_UNITS:
+        return "time"
+    return None
+
+
+def to_base(text):
+    """(number, family) for a cell: a size in bytes, a time in seconds,
+    anything else as written with its unit for a family ("%" stays 37 and
+    "%").  (None, None) when it is not a number."""
+    v, u = split_unit(text)
+    if v is None:
+        return None, None
+    fam = unit_family(u)
+    if fam == "size":
+        return v * SIZE_UNITS[u.lower()], fam
+    if fam == "time":
+        return v * TIME_UNITS[u.lower()], fam
+    return v, u
+
+
+def normalize_units(tables, columns=None):
+    """The tables with every column that mixes units of one family (512M
+    beside 2G, 900ms beside 1.2s) -- across all of them -- rewritten on one
+    scale (bytes, seconds), so a cell compares and averages with the next
+    and with the other table's; a column in one unit is left as it is.
+    Statistics, pivots, diffs and trends read cell by cell, so they read
+    the tables this gives."""
+    cols = list(columns) if columns else []
+    if not cols:
+        for t in tables:
+            cols.extend(c for c in t.columns if c not in cols)
+    redo = []
+    for c in cols:
+        units = set()
+        for t in tables:
+            if t.has(c):
+                for cell in t.values(c):
+                    v, u = split_unit(cell)
+                    if v is not None and u:
+                        units.add(u)
+        if len(units) > 1 and len(set(unit_family(u) for u in units)) == 1 \
+                and unit_family(next(iter(units))):
+            redo.append(c)
+    if not redo:
+        return list(tables)
+    out = []
+    for t in tables:
+        idx = [t.columns.index(c) for c in redo if t.has(c)]
+        if not idx:
+            out.append(t)
+            continue
+        rows = []
+        for r in t.rows:
+            r = list(r)
+            for i in idx:
+                v, fam = to_base(r[i])
+                if v is not None and fam in ("size", "time"):
+                    r[i] = "%.15g" % v
+            rows.append(r)
+        out.append(t.derive(rows=rows))
+    return out
+
+
 def column_numbers(cells):
     """A column's cells as numbers on one scale, and that scale's unit.
 
     One unit throughout (or none) is kept as it is.  Sizes in different
-    units (df -h's 512M beside 50G) become bytes.  Anything else mixed
-    keeps the commonest unit's cells and drops the rest to blank, rather
-    than adding milliseconds to seconds."""
+    units (df -h's 512M beside 50G) become bytes, and times (900ms beside
+    1.2s) seconds.  Anything else mixed keeps the commonest unit's cells
+    and drops the rest to blank, rather than adding apples to pears."""
     pairs = [split_unit(c) for c in cells]
     units = {}
     for v, u in pairs:
@@ -102,6 +175,9 @@ def column_numbers(cells):
     if all(u.lower() in SIZE_UNITS for u in units):
         return [None if v is None else v * SIZE_UNITS.get(u.lower(), 1)
                 for v, u in pairs], "B"
+    if all(u.lower() in TIME_UNITS for u in units):
+        return [None if v is None else v * TIME_UNITS.get(u.lower(), 1)
+                for v, u in pairs], "s"
     common = max(units, key=lambda u: units[u])
     return [v if u in (common, "") else None for v, u in pairs], common
 
@@ -677,7 +753,8 @@ def to_tsv(t):
 def _json_value(t, col, v):
     if v == "":
         return None
-    if t.kind(col) == "num":
+    if t.kind(col) == "num" and not t.unit(col):
+        # a number with a unit stays as written: 50G is not 50
         n = to_num(v)
         if n is not None and not v.strip().endswith("%"):
             return int(n) if n == int(n) and "." not in v and "e" not in \

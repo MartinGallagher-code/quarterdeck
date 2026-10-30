@@ -13,7 +13,7 @@ import re
 from collections import Counter
 
 from .common import die
-from .table import Table, to_num
+from .table import Table, normalize_units, to_num
 
 # How bad a word is, for the `worst` aggregation and for verdict cells in
 # a pivot: the worst wins, so a failure under a collapsed group stays
@@ -246,6 +246,7 @@ def group_by(table, by, cols=None, aggs=None):
     word column gets `auto`: verdicts take the worst, other words the
     most common.
     """
+    table = normalize_units([table])[0]     # 512M beside 2G: one scale
     by = [table.colname(b) for b in by]
     if cols:
         cols = [table.colname(c) for c in cols]
@@ -451,6 +452,7 @@ def pivot(table, rows, cols, values=None, agg="auto"):
     With no --values each cell is a count.  `auto` decides per cell:
     numbers average, verdicts take the worst, other words the most common.
     """
+    table = normalize_units([table])[0]
     ri, ci = table.index(rows), table.index(cols)
     vi = table.index(values) if values else None
     check_aggs([agg])
@@ -495,6 +497,7 @@ def default_over(table):
 
 def trend(table, col, by=None, over=None):
     """[(group, [value or None, ...])] each in --over order."""
+    table = normalize_units([table], [col])[0]
     vi = table.index(col)
     oi = table.index(over) if over else None
     rows = list(table.rows)

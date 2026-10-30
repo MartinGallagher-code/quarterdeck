@@ -235,6 +235,7 @@ class Api(object):
         # An empty `over` is a choice -- row order -- not a missing one.
         over = q.get("over")
         over = stats.default_over(s) if over is None else (over[0] or None)
+        s = tablemod.normalize_units([s], [c])[0]
         vi = s.index(c)
         oi = s.index(over) if over else None
         bi = s.index(by) if by else None

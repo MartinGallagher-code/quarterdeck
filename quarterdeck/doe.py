@@ -38,7 +38,7 @@ import subprocess
 import tempfile
 
 from .common import die, read_text, write_text
-from . import filing, store as storemod, tools
+from . import filing, store as storemod, table as tablemod, tools
 
 DESIGNS = "qd.designs"
 COLUMNS = ("design", "created", "command", "seed", "blocks_by", "config",
@@ -237,7 +237,9 @@ def responses(st, name, column, agg="median"):
             if not t.has(column):
                 continue
             si = t.index("status") if t.has("status") else None
-            nums = t.numbers(column)
+            # each cell on its family's base scale (bytes, seconds): one
+            # point's 900M and another's 1.2G are one scale across runs
+            nums = [tablemod.to_base(c)[0] for c in t.values(column)]
             for r, v in zip(t.rows, nums):
                 if (si is None or r[si] == "ok") and v is not None:
                     cells.append(repr(v))

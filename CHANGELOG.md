@@ -93,6 +93,16 @@ ssh had passed.
   - A log whose first line opens with `[` (`[INFO] ...`) was refused as
     JSON; JSON's `NaN` crashed the reader, and is blank now (Infinity
     reads `inf`).
+  - A column in mixed units (512M beside 2G, 900ms beside 1.2s) was put
+    on one scale by `qd stats` and the column panel, but read cell by cell
+    -- unit dropped -- everywhere else: `--where 'used>600M'` matched
+    neither 1G nor 2G, `--sort` put 512M after 2G, a group's mean averaged
+    512 with 2, `qd diff` read 980M -> 1.1G as -99.9%, trends drew 1.1G
+    below 980M, a design's responses mixed scales across runs, and JSON
+    export wrote 50G as 50. Such a column is now read on its base scale
+    (bytes, seconds) throughout -- `normalize_units`, `to_base` -- and a
+    literal with a unit compares on it; export keeps a unit as written.
+    Mixed times were dropped to their commonest unit; they are seconds now.
   - `qd doe run --blocks-by ATTR` said nothing of the host groups a design
     with fewer blocks leaves out, and a re-run without the same
     `--blocks-by` was allowed; the first is said, the second refused.
