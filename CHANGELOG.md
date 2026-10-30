@@ -141,6 +141,9 @@ ssh had passed.
 - `qd view` crashed when an empty list was moved in, for example the
   counts of a column after a filter that matched nothing, then `j`. The
   cursor went to -1 (`explore.py` `ListView`).
+- `r` (reload) in a view worked out from another one (grouped, a pivot,
+  outliers, every column described) replaced it with the raw rows under
+  the derived view's title. It now says to go back and reload there.
 
 ### Security
 

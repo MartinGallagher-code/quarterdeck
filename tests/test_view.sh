@@ -41,6 +41,16 @@ t_an_empty_list_can_be_moved_in() {
     assert_contains "$out" "0 of 0"
 }
 
+# r in a grouped view would put the raw rows under the grouped title
+t_r_in_a_derived_view_is_said() {
+    seed
+    out="$(view '<right>gr')"
+    assert_contains "$out" "q back to that, and r there"
+    assert_contains "$out" "mbps_mean"
+    assert_not_contains "$out" "h01"
+    assert_contains "$(view 'r')" "reloaded: 4 rows"
+}
+
 t_filter_sort_and_undo() {
     seed
     out="$(view 'fmbps<9405<enter>')"
@@ -105,6 +115,7 @@ t_needs_a_terminal_without_a_script() {
 }
 
 run_test "an empty list can be moved in"             t_an_empty_list_can_be_moved_in
+run_test "r in a derived view: said"               t_r_in_a_derived_view_is_said
 run_test "first screen and the column strip"     t_first_screen_and_column_strip
 run_test "filter, sort, undo, a bad filter"      t_filter_sort_and_undo
 run_test "= and ! filter on the cell"            t_quick_filter_on_a_cell
