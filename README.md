@@ -398,7 +398,7 @@ qd do -- netmesh check --reports idle/ web03 db01
 | `mx export` | `-o FILE`, or what it printed |
 | `iperf-orchestrator` | `results/<run>/` after `run`, `all`, `summarize`, `process`, `parse-csv`, `export-overlay`: `iperf_results`, `cpu_summary` and the overlay |
 | `agree` | `--json`, `--csv`, `--merge-csv` files. With none of them, qd adds `--csv` (and `--merge-csv` for `script`) and says so |
-| `dcprobe` | `-o FILE` and `--history FILE` |
+| `dcprobe` | `-o FILE`, else where it writes unasked (`host_status.tsv` after `scan` and `watch`, `preflight.tsv` after `preflight`), and `--history FILE` |
 | `reckon` | `--overlay`, `--csv`, `--json` files |
 | `netmesh` | `--reports DIR`, `--grid DIR` |
 | any `--csv PATH` | that file; a bare `--csv` prints to stdout |

@@ -175,6 +175,10 @@ ssh had passed.
   ("no host has a 'row' attribute"), and the overlay's skip list missed
   it. `row` is no longer a reserved name; qd writes no column called that
   (`hosts.py` `RESERVED`).
+- `qd do -- dcprobe scan` with no `-o` filed only dcprobe's summary line,
+  not the `host_status.tsv` it writes by default. Each verb's default file
+  is now read: `host_status.tsv` after `scan` and `watch`,
+  `preflight.tsv` after `preflight` (`tools.py` `DCPROBE_OUT`).
 
 ### Security
 

@@ -161,6 +161,19 @@ t_agree_s_own_options_end_at_the_double_dash() {
     assert_contains "$(qd show latest:agree_hosts --format csv)" "n2,2,unreachable"
 }
 
+# dcprobe scan writes host_status.tsv when no -o says otherwise
+t_dcprobe_s_own_file_is_read() {
+    cat > "$FAKE_BIN/dcprobe" <<'EOF2'
+#!/bin/bash
+if [ "$1" = "--version" ]; then echo "dcprobe 1.19.1"; exit 0; fi
+printf '!test\tload1\tunit=load\nload1\ta\t0.5\nload1\tb\t9.0\n' > host_status.tsv
+echo "dcprobe: 2 hosts -> host_status.tsv"
+EOF2
+    chmod +x "$FAKE_BIN/dcprobe"
+    PATH="$FAKE_BIN:$PATH" qd "do" -- dcprobe scan --servers h.txt > /dev/null 2>&1
+    assert_contains "$(qd show latest --format csv)" "load1,b,9.0"
+}
+
 t_stdout_table_and_explicit_import() {
     printf 'a,b\n1,2\n' > made.csv
     qd "do" --import made.csv -- printf 'host,v\nx,1\ny,2\n' > /dev/null 2>&1
@@ -225,6 +238,7 @@ run_test "iperf-orchestrator: results/latest read"      t_iperf_reads_the_latest
 run_test "an earlier run's output is not filed"         t_an_earlier_run_s_output_is_not_filed
 run_test "agree: --csv added, exit status passed on"    t_agree_gets_csv_added_and_its_status_passes_through
 run_test "agree's own options end at --"                t_agree_s_own_options_end_at_the_double_dash
+run_test "dcprobe: its own file read, unasked"          t_dcprobe_s_own_file_is_read
 run_test "stdout table and --import"                    t_stdout_table_and_explicit_import
 run_test "plain text output is filed for provost"       t_plain_text_output_is_filed_for_provost_to_read
 run_test "a missing tool says how to get it"            t_missing_tool_says_how_to_get_it

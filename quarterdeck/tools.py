@@ -16,7 +16,8 @@ which are knowledge of where these tools put their output, not guesses:
   agree                   --json/--csv/--merge-csv files; with none, qd
                           adds --csv (and --merge-csv for `script`) into
                           the entry and says so
-  dcprobe                 -o FILE and --history FILE
+  dcprobe                 -o FILE (host_status.tsv after scan and watch,
+                          preflight.tsv after preflight) and --history
   reckon                  --overlay/--csv/--json FILE
   netmesh                 --reports DIR, --grid DIR
   any --csv PATH          that file; a bare --csv prints to stdout
@@ -218,6 +219,8 @@ class Plan(object):
         self.tool = ""
 
 
+DCPROBE_OUT = {"scan": "host_status.tsv", "watch": "host_status.tsv",
+               "preflight": "preflight.tsv"}
 IPERF_VERBS = ("run", "all", "summarize", "process", "parse-csv",
                "parse-cpu", "export-overlay", "results-summary")
 
@@ -276,9 +279,12 @@ def plan(argv, entry_dir):
             p.notes.append("added %s so the groups are filed with the run"
                            % " ".join(add[::2]))
     elif tool == "dcprobe":
-        for names, tname in ((["-o", "--output"], None),
-                             (["--history"], "history")):
-            v = opt(rest, names)
+        # where dcprobe writes when not told: scan and watch the
+        # host_status.tsv the viewer opens, preflight its own file
+        default = DCPROBE_OUT.get(verb)
+        for names, tname, dflt in ((["-o", "--output"], None, default),
+                                   (["--history"], "history", None)):
+            v = opt(rest, names) or dflt
             if v and v != "-":
                 p.imports.append((v, tname))
     elif tool == "reckon":
