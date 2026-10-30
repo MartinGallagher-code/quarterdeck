@@ -144,6 +144,11 @@ ssh had passed.
 - `r` (reload) in a view worked out from another one (grouped, a pivot,
   outliers, every column described) replaced it with the raw rows under
   the derived view's title. It now says to go back and reload there.
+- `qd do -- agree ... -- why-slow --csv x` read why-slow's `--csv x` as
+  agree's. That file is written on the far side, and qd added no `--csv`
+  of its own, so the groups went unfiled. A tool's options now end at `--`.
+  `agree script TOOL` with no `--` also gets the added `--csv` and
+  `--merge-csv` (`tools.py` `opt`, `plan`).
 
 ### Security
 

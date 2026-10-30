@@ -159,7 +159,11 @@ def install_hint(name):
 # ---------------------------------------------------------------------------
 
 def opt(argv, names):
-    """The last value given to any of these options, or None."""
+    """The last value given to any of these options, or None.  Nothing
+    after `--` is the tool's: `agree -- why-slow --csv x` is why-slow's
+    --csv, written on the far side."""
+    if "--" in argv:
+        argv = argv[:argv.index("--")]
     val = None
     for i, a in enumerate(argv):
         for n in names:
@@ -257,8 +261,10 @@ def plan(argv, entry_dir):
         given = [(v, n) for v, n in given if v and not v.startswith("-")]
         if given:
             p.imports.extend(given)
-        elif "--" in argv:
-            cut = argv.index("--")
+        elif verb in ("", "run", "script"):
+            # before the command, or at the end when there is none
+            # (`agree script why-slow -f hosts` takes no `--`)
+            cut = argv.index("--") if "--" in argv else len(argv)
             add = ["--csv", os.path.join(entry_dir, "agree.csv")]
             if verb == "script":
                 add += ["--merge-csv", os.path.join(entry_dir, "merged.csv")]

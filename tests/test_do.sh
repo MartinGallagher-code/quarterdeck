@@ -145,6 +145,22 @@ t_agree_gets_csv_added_and_its_status_passes_through() {
     assert_contains "$(qd log latest)" "exit      1"
 }
 
+# what follows -- is the remote command's: its --csv is not agree's, and
+# agree script takes no -- at all
+t_agree_s_own_options_end_at_the_double_dash() {
+    fake_agree
+    printf 'zzz,1\n' > remote.csv
+    PATH="$FAKE_BIN:$PATH" qd "do" -- agree --servers h.txt -- \
+        why-slow --csv remote.csv > /dev/null 2> err || true
+    assert_contains "$(cat err)" "added --csv"
+    assert_contains "$(qd show latest --format csv)" "n2,2,unreachable"
+    assert_eq "$(sed -n '$p' agree.args)" "remote.csv"
+    PATH="$FAKE_BIN:$PATH" qd "do" -- agree script why-slow --servers h.txt \
+        > /dev/null 2> err || true
+    assert_contains "$(cat err)" "added --csv --merge-csv"
+    assert_contains "$(qd show latest:agree_hosts --format csv)" "n2,2,unreachable"
+}
+
 t_stdout_table_and_explicit_import() {
     printf 'a,b\n1,2\n' > made.csv
     qd "do" --import made.csv -- printf 'host,v\nx,1\ny,2\n' > /dev/null 2>&1
@@ -187,6 +203,7 @@ run_test "mx export to stdout is read"                  t_mx_export_to_stdout_is
 run_test "iperf-orchestrator: results/latest read"      t_iperf_reads_the_latest_run
 run_test "an earlier run's output is not filed"         t_an_earlier_run_s_output_is_not_filed
 run_test "agree: --csv added, exit status passed on"    t_agree_gets_csv_added_and_its_status_passes_through
+run_test "agree's own options end at --"                t_agree_s_own_options_end_at_the_double_dash
 run_test "stdout table and --import"                    t_stdout_table_and_explicit_import
 run_test "plain text output is filed for provost"       t_plain_text_output_is_filed_for_provost_to_read
 run_test "a missing tool says how to get it"            t_missing_tool_says_how_to_get_it
