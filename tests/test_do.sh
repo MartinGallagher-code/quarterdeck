@@ -108,6 +108,7 @@ t_iperf_reads_the_latest_run() {
 # here: that is where they are read from
 t_iperf_s_script_keeps_its_results_beside_it() {
     mkdir -p src/iperf
+    # shellcheck disable=SC2016  # the stand-in expands it, not this shell
     sed 's|^d=results/|cd "$(dirname "$0")"; d=results/|' > src/iperf/iperf_orchestrator.sh <<'EOF2'
 #!/bin/bash
 if [ "$1" = "--version" ]; then echo "iperf-orchestrator 2.5.0"; exit 0; fi
