@@ -89,6 +89,20 @@ t_a_failing_tool_is_said_not_zeroed() {
     out="$(qd show containers --format csv)"
     assert_contains "$out" "ps refused"
     assert_not_contains "$(printf '%s\n' "$out" | head -1)" "docker_running"
+    # a package tool that fails has counted nothing; nvidia-smi that cannot
+    # reach its driver has measured nothing, and [N/A] is no reading
+    printf '#!/bin/sh\necho "rpmdb: open failed" >&2\nexit 1\n' > failbin/rpm
+    printf '#!/bin/sh\necho "NVIDIA-SMI has failed because it could not communicate with the NVIDIA driver."\nexit 9\n' > failbin/nvidia-smi
+    chmod +x failbin/rpm failbin/nvidia-smi
+    PATH="$PWD/failbin:$(path_without dpkg-query apk pacman)" qdf_rc probe packages gpu -s hosts.txt -q > out
+    out="$(qd show packages --format csv)"
+    assert_contains "$out" "rpm failed"
+    assert_not_contains "$(printf '%s\n' "$out" | head -1)" "packages,"
+    assert_contains "$(qd show gpu --cols host,status --format csv)" "a,failed"
+    printf '#!/bin/sh\necho "0, H100, 40, 10, 100, 80000, [N/A], 0"\n' > failbin/nvidia-smi
+    PATH="$PWD/failbin:$PATH" qdf probe gpu -s hosts.txt -q > out
+    assert_contains "$(qd show gpu --cols host,name,temp_c --format csv)" "a,H100,40"
+    assert_not_contains "$(qd show gpu --format csv)" "N/A"
 }
 
 # reachable's CSV goes where --csv says; its -o is the annotated host list

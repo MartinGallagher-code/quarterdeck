@@ -118,12 +118,15 @@ fi
      "systemd's state and failed units (counted only where systemd runs)",
      ""),
     ("gpu", "command", r"""
-if command -v nvidia-smi >/dev/null 2>&1; then
-  echo 'index,name,temp_c,util_pct,mem_used_mib,mem_total_mib,power_w,ecc_errors'
-  nvidia-smi --query-gpu=index,name,temperature.gpu,utilization.gpu,memory.used,memory.total,power.draw,ecc.errors.uncorrected.volatile.total --format=csv,noheader,nounits |
-    sed 's/, */,/g'
-else
+if ! command -v nvidia-smi >/dev/null 2>&1; then
   echo 'nvidia_smi: absent'
+elif o=$(nvidia-smi --query-gpu=index,name,temperature.gpu,utilization.gpu,memory.used,memory.total,power.draw,ecc.errors.uncorrected.volatile.total --format=csv,noheader,nounits 2>&1); then
+  echo 'index,name,temp_c,util_pct,mem_used_mib,mem_total_mib,power_w,ecc_errors'
+  printf '%s\n' "$o" | sed 's/, */,/g; s/\[[^],]*\]//g'
+else
+  echo 'nvidia_smi: failed'
+  printf 'error: %s\n' "$(printf '%s\n' "$o" | head -1)"
+  exit 1
 fi
 """.strip(),
      "NVIDIA GPUs: temperature, utilisation, memory, power, ECC errors", ""),
@@ -150,21 +153,26 @@ done
      "block devices: size in bytes, spinning or not, model (from /sys)", ""),
     ("packages", "command", r"""
 if command -v dpkg-query >/dev/null 2>&1; then
-  m=dpkg; n=$(dpkg-query -f '.\n' -W 2>/dev/null | wc -l)
-  if [ -f /var/run/reboot-required ]; then r=yes; else r=no; fi
+  m=dpkg; o=$(dpkg-query -f '.\n' -W 2>/dev/null) && n=$(printf '%s\n' "$o" | grep -c .)
+  # the flag is written by update-notifier's kernel hook: without it, its
+  # absence says nothing
+  if [ -f /var/run/reboot-required ]; then r=yes
+  elif [ -x /usr/share/update-notifier/notify-reboot-required ]; then r=no; fi
 elif command -v rpm >/dev/null 2>&1; then
-  m=rpm; n=$(rpm -qa 2>/dev/null | wc -l)
+  m=rpm; o=$(rpm -qa 2>/dev/null) && n=$(printf '%s\n' "$o" | grep -c .)
   if command -v needs-restarting >/dev/null 2>&1; then
     needs-restarting -r >/dev/null 2>&1
     case $? in 0) r=no ;; 1) r=yes ;; esac
   fi
 elif command -v apk >/dev/null 2>&1; then
-  m=apk; n=$(apk info 2>/dev/null | wc -l)
+  m=apk; o=$(apk info 2>/dev/null) && n=$(printf '%s\n' "$o" | grep -c .)
 elif command -v pacman >/dev/null 2>&1; then
-  m=pacman; n=$(pacman -Q 2>/dev/null | wc -l)
+  m=pacman; o=$(pacman -Q 2>/dev/null) && n=$(printf '%s\n' "$o" | grep -c .)
 else
   m=none
 fi
+# a tool that failed has counted nothing: said, not written as 0
+[ "$m" = none ] || [ -n "$n" ] || echo "packages_error: $m failed"
 echo "manager: $m"
 [ -z "$n" ] || echo "packages: $(echo $n)"
 [ -z "$r" ] || echo "reboot_required: $r"

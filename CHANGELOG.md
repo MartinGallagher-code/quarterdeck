@@ -222,6 +222,16 @@ ssh had passed.
   `nic=` on its host line, so a host whose NICs had all dropped to 10G
   passed. dcprobe now gets the attributes; `reachable` still gets names
   only (`tools.py` `READS_ATTRIBUTES`).
+- `gpu` probe: a `nvidia-smi` that could not reach its driver came back
+  `ok` (the pipeline's status was `sed`'s), and `[N/A]` was filed as a
+  reading. Now it says `nvidia_smi: failed` with the error and exits 1,
+  and a bracketed cell is blank.
+- `packages` probe: a package tool that failed was counted as `packages:
+  0`; now it says `packages_error: rpm failed`. On dpkg hosts
+  `reboot_required: no` was written wherever `/var/run/reboot-required`
+  was absent, including hosts with nothing installed that would ever
+  write it. It is now said only where update-notifier is there to write
+  it (`probes.py`).
 - A command on a host that exited 124 itself (`timeout 5 check`) was
   reported as a qd timeout and listed as not answering. qd's own timeout
   is now marked as such (`fleet.py` `TimedOut`).
