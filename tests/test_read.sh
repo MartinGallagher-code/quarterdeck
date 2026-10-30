@@ -213,6 +213,24 @@ t_brackets_and_nan() {
     assert_not_contains "$out" "nan"
 }
 
+# an unbalanced quote in a TSV is a character, not the start of a cell
+# that swallows every line after it
+t_an_unbalanced_quote_in_tsv() {
+    printf 'disk\tnote\tgb\nsda\t"5 inch\t100\nsdb\tok\t200\nsdc\tok\t300\n' > q.tsv
+    out="$(qd show q.tsv --format csv)"
+    assert_eq "$(printf '%s\n' "$out" | tail -n +2 | wc -l | tr -d ' ')" "3"
+    assert_contains "$out" "sdc,ok,300"
+}
+
+# a header whose first cell is blank (pandas' index column) is a header
+t_a_blank_first_header_cell() {
+    printf ',host,mbps\n0,a,940\n1,b,610\n' > pd.csv
+    assert_contains "$(qd show pd.csv --cols host,mbps --format csv)" "b,610"
+    assert_contains "$(qd stats pd.csv mbps)" "max 940"
+}
+
+run_test "a blank first header cell"                 t_a_blank_first_header_cell
+run_test "an unbalanced quote in a TSV"             t_an_unbalanced_quote_in_tsv
 run_test "[INFO] logs, and JSON NaN"                t_brackets_and_nan
 run_test "a data column called n is kept"            t_a_data_column_called_n_is_kept
 run_test "results format, !test lines, meta"            t_results_format_with_meta

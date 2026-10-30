@@ -341,7 +341,11 @@ def split_results_fields(line):
 
 
 def _is_header(fields):
-    return all(f.strip() and to_num(f) is None for f in fields)
+    """Every cell a name.  The first may be blank: the index column pandas
+    and R write (`,host,mbps`), named col_1 by _dedupe."""
+    rest = fields[1:] if len(fields) > 1 and not fields[0].strip() \
+        else fields
+    return all(f.strip() and to_num(f) is None for f in rest)
 
 
 def _dedupe(names):
@@ -411,7 +415,15 @@ def parse_delimited(text, name="data", source=""):
             return ln.split()
         return next(csv.reader([ln], delimiter=delim))
 
-    if delim is not None:
+    if delim == "\t":
+        # TSV line by line: a quote does not carry a cell across lines, and
+        # a line with an unbalanced quote (`"5 inch`) reads it as a
+        # character rather than swallowing every line after it
+        rows = [next(csv.reader([ln], delimiter=delim,
+                                quoting=csv.QUOTE_NONE
+                                if ln.count('"') % 2 else csv.QUOTE_MINIMAL))
+                for ln in body]
+    elif delim is not None:
         rows = list(csv.reader(io.StringIO("\n".join(body) + "\n"),
                                delimiter=delim))
     else:

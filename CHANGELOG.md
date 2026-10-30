@@ -103,6 +103,10 @@ ssh had passed.
     (bytes, seconds) throughout -- `normalize_units`, `to_base` -- and a
     literal with a unit compares on it; export keeps a unit as written.
     Mixed times were dropped to their commonest unit; they are seconds now.
+  - A TSV with an unbalanced quote (`"5 inch`) read every line after it
+    into that one cell; a TSV is read line by line, such a quote a
+    character. A header whose first cell is blank (pandas' and R's index
+    column, `,host,mbps`) was taken for data; it is a header.
   - `qd doe run --blocks-by ATTR` said nothing of the host groups a design
     with fewer blocks leaves out, and a re-run without the same
     `--blocks-by` was allowed; the first is said, the second refused.
