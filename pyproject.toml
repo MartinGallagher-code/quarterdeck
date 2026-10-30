@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Martin J. Gallagher
+
+[build-system]
+# 64, not 77, for the reason binnacle gives: the PEP 639 license string
+# needs setuptools>=77, which needs Python>=3.9, and this package
+# advertises 3.6.
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quarterdeck"
+version = "0.1.0"
+description = "Run commands across a fleet, keep every answer as a dataset, and read it back: statistics, diffs, a terminal explorer and a browser view"
+readme = "README.md"
+requires-python = ">=3.6"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Martin J. Gallagher" }]
+maintainers = [{ name = "Martin J. Gallagher" }]
+keywords = [
+    "fleet",
+    "ssh",
+    "sysadmin",
+    "dataset",
+    "statistics",
+    "diff",
+    "outliers",
+    "tui",
+    "dashboard",
+    "benchmark",
+    "network",
+    "observability",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: Console :: Curses",
+    "Environment :: Web Environment",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Intended Audience :: System Administrators",
+    "Intended Audience :: Information Technology",
+    "Operating System :: POSIX",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.6",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Systems Administration",
+    "Topic :: System :: Networking :: Monitoring",
+    "Topic :: System :: Benchmark",
+    "Topic :: Utilities",
+]
+
+# Standard library only.  It runs on the machine you drive the fleet from,
+# which is often the one with the least on it; nothing is installed on the
+# fleet at all.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/MartinGallagher-code/quarterdeck"
+Repository = "https://github.com/MartinGallagher-code/quarterdeck"
+Issues = "https://github.com/MartinGallagher-code/quarterdeck/issues"
+Changelog = "https://github.com/MartinGallagher-code/quarterdeck/blob/main/CHANGELOG.md"
+
+[project.scripts]
+qd = "quarterdeck.cli:main"
+quarterdeck = "quarterdeck.cli:main"
+
+[tool.setuptools]
+packages = ["quarterdeck"]
+
+[tool.setuptools.package-data]
+quarterdeck = ["web/*.html", "web/*.js", "web/*.css"]

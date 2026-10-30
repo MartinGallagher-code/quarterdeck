@@ -1,0 +1,10 @@
+include LICENSE
+include README.md
+include CHANGELOG.md
+include REUSE.toml
+include qd
+recursive-include LICENSES *
+recursive-include quarterdeck/web *.html *.js *.css
+# Ship the test suite in the sdist so it can be run against exactly what was
+# unpacked. It needs only bash and python3.
+recursive-include tests *
