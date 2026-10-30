@@ -30,6 +30,17 @@ t_by_attribute_and_files() {
     assert_contains "$(cat err)" "no host has a 'role' attribute"
 }
 
+# two values that clean to one name are two lists, never one file
+# written twice
+t_values_that_clean_alike_are_two_lists() {
+    printf '%s\n' 'n1 room=a/b' 'n2 room=a:b' 'n3 room=A_B' > hosts.txt
+    out="$(qd split -s hosts.txt --by room --out lists)"
+    assert_contains "$out" "3 hosts into 3 lists"
+    assert_contains "$out" "room-a_b-2"
+    assert_eq "$(ls lists | wc -l | tr -d ' ')" "3"
+    assert_eq "$(cat lists/*.txt | grep -v '^#' | cut -d' ' -f1 | sort | tr '\n' ' ')" "n1 n2 n3 "
+}
+
 t_shards_deals_and_waves() {
     fleet
     assert_eq "$(groups_of --into 4)" "shard-1:n1 shard-1:n2 shard-2:n3 shard-2:n4 shard-3:n5 shard-4:n6 "
@@ -121,6 +132,7 @@ t_answers_of_a_multi_pass_run() {
 
 run_test "--answers: a multi-pass run"              t_answers_of_a_multi_pass_run
 run_test "--by ATTR, and the lists as files"          t_by_attribute_and_files
+run_test "values that clean alike: two lists"         t_values_that_clean_alike_are_two_lists
 run_test "--into, --deal, --size"                     t_shards_deals_and_waves
 run_test "--random: seeded, --stratify"               t_random_is_seeded_and_stratified
 run_test "--ab, --canary, --pairs, --ring"            t_ab_canary_and_pairs

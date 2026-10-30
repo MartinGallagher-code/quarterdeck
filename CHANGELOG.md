@@ -161,6 +161,15 @@ ssh had passed.
   `512M` beside `2G` was summarised in bytes and labelled as nothing.
   Both now read one function, which takes the scale of the figures
   first (`tools.py` `column_unit`).
+- Two attribute values that clean to one name (`room=a/b`, `room=a:b`)
+  were two groups with one name. `qd split --out` wrote both to one file
+  and said it had written three lists, and campaign parts and doe blocks
+  took each other's hosts. The second is now `room-a_b-2`, judged
+  ignoring case, as a Mac's file system does (`split.py` `unique`).
+- A host line with a space in an attribute value (a layout's
+  `role=gpu server`, from manifest) was written as it was. Read back, the
+  line held a second host, `server`, and qd would have sshed to it. The
+  space is now written as `_` (`hosts.py` `Host.token`).
 
 ### Security
 

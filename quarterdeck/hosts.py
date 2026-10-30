@@ -55,7 +55,11 @@ class Host(object):
                              ":%d" % self.port if self.port else "")
         if plain:
             return t
-        return " ".join([t] + ["%s=%s" % kv for kv in self.attrs])
+        # a host line is split on spaces, by qd and every tool of the
+        # suite: `model=HGX H100` written as it is reads back as a host
+        # called H100, so a space in a value is written as _
+        return " ".join([t] + ["%s=%s" % (k, re.sub(r"\s+", "_", v.strip()))
+                               for k, v in self.attrs])
 
 
 # canonical copy of the range expander and the address parser:

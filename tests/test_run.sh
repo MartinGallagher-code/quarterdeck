@@ -56,6 +56,20 @@ t_hosts_warn_when_an_attribute_looks_like_a_host() {
     assert_not_contains "$out" "attribute"
 }
 
+# a host line is split on spaces, here and by every tool of the suite: a
+# value with a space in it, written as it is, would read back as a host
+t_a_host_line_reads_back_as_its_host() {
+    printf 'dc A\n' > floor.dc
+    printf '%s\n' '#!/bin/sh' \
+        'echo "name,path,kind,role,room,row,rack,slot"' \
+        'echo "wr01r01u01,A/wr01/A/r01/u01,node,gpu server,wr01,A,r01,u01"' \
+        > "$FAKE_BIN/manifest-ok"
+    chmod +x "$FAKE_BIN/manifest-ok"
+    QD_MANIFEST="$FAKE_BIN/manifest-ok" qd hosts --layout floor.dc 'rack[1]' > hosts.txt
+    assert_contains "$(cat hosts.txt)" "role=gpu_server"
+    assert_eq "$(qd hosts -s hosts.txt --plain)" "wr01r01u01"
+}
+
 t_hosts_layout_asks_manifest() {
     printf 'dc A\n' > floor.dc
     # binnacle's manifest, played by a stand-in that answers its --csv
@@ -430,6 +444,7 @@ t_lang_c_and_utf8_output_survive() {
     assert_contains "$out" "caf"
 }
 
+run_test "a host line reads back as its host"        t_a_host_line_reads_back_as_its_host
 run_test "version, --help and help"                 t_version_and_help
 run_test "hosts: ranges, attributes, order"           t_hosts_ranges_attrs_and_order
 run_test "hosts: warn on an attribute that is a host" t_hosts_warn_when_an_attribute_looks_like_a_host

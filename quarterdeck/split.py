@@ -44,6 +44,22 @@ def group_name(prefix, value):
     return "%s%s" % (prefix, v) if prefix else v
 
 
+def unique(groups):
+    """Each group a name of its own.  rack=a/b and rack=a_b both clean to
+    rack-a_b, and one host file would overwrite the other (one campaign
+    part, one doe block, take the other's hosts); so would rack-R1 and
+    rack-r1 on a file system that ignores case."""
+    seen, out = set(), []
+    for g, hs in groups:
+        name, k = g, 2
+        while name.lower() in seen:
+            name = "%s-%d" % (g, k)
+            k += 1
+        seen.add(name.lower())
+        out.append((name, hs))
+    return out
+
+
 def by_attr(hosts, attr):
     groups, order = {}, []
     for h in hosts:
@@ -59,8 +75,8 @@ def by_attr(hosts, attr):
             attr, ", ".join(sorted(set(k for h in hosts for k, _ in h.attrs)))
             or "none"))
     from .stats import natural_sorted
-    return [(group_name("%s-" % slug(attr), v), groups[v])
-            for v in natural_sorted(order)]
+    return unique([(group_name("%s-" % slug(attr), v), groups[v])
+                   for v in natural_sorted(order)])
 
 
 def into(hosts, n, deal=False):
@@ -232,7 +248,7 @@ def by_answers(hosts, entry):
     w = len(str(len(ok)))
     out = [("answer-%0*d" % (w, i + 1), groups[k]) for i, k in enumerate(ok)]
     out += [(group_name("", k[1]), groups[k]) for k in bad]
-    return out
+    return unique(out)
 
 
 def as_table(groups):
