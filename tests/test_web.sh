@@ -73,6 +73,14 @@ t_column_figures_match_the_cli() {
     assert_contains "$out" '"e", 9.0'
     cli="$(qd stats latest A)"
     assert_contains "$cli" "median 0.5"
+    # the page's counts and shares are the engine's, not worked out there
+    out="$(get '/api/column?e=latest&c=status')"
+    assert_contains "$out" '"agree": 5'
+    assert_contains "$out" '"disagree": 0'
+    assert_contains "$out" '"e"], 5, 100.0]'
+    out="$(get '/api/trend?e=latest&c=A&over=')"
+    assert_contains "$out" '"summary": {"n": 1, "first": 9.0, "last": 9.0, "min": 9.0, "max": 9.0}'
+    assert_contains "$(get '/api/diff?b=latest')" '"both": 5'
 }
 
 # the unit is the scale the figures are on: 512M beside 2G are bytes

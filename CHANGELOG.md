@@ -179,6 +179,12 @@ ssh had passed.
   not the `host_status.tsv` it writes by default. Each verb's default file
   is now read: `host_status.tsv` after `scan` and `watch`,
   `preflight.tsv` after `preflight` (`tools.py` `DCPROBE_OUT`).
+- The web page worked out some figures itself, against the rule that it
+  computes nothing: a value's share of the rows, how many agree on the
+  most common value, the trend table's n, first, last, min and max, and
+  the diff's keys-in-both. The API now gives each one: `top` entries
+  carry their share, `agree` and `disagree`, each series a `summary`,
+  and the diff `both` (`web.py`, `web/app.js`).
 
 ### Security
 

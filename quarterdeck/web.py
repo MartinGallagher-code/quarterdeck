@@ -191,8 +191,12 @@ class Api(object):
                               else z, side] for k, v, _, rel, z, side
                              in rows[:50]]}
         fr = stats.freq(s, c)
-        out["top"] = [[v, n, labels[:12], len(labels)]
+        rows = max(1, len(vals))
+        # [value, rows, labels, how many labels, % of the rows]
+        out["top"] = [[v, n, labels[:12], len(labels), 100.0 * n / rows]
                       for v, n, labels in fr[:30]]
+        out["agree"] = fr[0][1] if fr else 0
+        out["disagree"] = len(vals) - out["agree"]
         out["more_values"] = max(0, len(fr) - 30)
         out["over"] = stats.default_over(s)
         return out
@@ -267,7 +271,13 @@ class Api(object):
         series = []
         for g in stats.natural_sorted(order):
             pts = sorted(groups[g], key=lambda p: p[0])
-            series.append({"group": g, "points": pts})
+            ys = [p[2] for p in pts if p[2] is not None]
+            # the series table's figures, worked out here, not in the page
+            series.append({"group": g, "points": pts, "summary": {
+                "n": len(ys), "first": ys[0] if ys else None,
+                "last": ys[-1] if ys else None,
+                "min": min(ys) if ys else None,
+                "max": max(ys) if ys else None}})
         return {"column": c, "by": by, "over": over, "series": series,
                 "numeric_x": numeric and oi is not None,
                 "x_labels": labels}
@@ -313,6 +323,7 @@ class Api(object):
                 "only_b": [list(k) for k in res.only_b],
                 "same": res.same, "changed": changed,
                 "changed_total": len(res.changed),
+                "both": len(res.changed) + res.same,
                 "col_summary": res.col_summary}
 
     def compare(self, q):
