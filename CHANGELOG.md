@@ -253,6 +253,11 @@ ssh had passed.
   that provost's TSV reader drops them. A table with a quote in it is
   now filed as quoted CSV, which every provost reads whole
   (`filing.py` `table_tsv`).
+- A file a tool appends to (`dcprobe --history`, `dcprobe scan
+  --append`, `mx export --append`) was filed whole, so every run filed
+  all the earlier runs' rows again as its own, and its statistics mixed
+  them. qd notes the file's size before the run and files only the rows
+  added since (`cli.py` `only_added`, `tools.py` `Plan.appends`).
 - A command on a host that exited 124 itself (`timeout 5 check`) was
   reported as a qd timeout and listed as not answering. qd's own timeout
   is now marked as such (`fleet.py` `TimedOut`).

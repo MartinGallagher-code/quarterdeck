@@ -195,6 +195,30 @@ EOF2
     assert_not_contains "$(qd log latest)" "mx_export"
 }
 
+# a file a tool appends to holds every earlier run too: only the rows
+# this run added are this run's
+t_an_appended_file_files_only_what_was_added() {
+    cat > "$FAKE_BIN/dcprobe" <<'EOF2'
+#!/bin/bash
+if [ "$1" = "--version" ]; then echo "dcprobe 1.19.1"; exit 0; fi
+v=$(cat value)
+[ -f hist.tsv ] || printf '!test\tload1\tunit=load\n' > hist.tsv
+printf 'load1\ta\t%s\nload1\tb\t%s\n' "$v" "$v" >> hist.tsv
+printf 'load1\ta\t%s\nload1\tb\t%s\n' "$v" "$v" > host_status.tsv
+EOF2
+    chmod +x "$FAKE_BIN/dcprobe"
+    echo 9.9 > value
+    PATH="$FAKE_BIN:$PATH" qd "do" -- dcprobe watch --history hist.tsv > /dev/null 2>&1
+    echo 1.5 > value
+    PATH="$FAKE_BIN:$PATH" qd "do" -- dcprobe watch --history hist.tsv > /dev/null 2> err
+    assert_contains "$(cat err)" "only the rows this run added"
+    out="$(qd show latest:history --format csv)"
+    assert_contains "$out" "load1,b,1.5"
+    assert_not_contains "$out" "9.9"
+    # the first run's are the first run's, whole
+    assert_contains "$(qd show latest~1:history --format csv)" "load1,a,9.9"
+}
+
 # dcprobe scan writes host_status.tsv when no -o says otherwise
 t_dcprobe_s_own_file_is_read() {
     cat > "$FAKE_BIN/dcprobe" <<'EOF2'
@@ -274,6 +298,7 @@ run_test "an earlier run's output is not filed"         t_an_earlier_run_s_outpu
 run_test "agree: --csv added, exit status passed on"    t_agree_gets_csv_added_and_its_status_passes_through
 run_test "agree's own options end at --"                t_agree_s_own_options_end_at_the_double_dash
 run_test "mx export after a run that wrote nothing"     t_mx_export_of_an_earlier_run_s_reports_is_not_run
+run_test "an appended file: only what was added"       t_an_appended_file_files_only_what_was_added
 run_test "dcprobe: its own file read, unasked"          t_dcprobe_s_own_file_is_read
 run_test "stdout table and --import"                    t_stdout_table_and_explicit_import
 run_test "plain text output is filed for provost"       t_plain_text_output_is_filed_for_provost_to_read

@@ -642,6 +642,30 @@ def written_mark(path):
     return tuple(marks)
 
 
+def only_added(path, size, tables, log):
+    """The rows a run added to a file it appends to: the file as it is,
+    less the rows its first `size` bytes -- what it held before -- read to.
+    A header and a !test block stay the file's own."""
+    with open(path, "rb") as fh:
+        was = fh.read(size).decode("utf-8-sig", "replace")
+    try:
+        old = tablemod.parse_text(was, tables[0].name if tables else "data",
+                                  path) if was.strip() else []
+    except QdError:
+        old = []
+    n = sum(len(t.rows) for t in old)
+    out = []
+    for t in tables:
+        k = min(n, len(t.rows))
+        n -= k
+        if t.rows[k:]:
+            t.rows = t.rows[k:]
+            out.append(t)
+    log.append("  - %s: appended to; only the rows this run added are "
+               "filed" % path)
+    return out
+
+
 def run_teed(argv):
     """Run argv with stdout shown live and kept; stderr and stdin stay the
     terminal's, so progress lines and prompts work as they always do."""
@@ -741,6 +765,9 @@ def _do(args, cmd, st, prov, name, label, cmdline, work):
     # an earlier run's, and is not this one's to file (--import is the
     # user's word, and is read whatever it holds)
     before = dict((path, written_mark(path)) for path, _ in plan.imports)
+    # what an appended-to file held before: those rows are earlier runs'
+    held = dict((path, os.path.getsize(path)) for path in plan.appends
+                if os.path.isfile(path))
     for path in args.import_ or []:
         before.pop(path, None)
         if path not in [p for p, _ in plan.imports]:
@@ -790,6 +817,8 @@ def _do(args, cmd, st, prov, name, label, cmdline, work):
             continue
         try:
             got = importers.read_path(path)
+            if held.get(path):
+                got = only_added(path, held[path], got, log)
         except QdError as exc:
             log.append("  - %s: %s" % (path, exc))
             continue

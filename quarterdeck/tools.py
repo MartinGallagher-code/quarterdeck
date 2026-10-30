@@ -229,6 +229,9 @@ class Plan(object):
         self.imports = []          # (path, table name or None)
         self.after = []            # (argv, output path, table name)
         self.notes = []
+        # outputs the tool adds to rather than rewrites (dcprobe --history,
+        # --append): only what this run added is this run's
+        self.appends = set()
         self.tool = ""
 
 
@@ -266,6 +269,9 @@ def plan(argv, entry_dir):
             o = opt(rest, ["-o", "--output"])
             if o and o != "-":
                 p.imports.append((o, "mx_export"))
+                own = rest[:rest.index("--")] if "--" in rest else rest
+                if "--append" in own:
+                    p.appends.add(o)
     elif tool == "iperf-orchestrator":
         if any(v in rest for v in IPERF_VERBS):
             base = opt(rest, ["-o", "--output"]) or os.environ.get(
@@ -300,11 +306,14 @@ def plan(argv, entry_dir):
         # where dcprobe writes when not told: scan and watch the
         # host_status.tsv the viewer opens, preflight its own file
         default = DCPROBE_OUT.get(verb)
+        appending = "--append" in rest
         for names, tname, dflt in ((["-o", "--output"], None, default),
                                    (["--history"], "history", None)):
             v = opt(rest, names) or dflt
             if v and v != "-":
                 p.imports.append((v, tname))
+                if tname == "history" or appending:
+                    p.appends.add(v)
     elif tool == "reckon":
         for names, tname in ((["--overlay"], "reckon_overlay"),
                              (["--csv"], "reckon_findings"),
