@@ -177,6 +177,15 @@ t_export_formats_and_overlay() {
     assert_not_contains "$out" "qd_load1	b"
     qd export d.csv -o out.tsv
     assert_contains "$(cat out.tsv)" "host	status"
+    # a sample is a number: sizes in bytes, times in seconds, unit said
+    printf 'host,mem,lat,cpu\na,512M,900ms,37%%\nb,2G,1.2s,40%%\n' > u.csv
+    out="$(qd export u.csv --format overlay)"
+    assert_contains "$out" "qd_mem	a	536870912"
+    assert_contains "$out" "qd_mem	b	2147483648"
+    assert_contains "$out" "qd_lat	a	0.9"
+    assert_contains "$out" "qd_cpu	b	40"
+    assert_contains "$out" "unit=B"
+    assert_not_contains "$out" "512M"
 }
 
 t_as_overrides_detection() {

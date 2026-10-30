@@ -126,6 +126,12 @@ ssh had passed.
   the run changed it, judged by comparing each file's size, mtime and
   inode before and after the run (no clock is consulted). `--import` still
   files what it names as it is (`cli.py` `written_mark`, `_do`).
+- The floor-plan overlay (`qd floor`, `qd export --format overlay`, the
+  web page's) wrote a size or a time as it was written: `512M` and `900ms`
+  went to the viewer as values it could not read as numbers. A column's
+  numbers now go over on its scale (bytes when sizes are mixed, seconds
+  when times are), with its unit in the `!test` line. A plain number is
+  still written as it was (`tools.py` `to_overlay`).
 
 ### Security
 

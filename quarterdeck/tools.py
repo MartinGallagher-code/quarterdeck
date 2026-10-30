@@ -24,13 +24,14 @@ which are knowledge of where these tools put their output, not guesses:
 """
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 
 from .common import env
-from .table import Table, slug, to_num
+from .table import Table, slug
 
 BINNACLE = ("binnacle", "why-slow", "agree", "logtriage", "netmesh",
             "reachable", "resolve", "during", "skew", "muster", "manifest",
@@ -311,6 +312,9 @@ UNITS = (("_pct", "%"), ("_percent", "%"), ("_us", "us"), ("_ms", "ms"),
          ("_c", "C"))
 
 
+PLAIN_NUMBER = re.compile(r"^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$")
+
+
 def guess_unit(col):
     s = slug(col)
     for suffix, unit in UNITS:
@@ -357,13 +361,15 @@ def to_overlay(table, run_label=None, prefix="qd_", target=None):
         kind = table.kind(c)
         name = prefix + (slug(c) or "value")
         if c == "status" or slug(c) == "status":
-            plan_cols.append((table.index(c), name, "status"))
+            plan_cols.append((table.index(c), name, "status", None))
             tests[name] = [("short", "STAT"),
                            ("label", "Answered (%s)" % c)]
         elif kind == "num":
-            plan_cols.append((table.index(c), name, "num"))
+            # the viewer reads a sample as a number: 512M and 2G go over
+            # as bytes, 900ms and 1.2s as seconds, and the unit is said
+            plan_cols.append((table.index(c), name, "num", table.numbers(c)))
             meta = []
-            u = guess_unit(c)
+            u = table.unit(c) or guess_unit(c)
             if u:
                 meta.append(("unit", u))
             meta.append(("label", c))
@@ -371,15 +377,15 @@ def to_overlay(table, run_label=None, prefix="qd_", target=None):
         elif kind == "text" and set(v.strip().upper() for v in
                                     table.values(c) if v.strip()) <= \
                 set(("PASS", "WARN", "FAIL")):
-            plan_cols.append((table.index(c), name, "verdict"))
+            plan_cols.append((table.index(c), name, "verdict", None))
             tests[name] = [("label", c)]
     rows = []
     meta_cols = (["peer"] if pcol else []) + (["run"] if run_label else [])
-    for r in table.rows:
+    for n, r in enumerate(table.rows):
         tgt = r[ti].strip()
         if not tgt:
             continue
-        for i, name, kind in plan_cols:
+        for i, name, kind, nums in plan_cols:
             v = r[i].strip()
             if not v:
                 continue
@@ -387,9 +393,12 @@ def to_overlay(table, run_label=None, prefix="qd_", target=None):
                 verdict = STATUS_VERDICT.get(v.lower(), "WARN")
                 v = verdict
             elif kind == "num":
-                if to_num(v) is None:
+                if nums[n] is None:
                     continue
-                v = v.rstrip("%").strip()
+                plain = v.rstrip("%").strip()
+                # as written where it is a number already (9.0, a counter
+                # past 2**53); put on the column's scale where it is not
+                v = plain if PLAIN_NUMBER.match(plain) else "%.15g" % nums[n]
             row = [name, tgt, v]
             if pcol:
                 row.append(r[pi])
