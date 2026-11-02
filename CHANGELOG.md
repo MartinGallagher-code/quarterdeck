@@ -17,8 +17,11 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
   is not a provost store (`stores.py`: `fetch`, `ready`, `why_not`;
   `cli.py`: `new_remote`).
   - **Fetched before reading:** only what is new, over the ssh `qd run`
-    uses (`QD_SSH`), at most every `QD_REMOTE_REFRESH` seconds (30).
-    `--no-fetch` (`QD_NO_FETCH=1`) reads the copy as it is.
+    uses (`QD_SSH`, and `QD_SSH_USER` when the spec names no user), at most
+    every `QD_REMOTE_REFRESH` seconds (30). `--no-fetch` (`QD_NO_FETCH=1`)
+    reads the copy as it is. The copy keeps no reflog, so git's own gc
+    prunes what each fetch replaces, and the copy never grows past one
+    store's worth.
   - **An unreachable host:** the last copy is read, and its age said. The
     host is not tried again until `QD_REMOTE_REFRESH` has passed, so `qd
     web` never waits on it twice in a row.
@@ -38,13 +41,19 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
     the store there as it was. `qd doctor` says what the store is a copy
     of.
 
+Checked over real ssh too, against a Debian 12 container running sshd and
+git 2.39: the copy made and refreshed in about 0.3 s a fetch, a stopped
+host falling back to the copy, a refused login, and a store chowned to
+another user, each said as above.
+
 ### Tests
 - `tests/test_remote.sh`, over the suite's fake ssh with git's own
   upload-pack:
   - the copy is made, shallow, read, and refreshed only when due;
   - `--no-fetch`;
-  - writes refused before any ssh call, with the copy and the store there
-    unchanged;
+  - `QD_SSH_USER`, and a spec's own user before it;
+  - writes refused before any ssh call (a campaign's and a design's runs
+    among them), with the copy and the store there unchanged;
   - an unreachable host leaves the copy, and is tried once;
   - what cannot be a remote store, with nothing left behind;
   - another user's store, explained;

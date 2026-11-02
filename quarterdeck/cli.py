@@ -120,7 +120,7 @@ def out(text=""):
 # the verbs that file into the store, or delete from it; and the actions
 # that do, of the verbs that only sometimes do
 WRITES = ("run", "probe", "do", "import", "rm")
-WRITE_ACTIONS = {"campaign": ("new", "run", "retry"), "doe": ("plan", "run")}
+WRITE_ACTIONS = {"campaign": ("new", "run", "retry"), "doe": ("run",)}
 
 
 def store_of(args):

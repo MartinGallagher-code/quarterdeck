@@ -67,6 +67,14 @@ t_nothing_files_into_a_copy() {
     assert_contains "$(cat err)" "does not delete from it"
     qd_rc store clear wr01 --yes 2> err
     assert_contains "$(cat err)" "does not clear it"
+    # a campaign's and a design's runs, by their store, before anything
+    qd_rc campaign run burn --store wr01 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "does not file into it"
+    printf '{"factors": {"mtu": [1500, 9000]}}' > d.json
+    qd_rc doe run d.json -S node01 --store wr01 -- echo x 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "does not file into it"
     # QD_STORE and the active store are refused the same way
     qd store use wr01 > /dev/null
     qd_rc import load.csv 2> err
@@ -75,6 +83,25 @@ t_nothing_files_into_a_copy() {
     assert_eq "$(git -C "$(COPY wr01)" status --porcelain)" ""
     # and the store there is as it was
     assert_eq "$(there log | tail -n +2 | wc -l | tr -d ' ')" "1"
+}
+
+# QD_SSH_USER, as qd run logs in, unless the spec names a user
+t_the_fleets_ssh_user() {
+    seed
+    cat > "$FAKE_BIN/ssh-who" <<EOF
+#!/bin/bash
+echo "\$*" >> "$TEST_TMPDIR/who.log"
+exec "$FAKE_BIN/ssh" "\$@"
+EOF
+    chmod +x "$FAKE_BIN/ssh-who"
+    QD_SSH="$FAKE_BIN/ssh-who" QD_SSH_USER=lab qd store new a --remote wr01:store > /dev/null
+    assert_contains "$(cat who.log)" "lab@wr01"
+    : > who.log
+    QD_SSH="$FAKE_BIN/ssh-who" QD_SSH_USER=lab qd store new b --remote ops@wr01:store > /dev/null
+    assert_contains "$(cat who.log)" "ops@wr01"
+    assert_not_contains "$(cat who.log)" "lab@"
+    # a copy keeps no reflog: what a fetch replaces can be pruned
+    assert_eq "$(git -C "$(COPY a)" config core.logAllRefUpdates)" "false"
 }
 
 t_an_unreachable_host_leaves_the_copy() {
@@ -175,6 +202,7 @@ t_the_web_page_reads_a_remote_store() {
 
 run_test "a remote store reads, and refreshes"       t_a_remote_store_reads_and_refreshes
 run_test "nothing files into a copy"                 t_nothing_files_into_a_copy
+run_test "the fleet's ssh user"                     t_the_fleets_ssh_user
 run_test "an unreachable host leaves the copy"       t_an_unreachable_host_leaves_the_copy
 run_test "what cannot be a remote store"             t_what_cannot_be_a_remote_store
 run_test "another user's store, explained"           t_another_users_store_is_explained

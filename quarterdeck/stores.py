@@ -34,9 +34,9 @@ A remote store is a store on another machine, read here from a git copy:
 
 The copy is shallow -- the store as it is now, no history, which no read
 needs -- and lives in ~/.cache/quarterdeck/remotes/NAME.  Before a command
-reads it, what is new is fetched over the ssh `qd run` uses (QD_SSH), at
-most every QD_REMOTE_REFRESH seconds; a host that cannot be reached leaves
-the last copy, said with its age.  Nothing files into a copy: it would
+reads it, what is new is fetched over the ssh `qd run` uses (QD_SSH,
+QD_SSH_USER), at most every QD_REMOTE_REFRESH seconds; a host that cannot
+be reached leaves the last copy, said with its age.  Nothing files into a copy: it would
 part from the store it is a copy of.
 """
 
@@ -274,6 +274,16 @@ def remote_host(spec):
     return spec.split(":", 1)[0].split("@")[-1]
 
 
+def ssh_spec(spec):
+    """The spec as ssh is given it: with QD_SSH_USER, as `qd run` logs in,
+    when it names no user of its own."""
+    user = env("SSH_USER")
+    head = spec.split(":", 1)[0]
+    if user and "@" not in head:
+        return "%s@%s" % (user, spec)
+    return spec
+
+
 def _stamp_age(path, stamp):
     try:
         return time.time() - os.path.getmtime(
@@ -362,7 +372,7 @@ def _fetch_into(repo, spec):
     err = ""
     for branch in ("main", "master"):
         rc, err = _git(["fetch", "--quiet", "--depth", "1", "--no-tags",
-                        spec, branch], cwd=repo)
+                        ssh_spec(spec), branch], cwd=repo)
         if rc == 0:
             rc, err = _git(["reset", "--quiet", "--hard", "FETCH_HEAD"],
                            cwd=repo)
@@ -391,6 +401,10 @@ def fetch(spec, path):
         # made beside it and renamed into place: never a half copy
         repo = tempfile.mkdtemp(prefix=".copy.", dir=os.path.dirname(path))
         rc, err = _git(["init", "--quiet", repo])
+        for k, v in (("core.logAllRefUpdates", "false"),
+                     ("gc.pruneExpire", "now")):
+            if rc == 0:
+                rc, err = _git(["config", k, v], cwd=repo)
         if rc != 0:
             shutil.rmtree(repo, ignore_errors=True)
             return "cannot make a copy in %s: %s" % (repo, err.strip())

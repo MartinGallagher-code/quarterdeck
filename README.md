@@ -186,7 +186,8 @@ new` makes the copy at once, so a store that cannot be reached is reported
 straight away.
 
 - **Fetching:** before a command reads the store, qd fetches what is new
-  over the same ssh `qd run` uses (`QD_SSH`, your keys, your jump hosts),
+  over the same ssh `qd run` uses (`QD_SSH`, `QD_SSH_USER` unless the spec
+  names a user, your keys, your jump hosts),
   at most once every `QD_REMOTE_REFRESH` seconds (30). `qd web` fetches the
   same way while the page is open, so new runs show without a restart, and
   its store picker lists the remote store with its host.
