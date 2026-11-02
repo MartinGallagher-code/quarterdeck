@@ -524,6 +524,36 @@ class Store(object):
         found.reverse()
         return found
 
+    def capture_ids(self):
+        try:
+            names = os.listdir(self.path("captures"))
+        except OSError:
+            return []
+        return sorted(n for n in names if re.match(r"^c\d+$", n))
+
+    def all_run_captures(self, e):
+        """Every capture run `e` filed: its answers and tables (the
+        '#% run=RUN' ones, every capture read if walking back from its row
+        does not find them all), its qd.hosts rows and its qd.runs row --
+        what deleting it deletes."""
+        caps = list(e.captures())
+        if len(caps) < int(e.row.get("captures") or 0):
+            caps = [c for c in self.capture_ids()
+                    if self.context(c).get("run") == e.id]
+        own = [e.row.get("_capture")] + [h.get("_capture") for h in
+                                         self.host_rows(e.id)]
+        return sorted(set(c for c in caps + own if c))
+
+    def own_holders(self):
+        """{capture: set of the runs it holds a qd.runs or qd.hosts row
+        of}: whether a capture is one run's alone."""
+        out = {}
+        for name in (RUNS, HOSTS):
+            for d in self._read_own(name):
+                if d.get("_capture"):
+                    out.setdefault(d["_capture"], set()).add(d.get("run", ""))
+        return out
+
     # -- entries --------------------------------------------------------------
 
     def entries(self):

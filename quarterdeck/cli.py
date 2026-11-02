@@ -10,6 +10,7 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
        qd campaign new|run|status|retry|ls     a system in parts, progress kept
        qd doe plan|run|status|analyze          designed experiments
        qd log [RUN]                            what the store holds
+       qd rm RUN... --yes                      delete runs (store clear: all)
        qd view [RUN]                           full-screen; ] [ page the store
        qd show|stats|freq|hist|outliers|pivot|trend RUN ...
        qd diff [OLD] NEW                       what changed between two
@@ -1877,7 +1878,8 @@ def probe_tool(args, name, how, hs):
 # ---------------------------------------------------------------------------
 
 def cmd_store(args):
-    """Named stores: qd store [ls|new|use|rename|rm|export|import]."""
+    """Named stores: qd store [ls|new|use|rename|rm|clear|export|
+    import]."""
     from . import stores
     act = args.action or "ls"
     words = list(args.words or [])
@@ -2066,8 +2068,124 @@ def cmd_store(args):
         out("  %s store use %s   to make it the store commands use"
             % (PROG, name))
         return 0
+    if act == "clear":
+        if len(words) > 1:
+            die("usage: %s store clear [NAME] [--yes]" % PROG)
+        if words:
+            path, name = stores.resolve(words[0])
+        else:
+            path, name, _ = stores.choose(args.store)
+        st = storemod.Store(path)
+        label = "%s (%s)" % (name, st.shown()) if name else st.shown()
+        names = st.dataset_names() if st.exists() else []
+        caps = st.capture_ids()
+        if not names and not caps:
+            out("%s store clear: %s is empty already" % (PROG, label))
+            return 0
+        out("%s store clear: %s holds %s, %s and %s: every one goes, qd's "
+            "or not" % (PROG, label, plural(len(st.entries()), "run"),
+                        plural(len(names), "dataset"),
+                        plural(len(caps), "capture")))
+        if not args.yes:
+            die("nothing deleted: add --yes to clear it.  Its history stays "
+                "(git -C %s log); for a store with none, %s store rm NAME "
+                "--delete, then %s store new NAME" % (st.shown(), PROG, PROG))
+        prov = filing.Provost(st)
+        if names:
+            prov.rm_datasets(names)
+        st.reset()
+        left = st.capture_ids()
+        if left and prov.can_rm_captures():
+            # captures that filed into no dataset (none that provost writes
+            # today), so the store is as empty as a new one
+            prov.rm_captures(left)
+            left = []
+        out("%s store clear: %s is empty%s; its history keeps what it held "
+            "(git -C %s log)" % (PROG, label, (" but for %s that fed no "
+                                              "dataset" % plural(len(left),
+                                                                 "capture"))
+                                 if left else "", st.shown()))
+        return 0
     die("qd store: no such action %r" % act)
 
+
+
+# qd's own records: a run is deleted from them, never one of them whole
+OWN_DATASETS = (storemod.RUNS, storemod.HOSTS, "qd.campaigns", "qd.designs")
+
+
+def cmd_rm(args):
+    """qd rm RUN...: delete runs -- their answers, their tables, their rows
+    in qd.runs and qd.hosts -- and ds:NAME datasets, through provost."""
+    st = store_of(args)
+    if not st.exists():
+        die("no store at %s yet: nothing to delete" % st.shown())
+    runs, datasets = [], []
+    for ref in args.refs:
+        e = st.resolve(ref)
+        if isinstance(e, storemod.Dataset):
+            if re.sub(r"\.v\d+$", "", e.name) in OWN_DATASETS:
+                die("%s is qd's own record, for every run: `%s rm RUN` "
+                    "deletes a run from it, `%s store clear` empties the "
+                    "store" % (e.id, PROG, PROG))
+            if e.name not in datasets:
+                datasets.append(e.name)
+        elif e.id not in [r.id for r in runs]:
+            runs.append(e)
+    ids = set(r.id for r in runs)
+    holders = st.own_holders() if runs else {}
+    caps, rows = [], []
+    for e in runs:
+        mine = st.all_run_captures(e)
+        for c in mine:
+            others = sorted(r for r in holders.get(c, set()) - ids if r)
+            if others:
+                die("capture %s holds %s's rows as well as %s's: delete them "
+                    "together (%s rm %s %s)" % (c, others[0], e.id, PROG,
+                                                e.id, " ".join(others)))
+        caps.extend(c for c in mine if c not in caps)
+        rows.append([e.id, e.meta.get("kind", ""), e.name, e.summary(),
+                     plural(len(mine), "capture")])
+    for n in datasets:
+        rows.append(["ds:" + n, "dataset", "", plural(
+            storemod.Dataset(st, n).row_count(), "row"),
+            "every run's rows in it"])
+    what = " and ".join(x for x in (
+        plural(len(runs), "run") if runs else "",
+        plural(len(datasets), "dataset") if datasets else "") if x)
+    out("%s rm: %s, from %s" % (PROG, what, st.shown()))
+    out("\n".join(render.render_rows(["", "kind", "name", "size", "goes"],
+                                     rows, width=width_of(args),
+                                     indent="  ")))
+    if not args.yes:
+        die("nothing deleted: add --yes to delete %s (one commit in the "
+            "store's history)" % ("it" if len(rows) == 1 else "them"))
+    prov = filing.Provost(st)
+    if caps:
+        prov.rm_captures(caps)
+    st.reset()
+    # a dataset its runs' captures were all of is gone with them already
+    left = [n for n in datasets if st.has_dataset(n)]
+    if left:
+        prov.rm_datasets(left)
+    done = " and ".join(x for x in (
+        "%s (%s)" % (plural(len(runs), "run"), plural(len(caps), "capture"))
+        if runs else "", plural(len(datasets), "dataset") if datasets
+        else "") if x)
+    out("%s rm: deleted %s; the store's history keeps %s: git -C %s log"
+        % (PROG, done, "it" if len(rows) == 1 else "them", st.shown()))
+    st.reset()
+    campaigns = set(r.get("campaign") for r in st._read_own("qd.campaigns"))
+    designs = set(r.get("design") for r in st._read_own("qd.designs"))
+    for e in runs:
+        g, part = e.meta.get("group"), e.meta.get("part")
+        if g and part and g in campaigns:
+            out("  %s was part %s of campaign %s: %s campaign retry %s %s "
+                "runs it again" % (e.id, part, g, PROG, g, part))
+        elif g and part and g in designs:
+            out("  %s was point %s of design %s: %s doe status %s shows "
+                "what is left to run" % (e.id, part, g, PROG, g))
+    return 0
 
 
 def cmd_campaign(args):
@@ -2899,18 +3017,29 @@ def build_parser():
     add_fleet(sp, preview=12)
     sp.set_defaults(fn=cmd_probe)
 
-    sp = verb("store", "named stores: new, ls, use, rename, rm, export, "
-              "import")
+    sp = verb("rm", "delete runs from the store: their answers, tables "
+              "and rows (--yes)")
+    sp.add_argument("refs", nargs="+", metavar="RUN",
+                    help="latest, a run id, a run's --name (its latest), "
+                    "ds:NAME for a whole dataset")
+    sp.add_argument("--yes", action="store_true",
+                    help="delete them; without it, only say what would go")
+    sp.set_defaults(fn=cmd_rm)
+
+    sp = verb("store", "named stores: new, ls, use, rename, rm, clear, "
+              "export, import")
     sp.add_argument("action", nargs="?", choices=[
-        "ls", "new", "use", "rename", "rm", "export", "import"])
+        "ls", "new", "use", "rename", "rm", "clear", "export", "import"])
     sp.add_argument("words", nargs="*", metavar="ARG",
                     help="new NAME | use NAME | rename OLD NEW | rm NAME | "
-                    "export [NAME] FILE | import FILE")
+                    "clear [NAME] | export [NAME] FILE | import FILE")
     sp.add_argument("--path", metavar="DIR",
                     help="new: put the store here (default %s/NAME)"
                     % "~/.local/share/quarterdeck/stores")
     sp.add_argument("--delete", action="store_true",
                     help="rm: delete the store's files too")
+    sp.add_argument("--yes", action="store_true",
+                    help="clear: do it; without it, only say what would go")
     sp.add_argument("--as", dest="as_name", metavar="NAME",
                     help="import: the name to give it (default the one it "
                     "was exported under)")

@@ -5,6 +5,35 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.4.0 — 2026-11-02
+
+### Added
+- **`qd rm RUN... [--yes]`**: delete runs from the store. A run goes whole,
+  through provost: every host's answer and every table it filed, from
+  whichever datasets they are in (other runs' rows there stay), and its
+  rows in `qd.runs` and `qd.hosts`. RUN is any reference `qd show` takes;
+  `ds:NAME` deletes a whole dataset (`provost rm NAME`). Without `--yes` it
+  lists what would go, deletes nothing and exits 2. Then it is one commit,
+  so the store's history keeps it. It refuses qd's own records as whole
+  datasets, and a capture that holds another run's rows too. A run that
+  was part of a campaign is said, with the `qd campaign retry` that runs
+  it again (`cli.py` `cmd_rm`, `store.py` `all_run_captures`,
+  `own_holders`, `filing.py` `rm_captures`, `rm_datasets`).
+- **`qd store clear [NAME] [--yes]`**: empty a store: every dataset, qd's
+  or not, and the captures that fed them, through `provost rm`. It stays
+  registered, and its history is kept. Without `--yes` it says what it
+  holds and deletes nothing.
+- Deleting one run needs `provost rm --capture` (provost after 2.2.0). An
+  older provost is refused with that reason, and nothing is changed.
+  `qd store clear` and `qd rm ds:NAME` work with any provost.
+
+### Tests
+- `tests/test_rm.sh`: what goes is said and nothing goes without `--yes`;
+  one fleet run of two deleted, the other whole and the store clean;
+  several runs and a dataset at once; qd's own records and unknown names
+  refused; `store clear`. On a provost without `rm --capture`, the
+  refusal.
+
 ## 0.3.0 — 2026-10-30
 
 ### Changed

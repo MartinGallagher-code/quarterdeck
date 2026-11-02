@@ -129,6 +129,7 @@ qd store ls                    # every store, its runs, which is active
 qd run -s hosts.txt --store bench -- uptime
 qd store rename lab lab-2026   # a store qd made moves with its name
 qd store rm bench              # forgotten; --delete deletes its files too
+qd store clear lab --yes       # empty it: every run and dataset goes
 ```
 
 Which store a command uses, the first of these that applies:
@@ -182,6 +183,30 @@ Name a run the way you'd say it:
 | `results.tsv`, `reports/` | a file or directory, read without filing it |
 
 `qd log` lists the runs and `qd log RUN` describes one.
+
+**Deleting**:
+
+```bash
+qd rm latest~1                 # says what would go, and deletes nothing
+qd rm latest~1 kernel --yes    # those runs: answers, tables, their rows
+qd rm ds:loose --yes           # a whole dataset, every run's rows in it
+qd store clear lab --yes       # everything in the store
+```
+
+`qd rm` and `qd store clear` first list what would go, and delete nothing
+without `--yes`. Then provost deletes it, as one commit, so the store's git
+history keeps what was there. A run goes whole: every host's answer and
+every table it filed, from whichever datasets they are in (other runs'
+rows in those datasets stay), and its rows in `qd.runs` and `qd.hosts`.
+qd's own records (`qd.runs`, `qd.hosts`, `qd.campaigns`, `qd.designs`) are
+never deleted whole by `qd rm`. A run that was part of a campaign is said,
+with the `qd campaign retry` that runs that part again.
+
+Deleting one run needs `provost rm --capture`, which is newer than provost
+2.2.0. An older provost is refused with that reason, and the store is left
+as it was. `qd store clear` and `qd rm ds:NAME` work with any provost.
+`qd store clear` keeps the history; for a store with none, `qd store rm
+NAME --delete` and then `qd store new NAME`.
 
 ---
 
