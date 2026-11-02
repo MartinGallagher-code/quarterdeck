@@ -141,6 +141,10 @@ class Provost(object):
         self.argv = argv if argv is not None else find()
         self._batch = None
 
+    def writable(self, doing="file into"):
+        from . import stores
+        stores.refuse_writes(self.store.root, doing)
+
     def require(self, why="keep it"):
         if not self.argv:
             die("qd files what it brings back through provost, which is "
@@ -193,6 +197,7 @@ class Provost(object):
         self._rm(["rm", "-f", "--"] + list(names))
 
     def _rm(self, args):
+        self.writable("delete from")
         rc, _, err = self.call(args)
         if rc != 0:
             errs = complaints(err)
@@ -215,6 +220,7 @@ class Provost(object):
         reported (an input it could not file is said, and the rest are
         filed); raises if it filed nothing at all."""
         self.require()
+        self.writable()
         if not batch.inputs:
             return []
         jobs = jobs or env_int("FILE_JOBS", 0) or None

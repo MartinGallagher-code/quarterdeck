@@ -117,11 +117,27 @@ def out(text=""):
     sys.stdout.write(text + "\n")
 
 
+# the verbs that file into the store, or delete from it; and the actions
+# that do, of the verbs that only sometimes do
+WRITES = ("run", "probe", "do", "import", "rm")
+WRITE_ACTIONS = {"campaign": ("new", "run", "retry"), "doe": ("plan", "run")}
+
+
 def store_of(args):
     """The store this command uses: --store NAME|DIR, QD_STORE, provost's
-    explicit choice, the active store, provost's default (stores.py)."""
+    explicit choice, the active store, provost's default (stores.py).  A
+    remote store's copy is fetched first; a command that would file into
+    one, or delete from it, is refused before it does anything."""
     from . import stores
-    return storemod.Store(stores.choose(getattr(args, "store", None))[0])
+    path, name, _ = stores.choose(getattr(args, "store", None), fetch=False)
+    verb = getattr(args, "verb", None)
+    if verb in WRITES or getattr(args, "action", None) in \
+            WRITE_ACTIONS.get(verb, ()):
+        stores.refuse_writes(path, "delete from" if verb == "rm"
+                             else "file into", name)
+    else:
+        stores.ready(path, name)
+    return storemod.Store(path)
 
 
 def manifest_argv():
@@ -1892,7 +1908,8 @@ def cmd_store(args):
         want(0, "ls")
         cfg = stores.load()
         try:
-            path, name, how = stores.choose(args.store, quiet=True)
+            path, name, how = stores.choose(args.store, quiet=True,
+                                            fetch=False)
         except QdError as exc:
             # a bad --store or QD_STORE is no reason not to list the stores
             path, name, how = None, None, str(exc)
@@ -1900,10 +1917,13 @@ def cmd_store(args):
         for n in sorted(cfg["stores"]):
             p = cfg["stores"][n]
             runs = stores.run_count(p)
+            spec = stores.remote_spec(n, cfg)
+            where = ("%s   (a copy, fetched %s)" % (
+                spec, stores.ago(stores.copy_age(p)))) if spec else \
+                storemod.tilde(p) + ("" if os.path.isdir(p)
+                                     else "   (not there)")
             rows.append(["*" if n == cfg.get("active") else "", n,
-                         "" if runs is None else str(runs),
-                         storemod.tilde(p) + ("" if os.path.isdir(p)
-                                              else "   (not there)")])
+                         "" if runs is None else str(runs), where])
         lines = ["%s store -- %s" % (PROG, plural(len(rows), "named store"))]
         if rows:
             lines.append("")
@@ -1934,12 +1954,14 @@ def cmd_store(args):
         sys.stdout.write("\n".join(lines) + "\n")
         return 0
     if act == "new":
-        want(1, "new NAME [--path DIR]")
+        want(1, "new NAME [--path DIR | --remote HOST:PATH]")
         name = stores.check_name(words[0])
         cfg = stores.load()
         if name in cfg["stores"]:
             die("there is a store named %s already (%s)"
                 % (name, storemod.tilde(cfg["stores"][name])))
+        if args.remote:
+            return new_remote(args, stores, cfg, name)
         path = os.path.abspath(os.path.expanduser(args.path)) if args.path \
             else os.path.join(stores.data_root(), name)
         if os.path.isdir(path) and os.listdir(path) \
@@ -1982,11 +2004,14 @@ def cmd_store(args):
             die("there is a store named %s already" % new_name)
         new_path = path
         managed = os.path.join(stores.data_root(), old_name)
+        if stores.remote_spec(old_name, cfg):
+            managed = os.path.join(stores.remotes_root(), old_name)
+            cfg["remotes"][new_name] = cfg["remotes"].pop(old_name)
         if os.path.abspath(path) == os.path.abspath(managed) \
                 and os.path.isdir(path):
             # a store qd made moves with its name; one registered by --path
             # stays where it was put
-            new_path = os.path.join(stores.data_root(), new_name)
+            new_path = os.path.join(os.path.dirname(managed), new_name)
             if os.path.exists(new_path):
                 die("%s is there already" % storemod.tilde(new_path))
             lock, owner = stores.hold_lock(path, "rename it")
@@ -2009,6 +2034,18 @@ def cmd_store(args):
         name = words[0]
         cfg = stores.load()
         path = stores.registered(name, cfg)
+        spec = stores.remote_spec(name, cfg)
+        if spec:
+            # a copy is a cache: it goes, and the store it copies stays
+            shutil.rmtree(path, ignore_errors=True)
+            del cfg["stores"][name]
+            del cfg["remotes"][name]
+            if cfg.get("active") == name:
+                cfg["active"] = None
+            stores.save(cfg)
+            out("%s store: %s forgotten, and its copy here deleted; the store "
+                "on %s is as it was" % (PROG, name, stores.remote_host(spec)))
+            return 0
         deleted = False
         if args.delete and os.path.isdir(path):
             if os.listdir(path) and not stores.is_store(path):
@@ -2039,6 +2076,7 @@ def cmd_store(args):
             die("usage: %s store export [NAME] FILE" % PROG)
         if len(words) == 2:
             path, name = stores.resolve(words[0])
+            stores.ready(path, name)
         else:
             path, name, _ = stores.choose(args.store)
         name = name or os.path.basename(path.rstrip("/")).lstrip(".") \
@@ -2074,7 +2112,8 @@ def cmd_store(args):
         if words:
             path, name = stores.resolve(words[0])
         else:
-            path, name, _ = stores.choose(args.store)
+            path, name, _ = stores.choose(args.store, fetch=False)
+        stores.refuse_writes(path, "clear", name)
         st = storemod.Store(path)
         label = "%s (%s)" % (name, st.shown()) if name else st.shown()
         names = st.dataset_names() if st.exists() else []
@@ -2185,6 +2224,37 @@ def cmd_rm(args):
         elif g and part and g in designs:
             out("  %s was point %s of design %s: %s doe status %s shows "
                 "what is left to run" % (e.id, part, g, PROG, g))
+    return 0
+
+
+def new_remote(args, stores, cfg, name):
+    """qd store new NAME --remote [USER@]HOST:PATH: registered, and its
+    copy made now, so that a store that cannot be reached is said at once.
+    """
+    if args.path:
+        die("a store is here (--path) or on another machine (--remote), "
+            "not both")
+    spec = stores.check_remote(args.remote)
+    path = os.path.join(stores.remotes_root(), name)
+    # nothing but an old copy of a store by this name, which is a cache
+    shutil.rmtree(path, ignore_errors=True)
+    err = stores.fetch(spec, path)
+    if err:
+        die(err)
+    if not stores.is_store(path):
+        shutil.rmtree(path, ignore_errors=True)
+        die("%s is a git repository, but not a provost store" % spec)
+    cfg["stores"][name] = path
+    cfg.setdefault("remotes", {})[name] = spec
+    stores.save(cfg)
+    runs = stores.run_count(path)
+    out("%s store: %s = %s  (a copy here, fetched now: %s)" % (
+        PROG, name, spec, plural(runs or 0, "run")))
+    out("  read over ssh: %s log --store %s, %s web --store %s; nothing "
+        "files into it" % (PROG, name, PROG, name))
+    if cfg.get("active") != name:
+        out("  %s store use %s   makes it the store commands use"
+            % (PROG, name))
     return 0
 
 
@@ -2533,6 +2603,11 @@ def cmd_doctor(args):
     else:
         what = "not made yet; the first run makes it"
     lines.append("  store     %s (%s)" % (book.shown(), what))
+    from . import stores
+    spec = stores.remote_spec(stores.name_of(book.root))
+    if spec:
+        lines.append("            a copy of %s, fetched %s" % (
+            spec, stores.ago(stores.copy_age(book.root))))
     prov = filing.Provost(book)
     if prov.argv:
         lines.append("  filing    %s" % (
@@ -2611,6 +2686,9 @@ def add_common(p):
     p.add_argument("--width", type=int, metavar="N",
                    help="cut tables to N columns of text (default: the "
                    "terminal's, none when piped)")
+    p.add_argument("--no-fetch", action="store_true",
+                   help="a remote store: read its copy here as it is, "
+                   "fetching nothing (QD_NO_FETCH=1)")
 
 
 def add_hosts(p):
@@ -3036,6 +3114,9 @@ def build_parser():
     sp.add_argument("--path", metavar="DIR",
                     help="new: put the store here (default %s/NAME)"
                     % "~/.local/share/quarterdeck/stores")
+    sp.add_argument("--remote", metavar="[USER@]HOST:PATH",
+                    help="new: a store on another machine, read here from a "
+                    "copy fetched over ssh")
     sp.add_argument("--delete", action="store_true",
                     help="rm: delete the store's files too")
     sp.add_argument("--yes", action="store_true",
@@ -3204,6 +3285,8 @@ def main(argv=None):
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else 2
+    if getattr(args, "no_fetch", False):
+        os.environ["QD_NO_FETCH"] = "1"
     if args.version:
         out(VERSION_TEXT)
         return 0

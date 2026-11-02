@@ -171,6 +171,39 @@ would land outside the store, and a link or a device. Only then is the
 store given its name. It refuses a name that is taken: it never merges
 into an existing store.
 
+**A store on another machine**:
+
+```bash
+qd store new wr01 --remote wr01:~/.provost     # [USER@]HOST:PATH, as scp takes it
+qd web --store wr01                            # or log, show, view, compare, diff
+qd log --store wr01 --no-fetch                 # the copy as it is, offline
+```
+
+A remote store is read from a copy here, in
+`~/.cache/quarterdeck/remotes/NAME`. The copy is shallow: it holds the
+store as it is now, with no history, and no read needs history. `qd store
+new` makes the copy at once, so a store that cannot be reached is reported
+straight away.
+
+- **Fetching:** before a command reads the store, qd fetches what is new
+  over the same ssh `qd run` uses (`QD_SSH`, your keys, your jump hosts),
+  at most once every `QD_REMOTE_REFRESH` seconds (30). `qd web` fetches the
+  same way while the page is open, so new runs show without a restart, and
+  its store picker lists the remote store with its host.
+- **An unreachable host:** qd reads the last copy and says how old it is.
+  It does not try that host again until `QD_REMOTE_REFRESH` has passed.
+- **Writing is refused:** nothing files into a copy, because the copy would
+  then differ from the store. `qd run`, `do`, `import`, `probe`, `rm`,
+  `store clear`, and a campaign's or design's runs are refused before they
+  contact a host, with the `ssh HOST qd ...` that does it where the store
+  is.
+- **Another user's store:** if the store belongs to another user on that
+  machine, git refuses to read it. qd says so, with the `git config
+  --global --add safe.directory PATH` to run there.
+- **Renaming and removing:** `qd store rename` moves the copy with the
+  name. `qd store rm` deletes the copy and leaves the store on the other
+  machine as it was.
+
 Name a run the way you'd say it:
 
 | Reference | Means |

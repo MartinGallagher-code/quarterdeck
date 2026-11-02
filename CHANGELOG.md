@@ -5,6 +5,52 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.5.0 — 2026-11-02
+
+### Added
+- **Remote stores: `qd store new NAME --remote [USER@]HOST:PATH`** (#6). A
+  provost store on another machine is read from a shallow git copy here,
+  in `~/.cache/quarterdeck/remotes/NAME`. It holds the store as it is now,
+  and no read needs its history. Every read command works on it unchanged:
+  `log`, `show`, `view`, `compare`, `diff`, `stats`, `web`. `qd store new`
+  makes the copy at once, and registers nothing that cannot be reached or
+  is not a provost store (`stores.py`: `fetch`, `ready`, `why_not`;
+  `cli.py`: `new_remote`).
+  - **Fetched before reading:** only what is new, over the ssh `qd run`
+    uses (`QD_SSH`), at most every `QD_REMOTE_REFRESH` seconds (30).
+    `--no-fetch` (`QD_NO_FETCH=1`) reads the copy as it is.
+  - **An unreachable host:** the last copy is read, and its age said. The
+    host is not tried again until `QD_REMOTE_REFRESH` has passed, so `qd
+    web` never waits on it twice in a row.
+  - **Nothing files into a copy:** `run`, `probe`, `do`, `import`, `rm`,
+    `store clear`, and a campaign's or design's runs are refused before any
+    host is contacted (`cli.py` `store_of`). `filing.py` refuses as well,
+    whatever path a write comes by.
+  - **What a failed fetch means:** an unreachable host, ssh refusing the
+    login, no store at that path, a git repository that is not a provost
+    store, or git's refusal of a store another user owns, which comes with
+    the `safe.directory` command to run there.
+  - **`qd web`:** fetches as the page reads (one fetch at a time across
+    its threads). Its store picker shows a remote store's host
+    (`web.py`, `app.js`).
+  - **The other store commands:** `qd store ls` shows the host and the
+    copy's age. `rename` moves the copy. `rm` deletes the copy and leaves
+    the store there as it was. `qd doctor` says what the store is a copy
+    of.
+
+### Tests
+- `tests/test_remote.sh`, over the suite's fake ssh with git's own
+  upload-pack:
+  - the copy is made, shallow, read, and refreshed only when due;
+  - `--no-fetch`;
+  - writes refused before any ssh call, with the copy and the store there
+    unchanged;
+  - an unreachable host leaves the copy, and is tried once;
+  - what cannot be a remote store, with nothing left behind;
+  - another user's store, explained;
+  - rename and rm;
+  - `qd web`'s picker, and a run filed there showing without a restart.
+
 ## 0.4.0 — 2026-11-02
 
 ### Added

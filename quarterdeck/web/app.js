@@ -218,7 +218,8 @@
     }
     for (const x of d.stores) {
       sel.append(h("option", { value: x.here ? "" : x.name,
-        text: x.name + (x.runs != null ? "  (" + x.runs + (x.runs === 1 ? " run)" : " runs)") : "") +
+        text: x.name + (x.remote ? "  on " + x.remote : "") +
+          (x.runs != null ? "  (" + x.runs + (x.runs === 1 ? " run)" : " runs)") : "") +
           (x.active ? "  active" : "") }));
     }
     sel.value = S.store && names.includes(S.store) ? S.store : "";

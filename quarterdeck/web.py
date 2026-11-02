@@ -510,6 +510,10 @@ class StoreApis(object):
         from . import stores
         name = one(q, "store")
         if not name:
+            # the store this server was started on, a remote's copy
+            # fetched when it is due (stores.ready says when)
+            stores.ready(self.default.book.root,
+                         stores.name_of(self.default.book.root))
             return self.default
         if not stores.NAME_RE.match(name) or ".." in name:
             die("no store named %r" % name)
@@ -517,6 +521,7 @@ class StoreApis(object):
         if name not in cfg["stores"]:
             die("no store named %r (qd store ls lists them)" % name)
         path = os.path.abspath(cfg["stores"][name])
+        stores.ready(path, name, cfg)
         if path == self.default.book.root:
             return self.default
         with self.lock:
@@ -535,7 +540,11 @@ class StoreApis(object):
         out = []
         for name in sorted(cfg["stores"]):
             path = os.path.abspath(cfg["stores"][name])
-            out.append({"name": name, "path": storemod.tilde(path),
+            spec = stores.remote_spec(name, cfg)
+            out.append({"name": name, "path": spec or storemod.tilde(path),
+                        "remote": stores.remote_host(spec) if spec else None,
+                        "fetched": stores.ago(stores.copy_age(path))
+                        if spec else None,
                         "runs": stores.run_count(path),
                         "active": name == cfg.get("active"),
                         "here": path == here})
