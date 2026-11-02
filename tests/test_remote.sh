@@ -104,6 +104,20 @@ EOF
     assert_eq "$(git -C "$(COPY a)" config core.logAllRefUpdates)" "false"
 }
 
+# every ten fetches a gc: the copy is one store, not its history
+t_a_copy_stays_one_store() {
+    seed
+    qd store new wr01 --remote wr01:store > /dev/null
+    for i in $(seq 1 11); do
+        printf 'host,load\nh%s,0.%s\n' "$i" "$i" > n.csv
+        there import n.csv --name "n$i" > /dev/null
+        QD_REMOTE_REFRESH=0 qd log --store wr01 > /dev/null 2>&1
+    done
+    packs="$(find "$(COPY wr01)/.git/objects/pack" -name '*.pack' | wc -l)"
+    [ "$packs" -le 10 ] || fail "$packs packs: the copy was never gc'd"
+    assert_contains "$(runs_in --store wr01 --no-fetch)" "n11"
+}
+
 t_an_unreachable_host_leaves_the_copy() {
     seed
     qd store new wr01 --remote wr01:store > /dev/null
@@ -203,6 +217,7 @@ t_the_web_page_reads_a_remote_store() {
 run_test "a remote store reads, and refreshes"       t_a_remote_store_reads_and_refreshes
 run_test "nothing files into a copy"                 t_nothing_files_into_a_copy
 run_test "the fleet's ssh user"                     t_the_fleets_ssh_user
+run_test "a copy stays one store"                  t_a_copy_stays_one_store
 run_test "an unreachable host leaves the copy"       t_an_unreachable_host_leaves_the_copy
 run_test "what cannot be a remote store"             t_what_cannot_be_a_remote_store
 run_test "another user's store, explained"           t_another_users_store_is_explained

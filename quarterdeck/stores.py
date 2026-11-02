@@ -391,6 +391,22 @@ def _touch(repo, stamp):
         pass
 
 
+def _tidy(repo):
+    """Every ten fetches, a gc here and now: what they replaced is dropped,
+    and a copy stays one store's size rather than growing toward its
+    history.  (git's own gc --auto waits for thousands of objects, and
+    then detaches.)"""
+    try:
+        packs = [n for n in os.listdir(os.path.join(repo, ".git", "objects",
+                                                    "pack"))
+                 if n.endswith(".pack")]
+    except OSError:
+        return
+    if len(packs) > 10:
+        _git(["-c", "gc.autoDetach=false", "gc", "--quiet", "--prune=now"],
+             cwd=repo)
+
+
 def fetch(spec, path):
     """Bring the copy at `path` up to date with the store at `spec`, making
     it the first time.  -> None, or why it could not be."""
@@ -401,8 +417,9 @@ def fetch(spec, path):
         # made beside it and renamed into place: never a half copy
         repo = tempfile.mkdtemp(prefix=".copy.", dir=os.path.dirname(path))
         rc, err = _git(["init", "--quiet", repo])
+        # no reflog, and every fetch kept as a pack: _tidy can count them
         for k, v in (("core.logAllRefUpdates", "false"),
-                     ("gc.pruneExpire", "now")):
+                     ("fetch.unpackLimit", "1")):
             if rc == 0:
                 rc, err = _git(["config", k, v], cwd=repo)
         if rc != 0:
@@ -416,6 +433,7 @@ def fetch(spec, path):
             shutil.rmtree(repo, ignore_errors=True)
         return why_not(err, spec)
     _touch(repo, FETCHED)
+    _tidy(repo)
     if fresh:
         if os.path.isdir(path) and not os.listdir(path):
             os.rmdir(path)

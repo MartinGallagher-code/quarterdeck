@@ -19,9 +19,14 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
   - **Fetched before reading:** only what is new, over the ssh `qd run`
     uses (`QD_SSH`, and `QD_SSH_USER` when the spec names no user), at most
     every `QD_REMOTE_REFRESH` seconds (30). `--no-fetch` (`QD_NO_FETCH=1`)
-    reads the copy as it is. The copy keeps no reflog, so git's own gc
-    prunes what each fetch replaces, and the copy never grows past one
-    store's worth.
+    reads the copy as it is.
+  - **The copy stays one store's size:** it keeps no reflog, keeps each
+    fetch as a pack, and is gc'd here every ten fetches (`_tidy`), which
+    drops what the fetches replaced. git's own `gc --auto` waits for
+    thousands of objects, and then detaches. Measured over real ssh, with
+    24 refreshes of a store whose history reached 17 MB: the copy fell
+    back to 784 KB at the 10th and 1.4 MB at the 20th, each the store as
+    it then was.
   - **An unreachable host:** the last copy is read, and its age said. The
     host is not tried again until `QD_REMOTE_REFRESH` has passed, so `qd
     web` never waits on it twice in a row.
