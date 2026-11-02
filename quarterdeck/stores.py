@@ -26,6 +26,18 @@ store whole -- its git history, the raw answers under captures/, the
 datasets.  It is written under provost's own store lock, so no run files
 into the store while it is read.  An import checks all of that before the
 store is given a name, and never merges into one that has one.
+
+A remote store is a store on another machine, read here from a git copy:
+
+    qd store new wr01 --remote wr01:~/.provost
+    qd web --store wr01
+
+The copy is shallow -- the store as it is now, no history, which no read
+needs -- and lives in ~/.cache/quarterdeck/remotes/NAME.  Before a command
+reads it, what is new is fetched over the ssh `qd run` uses (QD_SSH,
+QD_SSH_USER), at most every QD_REMOTE_REFRESH seconds; a host that cannot
+be reached leaves the last copy, said with its age.  Nothing files into a copy: it would
+part from the store it is a copy of.
 """
 
 import hashlib
@@ -33,13 +45,16 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
+import subprocess
 import tarfile
 import tempfile
+import threading
 import time
 
 from . import VERSION
-from .common import QdError, die, env, warn
+from .common import QdError, die, env, env_int, warn
 from . import store as storemod
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -165,9 +180,17 @@ def resolve(spec, cfg=None):
 _warned = []
 
 
-def choose(cli_value=None, quiet=False):
+def choose(cli_value=None, quiet=False, fetch=True):
     """The store a command uses, and how it was chosen. -> (path, name, how)
+    A remote store's copy is brought up to date first, unless not `fetch`.
     """
+    path, name, how = _choose(cli_value, quiet)
+    if fetch:
+        ready(path, name)
+    return path, name, how
+
+
+def _choose(cli_value, quiet):
     if cli_value:
         path, name = resolve(cli_value)
         return path, name, "--store"
@@ -213,6 +236,254 @@ def run_count(path):
         return len(storemod.Store(path).run_rows())
     except Exception:       # a store qd cannot read is shown, not fatal
         return None
+
+
+# ---------------------------------------------------------------------------
+# remote stores: a store on another machine, read from a git copy here
+# ---------------------------------------------------------------------------
+
+# [USER@]HOST:PATH, as scp and git take it
+REMOTE_RE = re.compile(r"^(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9][A-Za-z0-9._-]*:.+$")
+# stamps in the copy's .git, out of the store's own files
+FETCHED, TRIED = "qd-fetched", "qd-tried"
+# one fetch at a time: qd web reads from many threads
+_fetching = threading.Lock()
+
+
+def remotes_root():
+    return os.path.join(storemod.cache_root(), "remotes")
+
+
+def check_remote(spec):
+    if not spec or not REMOTE_RE.match(spec):
+        die("a remote store is [USER@]HOST:PATH, as scp takes it "
+            "(wr01:~/.provost, lab@wr01:/data/store): %r is not one"
+            % (spec or ""))
+    return spec
+
+
+def remote_spec(name, cfg=None):
+    """The [USER@]HOST:PATH a named store is a copy of, or None."""
+    if not name:
+        return None
+    cfg = cfg if cfg is not None else load()
+    return (cfg.get("remotes") or {}).get(name)
+
+
+def remote_host(spec):
+    return spec.split(":", 1)[0].split("@")[-1]
+
+
+def ssh_spec(spec):
+    """The spec as ssh is given it: with QD_SSH_USER, as `qd run` logs in,
+    when it names no user of its own."""
+    user = env("SSH_USER")
+    head = spec.split(":", 1)[0]
+    if user and "@" not in head:
+        return "%s@%s" % (user, spec)
+    return spec
+
+
+def _stamp_age(path, stamp):
+    try:
+        return time.time() - os.path.getmtime(
+            os.path.join(path, ".git", stamp))
+    except OSError:
+        return None
+
+
+def copy_age(path):
+    """Seconds since the copy at `path` was last fetched, or None."""
+    return _stamp_age(path, FETCHED)
+
+
+def ago(seconds):
+    if seconds is None:
+        return "never"
+    for unit, n in (("d", 86400), ("h", 3600), ("min", 60)):
+        if seconds >= n:
+            return "%d %s ago" % (seconds // n, unit)
+    return "%d s ago" % seconds
+
+
+def _git_env():
+    from .fleet import SSH_OPTS
+    ssh = shlex.split(env("SSH", "ssh"))
+    e = dict(os.environ)
+    e["GIT_SSH_COMMAND"] = " ".join(shlex.quote(a) for a in ssh + SSH_OPTS)
+    # whatever QD_SSH is called, it takes ssh's options
+    e["GIT_SSH_VARIANT"] = "ssh"
+    e["GIT_TERMINAL_PROMPT"] = "0"
+    e["LC_ALL"] = "C"
+    return e
+
+
+def _git(args, cwd=None):
+    """-> (rc, stderr)"""
+    if not shutil.which("git"):
+        die("a remote store is read from a git copy, and there is no git "
+            "here")
+    try:
+        p = subprocess.run(["git"] + args, cwd=cwd, env=_git_env(),
+                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE,
+                           timeout=env_int("REMOTE_TIMEOUT", 300))
+    except subprocess.TimeoutExpired:
+        return 124, "timed out"
+    return p.returncode, p.stderr.decode("utf-8", "replace")
+
+
+def why_not(err, spec):
+    """What a failed fetch means, in words."""
+    host, _, path = spec.partition(":")
+    host = host.split("@")[-1]
+    low = err.lower()
+    if "dubious ownership" in low or "safe.directory" in low:
+        return ("git on %s will not read %s: it belongs to another user. "
+                "On %s, as the user ssh logs in as: git config --global "
+                "--add safe.directory %s" % (host, path, host, path))
+    if "permission denied" in low or "host key verification" in low:
+        return ("ssh to %s was refused: the keys and user that let qd run "
+                "in must let this in too (QD_SSH)" % host)
+    if "does not appear to be a git repository" in low or \
+            "not a git repository" in low or "no such file" in low:
+        return ("%s on %s is not a provost store (no git repository there)"
+                % (path, host))
+    if "couldn't find remote ref" in low:
+        return ("%s on %s has no main or master branch: not a provost store"
+                % (path, host))
+    # ssh's own words for a host it cannot reach, not git's afterword
+    # ("Could not read from remote repository ... and the repository exists")
+    said = [ln.strip() for ln in err.splitlines() if ln.strip()]
+    for ln in said:
+        if ln.startswith("ssh:"):
+            return "cannot reach %s: %s" % (host, ln[4:].strip())
+    lines = [ln for ln in said if not ln.startswith("hint:") and
+             "could not read from remote repository" not in ln.lower() and
+             "correct access rights" not in ln.lower() and
+             ln.lower() != "and the repository exists."]
+    return "cannot fetch %s: %s" % (spec, lines[-1] if lines else
+                                     "git failed")
+
+
+def _fetch_into(repo, spec):
+    """The store's branch, shallow, checked out.  -> None, or git's error.
+    """
+    err = ""
+    for branch in ("main", "master"):
+        rc, err = _git(["fetch", "--quiet", "--depth", "1", "--no-tags",
+                        ssh_spec(spec), branch], cwd=repo)
+        if rc == 0:
+            rc, err = _git(["reset", "--quiet", "--hard", "FETCH_HEAD"],
+                           cwd=repo)
+            return None if rc == 0 else err
+        if "couldn't find remote ref" not in err.lower():
+            break
+    return err
+
+
+def _touch(repo, stamp):
+    try:
+        with io.open(os.path.join(repo, ".git", stamp), "w",
+                     encoding="utf-8") as fh:
+            fh.write("%d\n" % time.time())
+    except OSError:
+        pass
+
+
+def _tidy(repo):
+    """Every ten fetches, a gc here and now: what they replaced is dropped,
+    and a copy stays one store's size rather than growing toward its
+    history.  (git's own gc --auto waits for thousands of objects, and
+    then detaches.)"""
+    try:
+        packs = [n for n in os.listdir(os.path.join(repo, ".git", "objects",
+                                                    "pack"))
+                 if n.endswith(".pack")]
+    except OSError:
+        return
+    if len(packs) > 10:
+        _git(["-c", "gc.autoDetach=false", "gc", "--quiet", "--prune=now"],
+             cwd=repo)
+
+
+def fetch(spec, path):
+    """Bring the copy at `path` up to date with the store at `spec`, making
+    it the first time.  -> None, or why it could not be."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fresh = not os.path.isdir(os.path.join(path, ".git"))
+    repo = path
+    if fresh:
+        # made beside it and renamed into place: never a half copy
+        repo = tempfile.mkdtemp(prefix=".copy.", dir=os.path.dirname(path))
+        rc, err = _git(["init", "--quiet", repo])
+        # no reflog, and every fetch kept as a pack: _tidy can count them
+        for k, v in (("core.logAllRefUpdates", "false"),
+                     ("fetch.unpackLimit", "1")):
+            if rc == 0:
+                rc, err = _git(["config", k, v], cwd=repo)
+        if rc != 0:
+            shutil.rmtree(repo, ignore_errors=True)
+            return "cannot make a copy in %s: %s" % (repo, err.strip())
+    else:
+        _touch(path, TRIED)
+    err = _fetch_into(repo, spec)
+    if err is not None:
+        if fresh:
+            shutil.rmtree(repo, ignore_errors=True)
+        return why_not(err, spec)
+    _touch(repo, FETCHED)
+    _tidy(repo)
+    if fresh:
+        if os.path.isdir(path) and not os.listdir(path):
+            os.rmdir(path)
+        try:
+            os.rename(repo, path)
+        except OSError:
+            # another command made it first: that copy is as good
+            shutil.rmtree(repo, ignore_errors=True)
+    return None
+
+
+def ready(path, name, cfg=None):
+    """A remote store's copy, fetched first when it is older than
+    QD_REMOTE_REFRESH seconds (30) and the host was not just tried.  A host
+    that cannot be reached leaves the copy there was, said; with no copy at
+    all, there is nothing to read."""
+    spec = remote_spec(name, cfg)
+    if not spec:
+        return path
+    have = os.path.isdir(os.path.join(path, ".git"))
+    if env("NO_FETCH", "0") != "0":
+        if not have:
+            die("there is no copy of %s here yet: run once without "
+                "--no-fetch" % name)
+        return path
+    every = env_int("REMOTE_REFRESH", 30)
+    with _fetching:
+        # asked again once the lock is ours: another thread may just have
+        age, tried = copy_age(path), _stamp_age(path, TRIED)
+        if have and age is not None and (
+                age < every or (tried is not None and tried < every)):
+            return path
+        err = fetch(spec, path)
+    if err:
+        if not have:
+            die("%s: %s" % (name, err))
+        warn("%s: %s -- reading the copy fetched %s" % (name, err, ago(age)))
+    return path
+
+
+def refuse_writes(path, doing, name=None):
+    """Nothing is filed into a remote store's copy: it would part from the
+    store it is a copy of."""
+    cfg = load()
+    name = name or name_of(path, cfg)
+    spec = remote_spec(name, cfg)
+    if spec:
+        die("%s is a copy of %s, read over ssh: qd does not %s it. Do that "
+            "where the store is (ssh %s qd ...), or in a store here "
+            "(--store NAME)" % (name, spec, doing, remote_host(spec)))
 
 
 # ---------------------------------------------------------------------------

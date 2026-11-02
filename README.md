@@ -129,6 +129,7 @@ qd store ls                    # every store, its runs, which is active
 qd run -s hosts.txt --store bench -- uptime
 qd store rename lab lab-2026   # a store qd made moves with its name
 qd store rm bench              # forgotten; --delete deletes its files too
+qd store clear lab --yes       # empty it: every run and dataset goes
 ```
 
 Which store a command uses, the first of these that applies:
@@ -170,6 +171,40 @@ would land outside the store, and a link or a device. Only then is the
 store given its name. It refuses a name that is taken: it never merges
 into an existing store.
 
+**A store on another machine**:
+
+```bash
+qd store new wr01 --remote wr01:~/.provost     # [USER@]HOST:PATH, as scp takes it
+qd web --store wr01                            # or log, show, view, compare, diff
+qd log --store wr01 --no-fetch                 # the copy as it is, offline
+```
+
+A remote store is read from a copy here, in
+`~/.cache/quarterdeck/remotes/NAME`. The copy is shallow: it holds the
+store as it is now, with no history, and no read needs history. `qd store
+new` makes the copy at once, so a store that cannot be reached is reported
+straight away.
+
+- **Fetching:** before a command reads the store, qd fetches what is new
+  over the same ssh `qd run` uses (`QD_SSH`, `QD_SSH_USER` unless the spec
+  names a user, your keys, your jump hosts),
+  at most once every `QD_REMOTE_REFRESH` seconds (30). `qd web` fetches the
+  same way while the page is open, so new runs show without a restart, and
+  its store picker lists the remote store with its host.
+- **An unreachable host:** qd reads the last copy and says how old it is.
+  It does not try that host again until `QD_REMOTE_REFRESH` has passed.
+- **Writing is refused:** nothing files into a copy, because the copy would
+  then differ from the store. `qd run`, `do`, `import`, `probe`, `rm`,
+  `store clear`, and a campaign's or design's runs are refused before they
+  contact a host, with the `ssh HOST qd ...` that does it where the store
+  is.
+- **Another user's store:** if the store belongs to another user on that
+  machine, git refuses to read it. qd says so, with the `git config
+  --global --add safe.directory PATH` to run there.
+- **Renaming and removing:** `qd store rename` moves the copy with the
+  name. `qd store rm` deletes the copy and leaves the store on the other
+  machine as it was.
+
 Name a run the way you'd say it:
 
 | Reference | Means |
@@ -182,6 +217,30 @@ Name a run the way you'd say it:
 | `results.tsv`, `reports/` | a file or directory, read without filing it |
 
 `qd log` lists the runs and `qd log RUN` describes one.
+
+**Deleting**:
+
+```bash
+qd rm latest~1                 # says what would go, and deletes nothing
+qd rm latest~1 kernel --yes    # those runs: answers, tables, their rows
+qd rm ds:loose --yes           # a whole dataset, every run's rows in it
+qd store clear lab --yes       # everything in the store
+```
+
+`qd rm` and `qd store clear` first list what would go, and delete nothing
+without `--yes`. Then provost deletes it, as one commit, so the store's git
+history keeps what was there. A run goes whole: every host's answer and
+every table it filed, from whichever datasets they are in (other runs'
+rows in those datasets stay), and its rows in `qd.runs` and `qd.hosts`.
+qd's own records (`qd.runs`, `qd.hosts`, `qd.campaigns`, `qd.designs`) are
+never deleted whole by `qd rm`. A run that was part of a campaign is said,
+with the `qd campaign retry` that runs that part again.
+
+Deleting one run needs `provost rm --capture`, which is newer than provost
+2.2.0. An older provost is refused with that reason, and the store is left
+as it was. `qd store clear` and `qd rm ds:NAME` work with any provost.
+`qd store clear` keeps the history; for a store with none, `qd store rm
+NAME --delete` and then `qd store new NAME`.
 
 ---
 

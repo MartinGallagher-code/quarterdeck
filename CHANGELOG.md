@@ -5,6 +5,95 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.5.0 — 2026-11-02
+
+### Added
+- **Remote stores: `qd store new NAME --remote [USER@]HOST:PATH`** (#6). A
+  provost store on another machine is read from a shallow git copy here,
+  in `~/.cache/quarterdeck/remotes/NAME`. It holds the store as it is now,
+  and no read needs its history. Every read command works on it unchanged:
+  `log`, `show`, `view`, `compare`, `diff`, `stats`, `web`. `qd store new`
+  makes the copy at once, and registers nothing that cannot be reached or
+  is not a provost store (`stores.py`: `fetch`, `ready`, `why_not`;
+  `cli.py`: `new_remote`).
+  - **Fetched before reading:** only what is new, over the ssh `qd run`
+    uses (`QD_SSH`, and `QD_SSH_USER` when the spec names no user), at most
+    every `QD_REMOTE_REFRESH` seconds (30). `--no-fetch` (`QD_NO_FETCH=1`)
+    reads the copy as it is.
+  - **The copy stays one store's size:** it keeps no reflog, keeps each
+    fetch as a pack, and is gc'd here every ten fetches (`_tidy`), which
+    drops what the fetches replaced. git's own `gc --auto` waits for
+    thousands of objects, and then detaches. Measured over real ssh, with
+    24 refreshes of a store whose history reached 17 MB: the copy fell
+    back to 784 KB at the 10th and 1.4 MB at the 20th, each the store as
+    it then was.
+  - **An unreachable host:** the last copy is read, and its age said. The
+    host is not tried again until `QD_REMOTE_REFRESH` has passed, so `qd
+    web` never waits on it twice in a row.
+  - **Nothing files into a copy:** `run`, `probe`, `do`, `import`, `rm`,
+    `store clear`, and a campaign's or design's runs are refused before any
+    host is contacted (`cli.py` `store_of`). `filing.py` refuses as well,
+    whatever path a write comes by.
+  - **What a failed fetch means:** an unreachable host, ssh refusing the
+    login, no store at that path, a git repository that is not a provost
+    store, or git's refusal of a store another user owns, which comes with
+    the `safe.directory` command to run there.
+  - **`qd web`:** fetches as the page reads (one fetch at a time across
+    its threads). Its store picker shows a remote store's host
+    (`web.py`, `app.js`).
+  - **The other store commands:** `qd store ls` shows the host and the
+    copy's age. `rename` moves the copy. `rm` deletes the copy and leaves
+    the store there as it was. `qd doctor` says what the store is a copy
+    of.
+
+Checked over real ssh too, against a Debian 12 container running sshd and
+git 2.39: the copy made and refreshed in about 0.3 s a fetch, a stopped
+host falling back to the copy, a refused login, and a store chowned to
+another user, each said as above.
+
+### Tests
+- `tests/test_remote.sh`, over the suite's fake ssh with git's own
+  upload-pack:
+  - the copy is made, shallow, read, and refreshed only when due;
+  - `--no-fetch`;
+  - `QD_SSH_USER`, and a spec's own user before it;
+  - writes refused before any ssh call (a campaign's and a design's runs
+    among them), with the copy and the store there unchanged;
+  - an unreachable host leaves the copy, and is tried once;
+  - what cannot be a remote store, with nothing left behind;
+  - another user's store, explained;
+  - rename and rm;
+  - `qd web`'s picker, and a run filed there showing without a restart.
+
+## 0.4.0 — 2026-11-02
+
+### Added
+- **`qd rm RUN... [--yes]`**: delete runs from the store. A run goes whole,
+  through provost: every host's answer and every table it filed, from
+  whichever datasets they are in (other runs' rows there stay), and its
+  rows in `qd.runs` and `qd.hosts`. RUN is any reference `qd show` takes;
+  `ds:NAME` deletes a whole dataset (`provost rm NAME`). Without `--yes` it
+  lists what would go, deletes nothing and exits 2. Then it is one commit,
+  so the store's history keeps it. It refuses qd's own records as whole
+  datasets, and a capture that holds another run's rows too. A run that
+  was part of a campaign is said, with the `qd campaign retry` that runs
+  it again (`cli.py` `cmd_rm`, `store.py` `all_run_captures`,
+  `own_holders`, `filing.py` `rm_captures`, `rm_datasets`).
+- **`qd store clear [NAME] [--yes]`**: empty a store: every dataset, qd's
+  or not, and the captures that fed them, through `provost rm`. It stays
+  registered, and its history is kept. Without `--yes` it says what it
+  holds and deletes nothing.
+- Deleting one run needs `provost rm --capture` (provost after 2.2.0). An
+  older provost is refused with that reason, and nothing is changed.
+  `qd store clear` and `qd rm ds:NAME` work with any provost.
+
+### Tests
+- `tests/test_rm.sh`: what goes is said and nothing goes without `--yes`;
+  one fleet run of two deleted, the other whole and the store clean;
+  several runs and a dataset at once; qd's own records and unknown names
+  refused; `store clear`. On a provost without `rm --capture`, the
+  refusal.
+
 ## 0.3.0 — 2026-10-30
 
 ### Changed

@@ -131,11 +131,19 @@ class Batch(object):
         shutil.rmtree(self.dir, ignore_errors=True)
 
 
+# capture ids to a --capture: well inside the 128 KB one argument may be
+RM_CHUNK = 5000
+
+
 class Provost(object):
     def __init__(self, store, argv=None):
         self.store = store
         self.argv = argv if argv is not None else find()
         self._batch = None
+
+    def writable(self, doing="file into"):
+        from . import stores
+        stores.refuse_writes(self.store.root, doing)
 
     def require(self, why="keep it"):
         if not self.argv:
@@ -164,6 +172,38 @@ class Provost(object):
         return (p.returncode, out.decode("utf-8", "replace"),
                 err.decode("utf-8", "replace"))
 
+    def can_rm_captures(self):
+        """`provost rm --capture`, after 2.2.0: what deleting one run
+        needs, its answers being in datasets beside other runs'."""
+        rc, out, _ = self.call(["rm", "--help"])
+        return rc == 0 and "--capture" in out
+
+    def rm_captures(self, cids):
+        """Delete captures, and the rows they filed, in one commit."""
+        self.require("delete from")
+        if not self.can_rm_captures():
+            die("this provost (%s) cannot delete a run: that needs `provost "
+                "rm --capture`, which is newer than provost 2.2.0.\n"
+                "  qd store clear empties a whole store with any provost"
+                % " ".join(self.argv))
+        args = ["rm", "-f"]
+        for k in range(0, len(cids), RM_CHUNK):
+            args += ["--capture", ",".join(cids[k:k + RM_CHUNK])]
+        self._rm(args)
+
+    def rm_datasets(self, names):
+        """Delete whole datasets, and the captures that fed only them."""
+        self.require("delete from")
+        self._rm(["rm", "-f", "--"] + list(names))
+
+    def _rm(self, args):
+        self.writable("delete from")
+        rc, _, err = self.call(args)
+        if rc != 0:
+            errs = complaints(err)
+            die("provost %s failed: %s" % (" ".join(args[:2]), errs[-1]
+                                           if errs else "exit %d" % rc))
+
     def has_batch(self):
         """`provost batch` came with --context-columns: one probe says
         whether this provost has both."""
@@ -180,6 +220,7 @@ class Provost(object):
         reported (an input it could not file is said, and the rest are
         filed); raises if it filed nothing at all."""
         self.require()
+        self.writable()
         if not batch.inputs:
             return []
         jobs = jobs or env_int("FILE_JOBS", 0) or None
