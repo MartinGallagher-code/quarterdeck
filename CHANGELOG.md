@@ -5,6 +5,15 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.5.1 — 2026-11-04
+
+### Changed
+- **quarterdeck's work goes through the shared ticket board** (QD-001).
+  `CLAUDE.md` carries the "Every task is a ticket" section from
+  `MartinGallagher-code/shared_tools`, verbatim, and quarterdeck is
+  registered there with the prefix `QD`. Nothing outside the notes and the
+  version changes.
+
 ## 0.5.0 — 2026-11-02
 
 ### Added
