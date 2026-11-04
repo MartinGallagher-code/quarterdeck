@@ -5,6 +5,15 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.5.2 — 2026-11-04
+
+### Changed
+- **Step 3 of `CLAUDE.md`'s ticket section puts its command on one line**,
+  in a code block of its own, as shared_tools' copy now does (ST-008,
+  ST-010). The command used to wrap across two lines inside one code span,
+  so pasting it into a shell ran two commands and failed. Nothing outside
+  the notes and the version changes.
+
 ## 0.5.1 — 2026-11-04
 
 ### Changed
