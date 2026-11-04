@@ -61,9 +61,10 @@ NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 ARCHIVE_KIND = "quarterdeck store"
 ARCHIVE_VERSION = 1
 TOP = "quarterdeck-store"
-# the store formats qd reads (store.py): provost moves 1 and 2 up to 3 the
-# next time it files into the store
-STORE_FORMATS = (1, 2, 3)
+# the store formats qd reads (store.py): provost moves older ones up to its
+# own the next time it files into the store.  4 changed data, not layout:
+# column 2 holds the capture id in every row (qd finds it by place)
+STORE_FORMATS = (1, 2, 3, 4)
 # provost's runtime files, never part of a store's content: its .gitignore
 SKIP = re.compile(r"^(\.lock(\..*)?(/.*)?|datasets/\.(recon|stage|rm|rmprov)"
                   r"\..*|captures/[^/]+/\.meta\.tmp|context/[^/]*\.tmp)$")

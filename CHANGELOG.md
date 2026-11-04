@@ -5,6 +5,28 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.6.1 — 2026-11-04
+
+### Fixed
+- **provost's store format 4 reads** (QD-003). provost main writes it since
+  PV-015; its next release would have made `qd store import` refuse every
+  archive of a store it had touched ("a newer provost made it"), and
+  quarterdeck's CI, which installs PyPI's newest provost, red the same day.
+  Format 4 changes data, not layout: column 2 holds the capture id in every
+  row. `STORE_FORMATS` is now 1-4, and an unknown format (99) is still
+  refused, its message naming 1, 2, 3, 4.
+- **The capture column is found by place, not by name.** In a dataset
+  whose data has a column called `capture`, provost names its own
+  `_capture` (column 2) and leaves the data's `capture` at the end; qd read
+  the data's as the capture id, so `ds:NAME` showed the wrong capture and
+  its raw answer could not be found. qd now takes column 2 (`#` then
+  `capture`, `_capture`, ...), and `ds:NAME` shows provost's id as `capture`
+  with the data column as `capture_2` (the first free `capture_K`), the way
+  provost renames a data column called `#`. qd's own datasets file no such
+  column, so runs read as before.
+- Tests: `test_store.sh` builds a format-4 store with a `_capture` dataset
+  and round-trips it through `store export` / `store import`.
+
 ## 0.6.0 — 2026-11-04
 
 ### Added
