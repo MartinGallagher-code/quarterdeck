@@ -31,11 +31,14 @@ Examples:
   qd doe analyze iperf -c mbps
   qd do -- mx run --for 60
   qd stats latest A --by rack           qd outliers latest mbps
+  qd diff kernel@wr01 kernel@wr02       qd compare facts@lab facts@bench
   qd view latest                        qd web
 
 RUN is latest, latest~1, a run id or a unique part of one, a run's
 --name, ds:NAME for a whole provost dataset, or a file or directory to read
-without filing it.  Add :TABLE to pick one of a run's tables (latest:hosts).
+without filing it.  Add :TABLE to pick one of a run's tables (latest:hosts),
+and @STORE to read it in another registered store (kernel@wr02,
+latest:hosts@wr01; reading commands only).
 
 Everything is kept in provost's store (provost ls, provost source N):
 --store, QD_STORE, else provost's own choice.  binnacle (pip install
@@ -67,7 +70,8 @@ from .common import (PROG, VERSION_TEXT, QdError, _stdio_safe, die, env,
 from . import diff as diffmod
 from . import filing, fleet, hosts as hostmod, importers, query
 from . import render, stats, store as storemod, table as tablemod, tools
-from .store import describe_entry, load_ref, now_iso, split_ref
+from .store import describe_entry, load_ref, now_iso, shown_id, \
+    split_ref, split_store
 
 # ---------------------------------------------------------------------------
 # Safety: the same typo guard as agree's, for the same 3am reason
@@ -140,6 +144,55 @@ def store_of(args):
     return storemod.Store(path)
 
 
+def home_store(args):
+    """The command's own store (store_of), opened once per command."""
+    cache = args.__dict__.setdefault("_stores", {})
+    if None not in cache:
+        cache[None] = store_of(args)
+    return cache[None]
+
+
+def named_store(args, name):
+    """The registered store NAME, for a reference that names it
+    (REF@STORE): opened once per command however many references name it,
+    a remote store's copy fetched as store_of fetches it.  Only a
+    registered name -- a directory is --store's job -- and an unknown one
+    is an error, never the command's own store instead."""
+    from . import stores
+    cache = args.__dict__.setdefault("_stores", {})
+    if name in cache:
+        return cache[name]
+    cfg = stores.load()
+    if name not in cfg["stores"]:
+        have = sorted(cfg["stores"])
+        die("no store named %r (REF@STORE names a registered store): the "
+            "stores are %s (qd store ls)"
+            % (name, ", ".join(have) if have else
+               "none yet -- qd store new NAME makes one"))
+    path = os.path.abspath(os.path.expanduser(cfg["stores"][name]))
+    own = stores.choose(getattr(args, "store", None), quiet=True,
+                        fetch=False)[0]
+    if os.path.abspath(own) == path:
+        st = home_store(args)          # the command's own: no @ to show
+    else:
+        stores.ready(path, name, cfg)
+        st = storemod.Store(path)
+        st.via = name
+    cache[name] = st
+    return st
+
+
+def ref_store(args, ref):
+    """(store, REF) for a reference that may name its store: `REF@STORE`
+    reads REF in the registered store STORE, a bare REF in the command's
+    own.  Only the reading commands call this; the writing ones file into
+    --store and nowhere else."""
+    r, name = split_store(ref)
+    if name is None:
+        return home_store(args), ref
+    return named_store(args, name), r
+
+
 def manifest_argv():
     return tools.find_tool("manifest")
 
@@ -182,7 +235,7 @@ def scope(args, t, s):
 def source_name(t):
     e = getattr(t, "entry", None)
     if e is not None:
-        return "%s:%s" % (e.id, t.name) if len(e.tables) > 1 else e.id
+        return shown_id(e, t.name if len(e.tables) > 1 else None)
     return t.source or t.name
 
 
@@ -1012,11 +1065,12 @@ def cmd_import(args):
 
 
 def cmd_log(args):
-    st = store_of(args)
     if args.ref:
-        e = st.resolve(args.ref)
+        st, ref = ref_store(args, args.ref)
+        e = st.resolve(ref)
         sys.stdout.write(render.page(describe_entry(e)))
         return 0
+    st = home_store(args)
     entries = st.entries()
     if not entries:
         out("no runs in the store %s yet%s" % (
@@ -1045,8 +1099,8 @@ def cmd_log(args):
 # ---------------------------------------------------------------------------
 
 def load(args, ref=None):
-    return load_ref(store_of(args), ref or args.ref or "latest",
-                    getattr(args, "as_", None))
+    st, ref = ref_store(args, ref or getattr(args, "ref", None) or "latest")
+    return load_ref(st, ref, getattr(args, "as_", None))
 
 
 def cmd_show(args):
@@ -1381,20 +1435,21 @@ def report_trend(args, t, s):
 # ---------------------------------------------------------------------------
 
 def cmd_diff(args):
-    book = store_of(args)
     if len(args.refs) == 1:
-        ref, tname = split_ref(args.refs[0])
+        book, ref = ref_store(args, args.refs[0])
+        ref, tname = split_ref(ref)
         if os.path.exists(ref):
             die("diff of a file needs two: %s diff OLD NEW" % PROG)
         new_e = book.resolve(ref)
+        # the run before it in its own store, whichever store that is
         old_e = book.previous_like(new_e)
         if old_e is None:
             die("nothing earlier in the store ran what %s ran; name two "
-                "runs: %s diff OLD NEW" % (new_e.id, PROG))
+                "runs: %s diff OLD NEW" % (shown_id(new_e), PROG))
         a, b = old_e.load(tname), new_e.load(tname)
     elif len(args.refs) == 2:
-        a = load_ref(book, args.refs[0])
-        b = load_ref(book, args.refs[1])
+        a = load(args, args.refs[0])
+        b = load(args, args.refs[1])
     else:
         die("diff wants one run (against the one before it) or two")
     if args.where:
@@ -1487,7 +1542,7 @@ def diff_report(a, b, res, args):
 
 def run_label(t):
     e = getattr(t, "entry", None)
-    return e.id if e is not None else None
+    return shown_id(e) if e is not None else None
 
 
 def cmd_export(args):
@@ -1515,7 +1570,7 @@ def floor_dir(e):
     """Where a run's overlay is written: qd's cache, never the store
     (provost commits everything in it)."""
     return os.path.join(storemod.cache_root(), "floor",
-                        re.sub(r"[^\w.@-]+", "_", e.id))
+                        re.sub(r"[^\w.@-]+", "_", shown_id(e)))
 
 
 def cmd_floor(args):
@@ -1577,10 +1632,23 @@ def cmd_floor(args):
 
 def cmd_compare(args):
     from . import compare as comparemod
-    st = store_of(args)
+    refs, last, st = list(args.refs), args.last, None
+    if last is not None:
+        m = re.match(r"^([0-9]+)(?:@(.+))?$", last)
+        if not m or int(m.group(1)) < 1:
+            die("--last wants a count, or COUNT@STORE: %r" % last)
+        last = int(m.group(1))
+        if m.group(2):
+            # --last N@STORE: the runs are that store's, and so are the
+            # references that name no store of their own
+            st = named_store(args, m.group(2))
+            refs = [r if split_store(r)[1] else r + "@" + m.group(2)
+                    for r in refs] or ["latest@" + m.group(2)]
+    st = st or home_store(args)
+    where = lambda ref: ref_store(args, ref)  # noqa: E731
     entries, baseline = comparemod.with_baseline(
-        st, comparemod.pick(st, args.refs, args.group, args.last),
-        args.baseline)
+        st, comparemod.pick(st, refs, args.group, last, where),
+        args.baseline, where)
     tables = [e.load(args.table) for e in entries]
     if args.where:
         tables = [t.derive(rows=query.where(t, args.where)) for t in tables]
@@ -2156,6 +2224,11 @@ OWN_DATASETS = (storemod.RUNS, storemod.HOSTS, "qd.campaigns", "qd.designs")
 def cmd_rm(args):
     """qd rm RUN...: delete runs -- their answers, their tables, their rows
     in qd.runs and qd.hosts -- and ds:NAME datasets, through provost."""
+    for ref in args.refs:
+        if split_store(ref)[1]:
+            die("%s rm deletes from --store, not from REF@STORE: %s rm %s "
+                "--store %s" % (PROG, PROG, split_store(ref)[0],
+                                split_store(ref)[1]))
     st = store_of(args)
     if not st.exists():
         die("no store at %s yet: nothing to delete" % st.shown())
@@ -2564,8 +2637,9 @@ def doe_run(args, st, doemod):
 
 def cmd_view(args):
     from . import explore
-    book = store_of(args)
     ref = args.ref
+    # RUN@STORE: that store's, to page through from there
+    book, ref_ = ref_store(args, ref) if ref else (home_store(args), None)
     # no RUN: everything in the store, to page through; --where and --sort
     # still mean the latest, as they did
     if ref is None and not (book.entries() or book.dataset_names()):
@@ -2573,7 +2647,7 @@ def cmd_view(args):
             "or make one with qd run / qd do / qd import" % book.shown())
     if ref is None and not (args.where or args.sort or args.as_):
         return explore.run(None, book)
-    t = load_ref(book, ref or "latest", args.as_)
+    t = load_ref(book, ref_ or "latest", args.as_)
     return explore.run(t, book, where=args.where, sort=args.sort)
 
 
@@ -3054,8 +3128,9 @@ def build_parser():
     sp.add_argument("-c", "--column", metavar="COL",
                     help="the column to compare (default: the medians of "
                     "every numeric column)")
-    sp.add_argument("--last", type=positive, metavar="N",
-                    help="the last N runs of the same thing (5)")
+    sp.add_argument("--last", metavar="N[@STORE]",
+                    help="the last N runs of the same thing (5), in "
+                    "--store or STORE")
     sp.add_argument("--group", metavar="NAME",
                     help="every run of a campaign or a design")
     sp.add_argument("--baseline", metavar="RUN",

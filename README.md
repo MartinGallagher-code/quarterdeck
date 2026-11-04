@@ -215,8 +215,45 @@ Name a run the way you'd say it:
 | `latest:hosts` | one table of a run: `data` (the default), `hosts` |
 | `ds:uname` | a whole provost dataset: every run that ever filed into it |
 | `results.tsv`, `reports/` | a file or directory, read without filing it |
+| `kernel@wr02`, `latest:hosts@wr01` | any of the above, read in the registered store `wr02` |
 
 `qd log` lists the runs and `qd log RUN` describes one.
+
+**Runs from different stores side by side**: add `@STORE` to a reference
+and it is read in that registered store, whatever `--store` says, so two
+labs' or two machines' runs are compared without exporting one store into
+the other:
+
+```bash
+qd diff kernel@wr01 kernel@wr02          # the same probe, two machines' stores
+qd diff kernel@wr01                      # against the run before it in wr01
+qd compare facts@lab facts@bench -c cpu.busy_pct
+qd compare facts --last 5@lab            # five runs, all of them lab's
+qd show latest:hosts@wr01
+qd view latest@wr02
+```
+
+- **Which commands:** every one that reads a run -- `show`, `stats`,
+  `freq`, `hist`, `outliers`, `pivot`, `trend`, `export`, `floor`, `log
+  RUN`, `diff`, `compare`, `view` -- and the Diff and Compare tabs of `qd
+  web`. Commands that file or delete (`run`, `do`, `import`, `probe`, `rm`,
+  ...) take no `@STORE`: they use `--store`, as before.
+- **Only a registered name** (`qd store ls`), never a directory: a
+  directory is `--store`'s job. A name that is not registered is an error
+  that lists the stores, never a quiet fallback to `--store`. A file or
+  directory whose name has an `@` in it is still read as a file.
+- **Where it splits:** on the last `@`, which is in no run id or provost
+  dataset name. A table goes before it: `latest:hosts@wr01`.
+- **Remote stores** are read like any other: the copy is fetched as
+  `--store` would fetch it, and once per command however many references
+  name that store.
+- **Reports say where each side came from:** a run from a store other
+  than the command's own is shown as `RUN@STORE` in report headers and in
+  `compare`'s list of runs, since the same run id can be in two stores.
+  Paste it back and it reads the same run.
+- **Different fleets:** `compare` matches hosts by name, so a host one
+  store measured and the other did not is blank on the other side (not
+  measured), never zero.
 
 **Deleting**:
 
@@ -468,7 +505,9 @@ compared as wholes. With no column, every numeric column the runs share is
 compared by its median, leaving out what the runs *were* rather than what
 they measured: a design's factors and the hosts' attributes. `--format csv`
 is the host-by-run table. The exit status is 1 when anything changed, as
-with `diff`. `qd web` shows the same comparison on its Compare tab.
+with `diff`. `qd web` shows the same comparison on its Compare tab. Runs
+from other stores go in as `RUN@STORE` (see *Runs from different stores
+side by side*); `--last N@STORE` takes the last N from that store.
 
 ---
 
@@ -667,7 +706,11 @@ qd web --layout floor.dc       # with the floor plan behind "Floor plan"
 With more than one named store, a picker beside the title reads any of
 them (`/api/stores` lists them). The page asks for a store by name, never
 by path. The commands it shows under "same in a terminal" carry
-`--store NAME`.
+`--store NAME`. **Diff** can take its older side (A) from another store,
+and **Compare** can add runs from other stores beside the ones it picked:
+the API takes a store per side (`a=RUN@STORE` or `a_store=NAME` on
+`/api/diff`, `also=RUN@STORE` on `/api/compare`), so the figures are the
+engine's, as everywhere.
 
 ![qd web: the table with the load1 column's figures, histogram and outliers](docs/qd-web-table.png)
 

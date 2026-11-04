@@ -305,6 +305,10 @@ class Store(object):
     def __init__(self, root=None):
         self.root = os.path.abspath(os.path.expanduser(root)) if root \
             else default_root()
+        # the registered name it was opened by, when a reference named it
+        # (REF@STORE) rather than the command's own store: what shown_id
+        # puts after an `@`
+        self.via = None
         self.reset()
 
     def reset(self):
@@ -1016,6 +1020,29 @@ def split_ref(ref):
     return ref, None
 
 
+def split_store(ref):
+    """`REF@STORE` -> (REF, STORE): a reference that names the registered
+    store it is read from (`kernel@wr01`, `latest:hosts@wr01`).  The split
+    is on the last `@`, which is in no run id or provost dataset name; a
+    file or directory whose name has one in it is still a file."""
+    if "@" in ref and not os.path.exists(ref) and \
+            not os.path.exists(split_ref(ref)[0]):
+        a, _, b = ref.rpartition("@")
+        if a and b and "/" not in b:
+            return a, b
+    return ref, None
+
+
+def shown_id(e, table=None):
+    """A run (or dataset) as a reference to it: `ID`, `ID:TABLE`, and
+    `@STORE` after either when it was read from a store other than the
+    command's own -- so a pasted report says where each side came from,
+    and the words can be typed back."""
+    via = getattr(getattr(e, "store", None), "via", None)
+    return "%s%s%s" % (e.id, (":" + table) if table else "",
+                       ("@" + via) if via else "")
+
+
 def load_ref(store, ref, fmt=None):
     """A table from a store reference or straight from a file/directory.
 
@@ -1041,7 +1068,7 @@ def load_ref(store, ref, fmt=None):
 def describe_entry(e):
     """What `qd log ENTRY` prints."""
     m = e.meta
-    out = ["%s  %s" % (e.id, m.get("name") or "")]
+    out = ["%s  %s" % (shown_id(e), m.get("name") or "")]
     out.append("  kind      %s" % m.get("kind", "?"))
     if m.get("created"):
         out.append("  created   %s" % m["created"])
@@ -1072,7 +1099,7 @@ def describe_entry(e):
         if n is not None:
             out.append("  answers   %s  (one per row: qd show "
                        "%s --cols host,capture)" % (
-                           e.store.provost("source %d" % n), e.id))
+                           e.store.provost("source %d" % n), shown_id(e)))
     out.append("  store     %s" % e.store.shown())
     out.append("  tables")
     for t in e.tables:
