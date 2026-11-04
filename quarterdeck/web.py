@@ -37,7 +37,8 @@ from . import campaign as camp, compare as comparemod, diff as diffmod, \
     doe as doemod, query, stats, table as tablemod, tools
 from .common import PROG, QdError, die, env_float, write_text
 from . import store as storemod
-from .store import cache_root, describe_entry, shown_attrs, split_ref
+from .store import cache_root, describe_entry, shown_attrs, shown_id, \
+    split_ref, split_store
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 
@@ -87,15 +88,41 @@ class Api(object):
         self.layout = layout
         self.cache = Cache()
         self.lock = threading.Lock()
+        # the other stores a REF@STORE on a request named, opened by this
+        # Api and read under its lock only: no request waits on two locks
+        self.others = {}
 
     # -- loading -------------------------------------------------------------
 
+    def other(self, name):
+        """The registered store NAME, for a REF@STORE -- this one when it
+        is this one, so a run here is never shown with an @."""
+        path = registered_path(name)
+        if path == self.book.root:
+            return self.book
+        st = self.others.get(name)
+        if st is None or st.root != path:
+            st = self.others[name] = storemod.Store(path)
+            st.via = name
+        else:
+            st.refresh()
+        return st
+
+    def store_for(self, ref):
+        """(store, REF): `REF@STORE` is read in that store, REF here."""
+        r, name = split_store(ref)
+        if name is None:
+            return self.book, ref
+        return self.other(name), r
+
     def entry(self, ref):
-        return self.book.resolve(ref or "latest")
+        st, ref = self.store_for(ref or "latest")
+        return st.resolve(ref)
 
     def table(self, ref, tname=None):
-        ref, inline = split_ref(ref or "latest")
-        e = self.entry(ref)
+        st, ref = self.store_for(ref or "latest")
+        ref, inline = split_ref(ref)
+        e = st.resolve(ref)
         tname = tname or inline
         info = None
         for t in e.tables:
@@ -104,7 +131,7 @@ class Api(object):
                 break
         if info is None:
             die("%s has no table %r" % (e.id, tname))
-        return self.cache.get((e.id, info["name"], self.book.stamp()),
+        return self.cache.get((st.root, e.id, info["name"], st.stamp()),
                               lambda: e.load(info["name"]))
 
     def subset(self, q, t=None):
@@ -141,7 +168,7 @@ class Api(object):
 
     def entry_info(self, q):
         e = self.entry(one(q, "e"))
-        prev = self.book.previous_like(e)
+        prev = e.store.previous_like(e)
         return {"id": e.id, "meta": e.meta, "describe": describe_entry(e),
                 "previous": prev.id if prev else None}
 
@@ -284,19 +311,22 @@ class Api(object):
                 "x_labels": labels}
 
     def diff(self, q):
-        b_ref = one(q, "b") or "latest"
-        a_ref = one(q, "a")
-        b_ref_, b_t = split_ref(b_ref)
-        be = self.entry(b_ref_)
+        """Two tables, either side from any registered store: a=REF@STORE
+        or a_store=NAME (and the same for b) read a side elsewhere."""
+        b_ref = with_store(one(q, "b") or "latest", one(q, "b_store"))
+        a_ref = with_store(one(q, "a"), one(q, "a_store"))
+        b_st, b_r = self.store_for(b_ref)
+        b_t = split_ref(b_r)[1]
+        be = self.entry(b_ref)
         if not a_ref:
-            prev = self.book.previous_like(be)
+            # the run before it in its own store, whichever that is
+            prev = be.store.previous_like(be)
             if prev is None:
                 die("nothing earlier ran what %s ran; pick an entry to "
-                    "compare against" % be.id)
-            a_ref = prev.id + ((":" + b_t) if b_t else "")
-        a_ref_, a_t = split_ref(a_ref)
-        a = self.table(a_ref_, a_t)
-        b = self.table(b_ref_, b_t)
+                    "compare against" % shown_id(be))
+            a_ref = shown_id(prev, b_t)
+        a = self.table(a_ref)
+        b = self.table(b_ref)
         wh = [w for w in q.get("where", []) if w.strip()]
         if wh:
             a = a.derive(rows=query.where(a, wh))
@@ -317,7 +347,12 @@ class Api(object):
                     d["text_diff"] = diffmod.text_diff(ch.a, ch.b, 60)
                 items.append(d)
             changed.append({"key": list(k), "changes": items})
-        return {"a": a_ref, "b": b_ref, "a_rows": len(a.rows),
+        return {"a": a_ref, "b": b_ref,
+                "a_store": getattr(a.entry.store, "via", None) or ""
+                if getattr(a, "entry", None) is not None else "",
+                "b_store": getattr(b.entry.store, "via", None) or ""
+                if getattr(b, "entry", None) is not None else "",
+                "a_rows": len(a.rows),
                 "b_rows": len(b.rows), "key": res.key, "cols": res.cols,
                 "ignored": res.ignored, "notes": res.notes,
                 "only_a": [list(k) for k in res.only_a],
@@ -332,10 +367,26 @@ class Api(object):
         and baseline rule included."""
         group = one(q, "group") or None
         last = int(one(q, "last") or 0) or None
-        es, base = comparemod.with_baseline(
-            self.book, comparemod.pick(self.book, [one(q, "e") or "latest"],
-                                       group, last), one(q, "baseline"))
-        tables = [self.table(e.id, one(q, "t")) for e in es]
+        # also=REF@STORE (any number): runs from other stores, set beside
+        # the ones picked here -- beside the run itself, when neither a
+        # group nor a count asked for more of this store's
+        also = [r.strip() for r in q.get("also", []) if r.strip()]
+        e_ref = one(q, "e") or "latest"
+        if also and not group and not last:
+            picked = [self.entry(e_ref)]
+        else:
+            picked = comparemod.pick(self.book, [e_ref], group, last,
+                                     self.store_for)
+        have = [comparemod.ident(e) for e in picked]
+        for ref in also:
+            e = self.entry(ref)
+            if comparemod.ident(e) not in have:
+                picked.append(e)
+                have.append(comparemod.ident(e))
+        es, base = comparemod.with_baseline(self.book, picked,
+                                            one(q, "baseline"),
+                                            self.store_for)
+        tables = [self.table(shown_id(e), one(q, "t")) for e in es]
         wh = [w for w in q.get("where", []) if w.strip()]
         if wh:
             tables = [t.derive(rows=query.where(t, wh)) for t in tables]
@@ -350,6 +401,7 @@ class Api(object):
             m = r["entry"].meta if r["entry"] is not None else {}
             h = r["hosts"]
             runs.append({"label": r["label"], "id": r["id"],
+                         "store": r["store"],
                          "created": r["created"], "rows": r["rows"],
                          "part": m.get("part", ""),
                          "factors": shown_attrs(m.get("factors")),
@@ -496,6 +548,30 @@ def safe_join(root, rel):
     return os.path.join(root, *words)
 
 
+def with_store(ref, store):
+    """A reference with `@STORE` put on, when a request named the store
+    apart (a_store=NAME) and the reference names none of its own."""
+    if ref and store and not split_store(ref)[1]:
+        return "%s@%s" % (ref, store)
+    return ref
+
+
+def registered_path(name, cfg=None):
+    """Where the registered store NAME is, its remote copy fetched when
+    due.  Only a registered name -- never a path: no file on the machine
+    is read because a request named it."""
+    from . import stores
+    if not stores.NAME_RE.match(name) or ".." in name:
+        die("no store named %r" % name)
+    cfg = cfg if cfg is not None else stores.load()
+    if name not in cfg["stores"]:
+        die("no store named %r: the stores are %s (qd store ls)"
+            % (name, ", ".join(sorted(cfg["stores"])) or "none"))
+    path = os.path.abspath(os.path.expanduser(cfg["stores"][name]))
+    stores.ready(path, name, cfg)
+    return path
+
+
 class StoreApis(object):
     """An Api per named store, made the first time the page picks it: what
     `store=NAME` on a request selects.  Only a registered name -- never a
@@ -515,13 +591,7 @@ class StoreApis(object):
             stores.ready(self.default.book.root,
                          stores.name_of(self.default.book.root))
             return self.default
-        if not stores.NAME_RE.match(name) or ".." in name:
-            die("no store named %r" % name)
-        cfg = stores.load()
-        if name not in cfg["stores"]:
-            die("no store named %r (qd store ls lists them)" % name)
-        path = os.path.abspath(cfg["stores"][name])
-        stores.ready(path, name, cfg)
+        path = registered_path(name)
         if path == self.default.book.root:
             return self.default
         with self.lock:

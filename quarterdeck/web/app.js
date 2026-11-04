@@ -100,6 +100,7 @@
     entries: [], groups: [], g: null, root: "", floor: false, layout: null,
     e: null, t: null, tab: "table", where: [], sort: "", col: null,
     p: {}, info: null, rows: null, busy: 0,
+    stores: [], here: null, elsewhere: {},
   };
 
   const TABS = [["table", "Table"], ["group", "Group"], ["pivot", "Pivot"],
@@ -213,6 +214,8 @@
     try { d = await api("/api/stores", { store: "" }); } catch (err) { return; }
     const sel = clear($("store"));
     const names = d.stores.map((x) => x.name);
+    S.stores = names;
+    S.here = d.here;
     if (!d.here) {
       sel.append(h("option", { value: "", text: "this store (" + d.here_path + ")" }));
     }
@@ -226,8 +229,22 @@
     $("store-pick").hidden = sel.options.length < 2;
   }
 
+  // The registered stores other than the one on show: where diff's A side
+  // and compare's extra runs can come from (as REF@STORE)
+  function otherStores() {
+    const current = S.store || S.here;
+    return S.stores.filter((n) => n !== current);
+  }
+
+  // Another store's runs, read once per visit to the page
+  async function storeEntries(name) {
+    if (!S.elsewhere[name]) S.elsewhere[name] = (await api("/api/entries", { store: name })).entries;
+    return S.elsewhere[name];
+  }
+
   async function switchStore(name) {
     S.store = name || null;
+    S.elsewhere = {};
     S.e = S.g = S.t = null;
     S.tab = "table"; S.where = []; S.sort = ""; S.col = null; S.p = {};
     closePanel();
@@ -1096,8 +1113,15 @@
   async function viewDiff(view) {
     renderFilterbar();
     clear(view);
-    const against = S.p.a !== undefined ? S.p.a : (S.info && S.info.previous) || "";
-    const opts = [["", against ? "" : "(pick an entry)"]].concat(S.entries.filter((e) => e.id !== S.e).map((e) =>
+    // A from another store: REF@STORE, its figures from the API as any
+    const others = otherStores();
+    const aStore = S.p.as && others.includes(S.p.as) ? S.p.as : "";
+    let aEntries = S.entries;
+    if (aStore) {
+      try { aEntries = await storeEntries(aStore); } catch (err) { showError(err); aEntries = []; }
+    }
+    const against = S.p.a !== undefined ? S.p.a : (!aStore && S.info && S.info.previous) || "";
+    const opts = [["", against ? "" : "(pick an entry)"]].concat(aEntries.filter((e) => aStore || e.id !== S.e).map((e) =>
       [e.id, e.id + "  " + (entryTitle(e) || "").slice(0, 40)]));
     const keyIn = h("input", { type: "text", value: S.p.key || "", placeholder: "auto", "aria-label": "Match rows on" });
     const tolIn = h("input", { type: "number", value: S.p.tol || "", placeholder: "0", min: "0", step: "any", "aria-label": "Tolerance percent", style: { width: "6em" } });
@@ -1105,6 +1129,8 @@
       S.p.key = keyIn.value.trim(); S.p.tol = tolIn.value.trim(); renderView();
     } });
     view.append(h("div", { class: "controls" },
+      others.length ? select("A from store", aStore, [["", "this store"]].concat(others.map((n) => [n, n])),
+        (v) => { S.p.as = v; S.p.a = ""; renderView(); }) : null,
       select("Compare against (A, older)", against, opts.filter((o, i) => i > 0 || !against), (v) => { S.p.a = v; renderView(); }),
       h("label", null, "Match rows on", keyIn), h("label", null, "Ignore changes within %", tolIn), run));
     if (!against) {
@@ -1112,7 +1138,7 @@
       renderCli("");
       return;
     }
-    const a = against + (S.t && !against.includes(":") ? ":" + S.t : "");
+    const a = against + (S.t && !against.includes(":") ? ":" + S.t : "") + (aStore ? "@" + aStore : "");
     const b = S.e + (S.t ? ":" + S.t : "");
     const d = await api("/api/diff", { a: a, b: b, where: S.where, key: S.p.key || null, tolerance: S.p.tol || null });
     renderCli(["qd diff", shq(a), shq(b), S.p.key ? "--key " + shq(S.p.key) : "", S.p.tol ? "--tolerance " + S.p.tol : "", whereArgs()].filter(Boolean).join(" "));
@@ -1200,11 +1226,16 @@
       tbody));
   }
 
-  function compareCli(group) {
+  function alsoRefs() { return (S.p.also || "").split(",").filter(Boolean); }
+
+  function compareCli(group, d) {
     const e = entryById(S.e);
-    const parts = ["qd compare", group ? "--group " + shq(group) : shq(refArg())];
-    if (group && S.t && e && e.tables.length > 1 && S.t !== e.tables[0].name) parts.push("--table " + shq(S.t));
-    if (S.p.last) parts.push("--last " + S.p.last);
+    // runs from other stores: the terminal is given every run by name
+    const named = alsoRefs().length && d;
+    const parts = ["qd compare"].concat(named ? d.runs.map((r) => shq(r.id)) :
+      [group ? "--group " + shq(group) : shq(refArg())]);
+    if ((group || named) && S.t && e && e.tables.length > 1 && S.t !== e.tables[0].name) parts.push("--table " + shq(S.t));
+    if (S.p.last && !named) parts.push("--last " + S.p.last);
     if (S.p.c) parts.push("-c " + shq(S.p.c));
     if (S.p.baseline) parts.push("--baseline " + shq(S.p.baseline));
     if (S.p.drift) parts.push("--drift " + S.p.drift);
@@ -1226,7 +1257,7 @@
     try {
       d = await api("/api/compare", { e: S.e, t: S.t, group: group || null, last: S.p.last || null,
         c: S.p.c || null, baseline: S.p.baseline || null, drift: S.p.drift || null,
-        key: S.p.key || null, changed: S.p.all ? "0" : null, where: S.where });
+        key: S.p.key || null, changed: S.p.all ? "0" : null, where: S.where, also: alsoRefs() });
     } catch (err) { refusal = err; }
 
     const lastIn = h("input", { type: "number", min: "2", step: "1", value: S.p.last || "",
@@ -1246,9 +1277,31 @@
       ctl.push(select("Baseline", S.p.baseline || "", d.runs.map((r, i) => [i === 0 && !S.p.baseline ? "" : r.id,
         r.label + "  " + r.id]), (v) => { S.p.baseline = v; renderView(); }));
     }
+    // a run from another store, set beside these (REF@STORE)
+    const others = otherStores();
+    const from = S.p.from && others.includes(S.p.from) ? S.p.from : "";
+    if (others.length) {
+      ctl.push(select("Add a run from", from, [["", "(another store)"]].concat(others.map((n) => [n, n])),
+        (v) => { S.p.from = v; renderView(); }));
+    }
+    if (from) {
+      let es = [];
+      try { es = await storeEntries(from); } catch (err) { showError(err); }
+      ctl.push(select("Run", "", [["", "(pick a run)"]].concat(es.map((x) =>
+        [x.id, x.id + "  " + (entryTitle(x) || "").slice(0, 40)])), (v) => {
+        if (!v) return;
+        S.p.also = alsoRefs().concat([v + "@" + from]).join(",");
+        S.p.from = "";
+        renderView();
+      }));
+    }
+    if (alsoRefs().length) {
+      ctl.push(h("button", { type: "button", text: "Drop the other stores' runs",
+        onclick: () => { S.p.also = ""; delete S.p.baseline; renderView(); } }));
+    }
     ctl.push(h("label", null, "A change is past %", driftIn), h("label", null, "Match rows on", keyIn), go);
     view.append(h("div", { class: "controls" }, ctl));
-    renderCli(compareCli(group));
+    renderCli(compareCli(group, d));
     if (!d) {
       view.append(h("p", { class: "empty", text: String(refusal.message || refusal) }));
       return;
@@ -1257,7 +1310,8 @@
     const what = (r) => r.factors || (r.part ? "part " + r.part : "");
     const parts = d.runs.some((r) => what(r));
     const runRows = d.runs.map((r, i) => [r.label + (i === d.baseline ? " (baseline)" : ""),
-      h("button", { type: "button", class: "link mono", text: r.id, onclick: (ev) => { ev.stopPropagation(); openEntry(r.id); } })]
+      r.store ? h("span", { class: "mono", text: r.id, title: "from the store " + r.store }) :
+        h("button", { type: "button", class: "link mono", text: r.id, onclick: (ev) => { ev.stopPropagation(); openEntry(r.id); } })]
       .concat(parts ? [what(r)] : []).concat([r.hosts_ok, String(r.rows), (r.created || "").replace("T", " ").replace("Z", "")]));
     view.append(h("div", { class: "card" }, h("h3", { text: d.runs.length + " runs" }),
       plainTable(["run", "id"].concat(parts ? [d.runs.some((r) => r.factors) ? "factors" : "part"] : [])
@@ -1287,7 +1341,8 @@
       h("h3", { text: d.changed + " of " + d.keys_total + " keys changed" }),
       h("label", { class: "count" }, all, " every key, not only those that changed"));
     if (d.keys.length) {
-      const latest = d.runs[d.runs.length - 1].id;
+      // the latest run in this store: one from another is not opened here
+      const latest = (d.runs.filter((r) => !r.store).pop() || d.runs[d.runs.length - 1]).id;
       const rows = d.keys.map((k) => k.key.concat(k.values.map(fmtNum)).concat([pctText(k.change_pct), k.flags.join("; ")]));
       card.append(plainTable(d.key.concat(d.runs.map((r) => r.label)).concat(["change", "flags"]), rows, {
         numeric: d.runs.map((r, i) => d.key.length + i).concat([d.key.length + d.runs.length]),

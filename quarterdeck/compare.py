@@ -20,6 +20,7 @@ measure has no value and no delta, and is said to be missing.
 
 from .common import die
 from .diff import VOLATILE, auto_key
+from .store import shown_id
 from .stats import AGGS, summary
 from .table import Table, column_numbers
 
@@ -102,7 +103,12 @@ def compare(tables, column=None, key=None, drift=5.0, agg="median",
         e = getattr(t, "entry", None)
         h = (e.meta.get("hosts") or {}) if e is not None else {}
         res.runs.append({"label": lab, "table": t, "entry": e,
-                         "id": e.id if e is not None else t.source or t.name,
+                         # RUN@STORE for a run from another store: the
+                         # same id can be in both
+                         "id": shown_id(e) if e is not None
+                         else t.source or t.name,
+                         "store": getattr(e.store, "via", None) or ""
+                         if e is not None else "",
                          "created": e.meta.get("created", "") if e is not None
                          else "", "hosts": h, "rows": len(t.rows)})
     if column is None:
@@ -137,10 +143,18 @@ def compare(tables, column=None, key=None, drift=5.0, agg="median",
     return res
 
 
-def pick(st, refs=(), group=None, last=None):
+def _own(st):
+    return lambda ref: (st, ref)
+
+
+def pick(st, refs=(), group=None, last=None, where=None):
     """The runs to compare, oldest first: those named; a group's (a
     campaign's parts or a design's points); or the last N runs like the
-    one named (5 by default)."""
+    one named (5 by default), in that run's own store.
+
+    `where(ref)` -> (store, ref) says which store a reference is read in
+    (REF@STORE); without it every one is read in `st`."""
+    where = where or _own(st)
     if group:
         es = [e for e in st.entries() if e.meta.get("group") == group]
         if not es:
@@ -149,7 +163,8 @@ def pick(st, refs=(), group=None, last=None):
         return es[-last:] if last else es
     refs = list(refs) or ["latest"]
     if len(refs) == 1 or last:
-        e = st.resolve(refs[-1])
+        st, ref = where(refs[-1])
+        e = st.resolve(ref)
         if not hasattr(e, "captures"):
             die("%s is a whole dataset, not a run: compare runs of it "
                 "(qd compare NAME --last N)" % e.id)
@@ -164,18 +179,28 @@ def pick(st, refs=(), group=None, last=None):
                 "the runs to compare)" % (e.id, e.meta.get("name") or
                                           e.meta.get("command")))
         return es
-    return [st.resolve(r) for r in refs]
+    out = []
+    for r in refs:
+        s, ref = where(r)
+        out.append(s.resolve(ref))
+    return out
 
 
-def with_baseline(st, entries, ref):
+def ident(e):
+    """A run by its store and id: ids can repeat across stores."""
+    return (getattr(getattr(e, "store", None), "root", None), e.id)
+
+
+def with_baseline(st, entries, ref, where=None):
     """(entries, the baseline's index): the run named, where it is among
     them, or put in front when it is not."""
     if not ref:
         return entries, 0
-    b = st.resolve(ref)
-    ids = [e.id for e in entries]
-    if b.id in ids:
-        return entries, ids.index(b.id)
+    s, ref = (where or _own(st))(ref)
+    b = s.resolve(ref)
+    ids = [ident(e) for e in entries]
+    if ident(b) in ids:
+        return entries, ids.index(ident(b))
     return [b] + entries, 0
 
 

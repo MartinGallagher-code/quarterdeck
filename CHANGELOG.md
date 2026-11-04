@@ -5,6 +5,31 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.6.0 — 2026-11-04
+
+### Added
+- **`REF@STORE`: a run read from any registered store** (#7, QD-002).
+  Wherever a command reads a run -- `show`, `stats`, `freq`, `hist`,
+  `outliers`, `pivot`, `trend`, `export`, `floor`, `log RUN`, `diff`,
+  `compare`, `view` -- a reference may name the store it is in:
+  `qd diff kernel@wr01 kernel@wr02`, `qd show latest:hosts@wr01`. Two
+  stores' runs are compared without exporting one into the other, remote
+  stores included. Without `@STORE` a reference means what it did.
+  - Only a registered name; an unknown one is an error listing the stores,
+    never `--store` instead. A file whose name has an `@` is still a file.
+  - One store is opened once per command, a remote copy fetched once.
+  - `qd diff RUN@STORE` compares with the run before it in that store.
+  - `qd compare` labels each run from another store `RUN@STORE`, and
+    `--last N@STORE` takes the last N from one store. A host only one
+    store measured is blank on the other side, never zero.
+  - Report headers name a run from another store `RUN@STORE`.
+  - `qd web`: Diff can take its A side from another store, and Compare
+    can add runs from other stores. The API takes a store per side
+    (`a_store`/`b_store` or `RUN@STORE` on `/api/diff`, `also=RUN@STORE`
+    on `/api/compare`); the page still computes nothing.
+  - Writing commands take no `@STORE`: `qd rm RUN@STORE` is refused, with
+    the `--store` that does it.
+
 ## 0.5.2 — 2026-11-04
 
 ### Changed
