@@ -63,15 +63,31 @@ setup_env() {
     export XDG_DATA_HOME="$TEST_TMPDIR/data"
     export PROVOST_HOME="$TEST_TMPDIR/provost-home"
     export LANG=C
+    # git 2.47 and later follow a commit or a fetch with a detached `git
+    # maintenance run --auto`, which can still be writing into the store's
+    # .git when the case ends and teardown removes it (CI, the suites side
+    # by side).  These stores live for seconds: none of that here.
+    export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=maintenance.auto \
+        GIT_CONFIG_VALUE_0=false
     cd "$TEST_TMPDIR" || return 1
 }
 
 teardown_env() {
+    local pid
     if [ -f "$TEST_TMPDIR/web.pid" ]; then
-        kill "$(cat "$TEST_TMPDIR/web.pid")" 2>/dev/null || true
+        pid="$(cat "$TEST_TMPDIR/web.pid")"
+        kill "$pid" 2>/dev/null || true
+        # gone before its directory is
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+        done
     fi
     cd / || true
-    [ -n "$TEST_TMPDIR" ] && rm -rf "$TEST_TMPDIR"
+    # a second go for anything the case started that outlived it
+    if [ -n "$TEST_TMPDIR" ]; then
+        rm -rf "$TEST_TMPDIR" 2> /dev/null || { sleep 1; rm -rf "$TEST_TMPDIR"; }
+    fi
 }
 
 run_test() {
@@ -127,8 +143,10 @@ has_batch() {
 # systemctl; `command -v` sees functions as well as files, so a command
 # cannot be hidden any other way.
 path_without() {
-    local d p f b x hide
-    d="$(mktemp -d "${TMPDIR:-/tmp}/qd-path.XXXXXX")"
+    local d p f b x hide base
+    # in the case's own temp dir, so it goes when the case does
+    base="${TEST_TMPDIR:-${TMPDIR:-/tmp}}"
+    d="$(mktemp -d "${base%/}/qd-path.XXXXXX")"
     local IFS=:
     for p in $PATH; do
         for f in "$p"/*; do

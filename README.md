@@ -865,9 +865,21 @@ These are binnacle's, for the same reasons:
 ## Tests
 
 ```bash
-bash tests/run_tests.sh          # every suite
+bash tests/run_tests.sh          # every suite, one per core at a time
 bash tests/run_tests.sh run web  # some of them
+bash tests/run_tests.sh -j 1     # one at a time, each suite's output as it comes
 ```
+
+The suites run side by side: `-j N` (or `QD_TEST_JOBS=N`) runs N at a
+time, and the default is the machine's core count. Each suite's output is
+held until it ends and then printed whole, in name order, so the log reads
+as it does one at a time; the slowest suites start first, and the run ends
+with its wall time and the three longest. `-j 1`, or naming a single suite,
+is the serial run. Ctrl-C stops every suite still running, and each case
+still clears up after itself. Suites can share a machine because every case
+has a temp dir, a store and XDG directories of its own, and each suite that
+starts a web server has a range of ports of its own. On four cores the
+whole suite takes about six minutes, against fifteen one at a time.
 
 The tests need no network and no second machine, but a real provost
 (`pip install provost`, or `QD_PROVOST`): every case files into a store of

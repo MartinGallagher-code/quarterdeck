@@ -12,7 +12,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_helper.bash"
 start_web() {
     # The interpreter itself goes in the background, not the qd function:
     # $! of a backgrounded function is a subshell, and killing that leaves
-    # the server running after the case.
+    # the server running after the case.  18100 to 18119 are this suite's
+    # (test_xstore.sh says why).
     "$PY" "$QD_DIR/qd" web -n -q --port 18100 > web.out 2> web.err &
     echo $! > web.pid
     for _ in $(seq 1 50); do

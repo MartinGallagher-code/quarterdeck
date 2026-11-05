@@ -11,8 +11,10 @@
 # What it runs, in order: the version check, the Python 3.6 compile check,
 # vermin, shellcheck, node --check on the page, reuse lint, a wheel build
 # with twine check, and the whole suite on both of provost's paths (with
-# `batch`, then QD_PROVOST_BATCH=0).  A check whose tool is not installed is
-# skipped and said so, never failed; the summary at the end names every one.
+# `batch`, then QD_PROVOST_BATCH=0), one suite per core at a time
+# (QD_TEST_JOBS=N for N, 1 for the serial run).  A check whose tool is not
+# installed is skipped and said so, never failed; the summary at the end
+# names every one.
 # Exit status: 0 when nothing failed, 1 when something did, 2 on bad usage.
 #
 # Left to CI: the suite under a real Python 3.6, under each of 3.9-3.13,
@@ -26,7 +28,7 @@ quick=0
 case "${1:-}" in
     "") ;;
     --quick) quick=1 ;;
-    -h|--help) sed -n '5,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '5,22p' tests/check.sh | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "usage: check.sh [--quick]" >&2; exit 2 ;;
 esac
 

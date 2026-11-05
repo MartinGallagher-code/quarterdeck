@@ -5,6 +5,51 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.6.4 — 2026-11-05
+
+Nothing `qd` does has changed; the suites run side by side (QD-005).
+
+### Changed
+- **`tests/run_tests.sh` runs several suites at once**: `-j N` (or
+  `QD_TEST_JOBS=N`), one per core by default. Each suite's output is held
+  until it ends and printed whole, in name order, with the same `ok`/`FAIL`
+  lines and counts, the same last line and the same exit status (0, 1, 2);
+  the slowest suites start first, and the run ends with its wall time and
+  the three longest. `-j 1`, or naming one suite, is the serial run, as
+  before. Ctrl-C stops every suite running, each case clearing up as it
+  does now. It is written for macOS's bash 3.2 (no `wait -n`). CI's suite
+  jobs and `tests/check.sh` get it by default. CI took 7 min 48 s and
+  9 min 33 s (runs 46 and 48), against 20 min 27 s on main (run 45): its
+  slowest job, provost 2.1.0's, went from 20 minutes to 6 to 9, the suite
+  jobs run the suite in 4 to 9 minutes, four suites at a time, and the
+  runner's speed is most of the spread. On four cores here the whole suite
+  took 332 to 397 s, against 891 s one at a time. The doe suite, the
+  longest (3.5 to 6 minutes beside the others), is now the floor.
+- **Each suite that starts a web server has a port range of its own**:
+  web 18100, xstore 18120, remote 18140. xstore and remote both asked for
+  18110, and `qd web` checks a port is free before it binds, so two run at
+  once could both pick it and one fail to start.
+- **The harness's PATH-without-a-command directory** (`path_without`, for
+  the probe and run suites) is made in the case's own temp dir, so it goes
+  with the case; four were left in `/tmp` on every run.
+- **The run suite's two-runs-at-once case** waits for the slow run's
+  directory on the host before it starts the quick one, not a fixed 0.7 s
+  that a busy machine can outlast.
+
+### Fixed
+- **A case could fail after it passed**, in its teardown: git 2.47 and
+  later follow a commit or a fetch with a detached `git maintenance run
+  --auto`, and one still writing into a store's `.git` when the case ended
+  made teardown's `rm -rf` fail ("Directory not empty"). CI's second run
+  with the suites side by side failed so (the remote suite's web page
+  case, git 2.56). Every case now runs git with `maintenance.auto` off
+  (through `GIT_CONFIG_COUNT`, so the stores' own config is untouched);
+  teardown waits for a case's web server to exit and tries the removal a
+  second time.
+- `run_tests.sh --help` (new) and `check.sh --help` print their usage from
+  any directory; `check.sh` read itself by a path relative to where it was
+  started.
+
 ## 0.6.3 — 2026-11-05
 
 Nothing `qd` does has changed; this is for whoever works on it (QD-004).
