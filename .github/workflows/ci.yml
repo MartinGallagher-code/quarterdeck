@@ -107,6 +107,19 @@ jobs:
       - name: Run the test suite
         run: bash tests/run_tests.sh
 
+  version:
+    # Every change moves the version in three places (CLAUDE.md); a pull
+    # request that moves one and not the others fails here.
+    name: version in three places
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Compare __init__.py, pyproject.toml and CHANGELOG.md
+        run: bash tests/check_version.sh
+
   web:
     name: web page syntax
     runs-on: ubuntu-latest
