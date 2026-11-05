@@ -5,6 +5,13 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.6.2 — 2026-11-05
+
+### Fixed
+- **shellcheck is green again** (QD-003). 0.6.1's format-4 test took a
+  capture id with `ls | head -1`, which CI's shellcheck refuses (SC2012);
+  it takes it from a glob now. A test-only change.
+
 ## 0.6.1 — 2026-11-04
 
 ### Fixed
