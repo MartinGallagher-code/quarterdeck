@@ -213,12 +213,39 @@ EOF
     assert_no_file "$(STORES)/../escaped"
     qd_rc store import newer.tgz --as t3 2> err
     assert_contains "$(cat err)" "format 99"
+    assert_contains "$(cat err)" "reads formats 1, 2, 3, 4"
     echo "not an archive" > junk.tgz
     qd_rc store import junk.tgz --as t4 2> err
     assert_contains "$(cat err)" "is not a qd store archive"
     # nothing was registered, and nothing was left half-made
     assert_not_contains "$(qd store ls)" "t1"
     assert_eq "$(find "$(STORES)" -mindepth 1 -maxdepth 1 -printf '%f ')" "lab "
+}
+
+# provost's store format 4 (PV-015) changed data, not layout: column 2 is
+# the capture id in every row, named _capture where the data has a column
+# called capture.  Made by hand, so any provost can run it.
+t_a_format_4_store_reads_and_round_trips() {
+    unset QD_STORE
+    qd store new f4 > /dev/null
+    csv a 1
+    qd import a.csv --store f4 > /dev/null 2>&1
+    st="$(STORES)/f4"
+    cid="$(ls "$st/captures" | head -1)"
+    printf '#\t_capture\tn\tv\tcapture\n900\t%s\t1\t5\tdata\n' "$cid" \
+        > "$st/datasets/mixed.tsv"
+    echo 4 > "$st/.store_format"
+    git -C "$st" add -A
+    git -C "$st" -c user.name=t -c user.email=t@t commit -qm format4
+    want="capture,n,v,capture_2
+$cid,1,5,data"
+    assert_eq "$(qd show ds:mixed --store f4 --format csv)" "$want"
+    qd store export f4 f4.tgz > out
+    assert_contains "$(cat out)" "store format 4"
+    qd store import f4.tgz --as f4copy > out
+    assert_contains "$(cat out)" "f4copy = "
+    assert_eq "$(qd show ds:mixed --store f4copy --format csv)" "$want"
+    assert_eq "$(runs_in --store f4copy)" "$(runs_in --store f4)"
 }
 
 run_test "a fresh machine: warned, then default"    t_a_fresh_machine_warns_then_registers_default
@@ -229,4 +256,5 @@ run_test "rm forgets, --delete deletes"             t_rm_forgets_or_deletes
 run_test "export and import: a round trip"          t_export_and_import_round_trip
 run_test "export refuses while a run files"         t_export_refuses_while_a_run_files
 run_test "import checks what it is given"           t_import_checks_what_it_is_given
+run_test "a format-4 store reads and round-trips"   t_a_format_4_store_reads_and_round_trips
 finish

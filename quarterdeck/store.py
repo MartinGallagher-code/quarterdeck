@@ -208,6 +208,17 @@ def provost_columns(columns, context=()):
     return out
 
 
+def capture_column(columns):
+    """The index of provost's capture column, or None in a store older
+    than it (format 3 on: always the second).  Found by place, not by
+    name: a dataset whose data has a column called capture holds provost's
+    as `_capture` (provost's store format 4), and the data's is data."""
+    if len(columns) > 1 and columns[0] == "#" and \
+            re.match(r"^_*capture$", columns[1]):
+        return 1
+    return None
+
+
 # what provost takes for a dataset's name: letters, digits, '.', '_', '-'
 DATASET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -416,8 +427,9 @@ class Store(object):
         return self._prov
 
     def row_capture(self, t, row):
-        if "capture" in t.columns:
-            return row[t.columns.index("capture")]
+        i = capture_column(t.columns)
+        if i is not None:
+            return row[i]
         if "#" in t.columns and row[t.columns.index("#")].isdigit():
             return self.provenance().get(int(row[t.columns.index("#")]), "")
         return ""
@@ -485,13 +497,14 @@ class Store(object):
         out = []
         for ds in self.family(name):
             t = self.dataset(ds)
+            ci = capture_column(t.columns)
             for r in t.rows:
                 d = dict(zip(t.columns, r))
                 for c in TEXT_COLUMNS:
                     if c in d:
                         d[c] = unescape(d[c])
                 d["_rowid"] = int(d["#"]) if d.get("#", "").isdigit() else 0
-                d["_capture"] = d.get("capture") or \
+                d["_capture"] = (r[ci] if ci is not None else "") or \
                     self.provenance().get(d["_rowid"], "")
                 out.append(d)
         out.sort(key=lambda d: d["_rowid"])
@@ -968,14 +981,21 @@ class Dataset(object):
         if name not in (None, self.name):
             die("%s has one table, %s" % (self.id, self.name))
         t = self.store.dataset(self.name)
-        cols = [c for c in t.columns if c != "#"]
-        if "capture" in t.columns:
-            out = t.derive(columns=cols)
-        else:
-            out = Table(["capture"] + cols,
-                        [[self.store.row_capture(t, r)] +
-                         [r[t.columns.index(c)] for c in cols]
-                         for r in t.rows], self.name, t.source)
+        # provost's capture id first, as `capture` whatever provost named
+        # it; a data column of that name becomes capture_2 (the first free
+        # capture_K), the way provost renames a data column called `#`
+        ci = capture_column(t.columns)
+        keep = [i for i, c in enumerate(t.columns) if c != "#" and i != ci]
+        names = [t.columns[i] for i in keep]
+        if "capture" in names:
+            k = 2
+            while "capture_%d" % k in names:
+                k += 1
+            names[names.index("capture")] = "capture_%d" % k
+        out = Table(["capture"] + names,
+                    [[self.store.row_capture(t, r)] + [r[i] for i in keep]
+                     for r in t.rows], self.name, t.source, t.tests,
+                    t.notes)
         out.entry = self
         return out
 
