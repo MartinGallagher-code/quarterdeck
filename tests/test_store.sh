@@ -219,7 +219,7 @@ EOF
     assert_contains "$(cat err)" "is not a qd store archive"
     # nothing was registered, and nothing was left half-made
     assert_not_contains "$(qd store ls)" "t1"
-    assert_eq "$(find "$(STORES)" -mindepth 1 -maxdepth 1 -printf '%f ')" "lab "
+    assert_eq "$(find "$(STORES)" -mindepth 1 -maxdepth 1 | sed 's|.*/||' | tr '\n' ' ')" "lab "
 }
 
 # provost's store format 4 (PV-015) changed data, not layout: column 2 is
@@ -231,7 +231,8 @@ t_a_format_4_store_reads_and_round_trips() {
     csv a 1
     qd import a.csv --store f4 > /dev/null 2>&1
     st="$(STORES)/f4"
-    cid="$(ls "$st/captures" | head -1)"
+    set -- "$st"/captures/*
+    cid="${1##*/}"
     printf '#\t_capture\tn\tv\tcapture\n900\t%s\t1\t5\tdata\n' "$cid" \
         > "$st/datasets/mixed.tsv"
     echo 4 > "$st/.store_format"
