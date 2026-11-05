@@ -5,7 +5,7 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
-## 0.6.2 — 2026-11-05
+## 0.6.3 — 2026-11-05
 
 Nothing `qd` does has changed; this is for whoever works on it (QD-004).
 
@@ -27,11 +27,16 @@ Nothing `qd` does has changed; this is for whoever works on it (QD-004).
   running one suite or some cases, and what only runs on Linux.
 
 ### Fixed
-- **CI's shellcheck job, red on `main` since 0.6.1**: `tests/test_store.sh`
-  took a capture id from `ls | head` (SC2012); it is a glob now.
 - **The suites on macOS**: `find -printf` (GNU only) in the store suite is
   gone, and the harness no longer doubles the slash at the end of macOS's
   `TMPDIR`, which broke the run suite's assertions on provost's tips.
+
+## 0.6.2 — 2026-11-05
+
+### Fixed
+- **shellcheck is green again** (QD-003). 0.6.1's format-4 test took a
+  capture id with `ls | head -1`, which CI's shellcheck refuses (SC2012);
+  it takes it from a glob now. A test-only change.
 
 ## 0.6.1 — 2026-11-04
 

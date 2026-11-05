@@ -231,8 +231,7 @@ t_a_format_4_store_reads_and_round_trips() {
     csv a 1
     qd import a.csv --store f4 > /dev/null 2>&1
     st="$(STORES)/f4"
-    set -- "$st"/captures/*
-    cid="${1##*/}"
+    cids=("$st"/captures/c*); cid="${cids[0]##*/}"
     printf '#\t_capture\tn\tv\tcapture\n900\t%s\t1\t5\tdata\n' "$cid" \
         > "$st/datasets/mixed.tsv"
     echo 4 > "$st/.store_format"
