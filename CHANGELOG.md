@@ -18,9 +18,12 @@ Nothing `qd` does has changed; the suites run side by side (QD-005).
   the three longest. `-j 1`, or naming one suite, is the serial run, as
   before. Ctrl-C stops every suite running, each case clearing up as it
   does now. It is written for macOS's bash 3.2 (no `wait -n`). CI's suite
-  jobs and `tests/check.sh` get it by default. On four cores the whole
-  suite (with provost's `batch`) took 348 s here, against 891 s one at a
-  time; the doe suite, the longest, is now most of the wait.
+  jobs and `tests/check.sh` get it by default. CI took 7 min 48 s (run
+  46), against 20 min 27 s on main (run 45): its slowest job, provost
+  2.1.0's, went from 20 minutes to 6, and each suite job now runs the suite
+  in 5 to 7.5 minutes, four suites at a time. On four cores here the whole
+  suite took 348 s, against 891 s one at a time. The doe suite, the
+  longest (3 to 5 minutes beside the others), is now most of the wait.
 - **Each suite that starts a web server has a port range of its own**:
   web 18100, xstore 18120, remote 18140. xstore and remote both asked for
   18110, and `qd web` checks a port is free before it binds, so two run at
