@@ -5,6 +5,7 @@
 #
 # Sourced by every test_*.sh.  Provides:
 #   run_test NAME FN        run one case in a subshell with a fresh temp dir
+#                           (only if NAME contains $QD_TEST_ONLY, when set)
 #   assert_eq/contains/not_contains/status/file_exists/no_file
 #   fail MSG                fail a case with a reason no assert_ covers
 #   qd ARGS...              the CLI under test, run from a clone
@@ -36,7 +37,10 @@ TESTS_FAILED=0
 FAILED_NAMES=()
 
 setup_env() {
-    TEST_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/qd-test.XXXXXX")"
+    # macOS's TMPDIR ends in a slash; a doubled one would not match the
+    # paths qd prints
+    local tmp="${TMPDIR:-/tmp}"
+    TEST_TMPDIR="$(mktemp -d "${tmp%/}/qd-test.XXXXXX")"
     export TEST_TMPDIR
     export FAKE_BIN="$TEST_TMPDIR/bin"
     export FAKE_ROOT="$TEST_TMPDIR/hosts"
@@ -72,6 +76,11 @@ teardown_env() {
 
 run_test() {
     local name="$1"; shift
+    # QD_TEST_ONLY=TEXT runs only the cases whose name contains TEXT
+    case "$name" in
+        *"${QD_TEST_ONLY:-}"*) ;;
+        *) return 0 ;;
+    esac
     TESTS_RUN=$((TESTS_RUN + 1))
     local out rc
     out="$(

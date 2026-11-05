@@ -5,6 +5,7 @@
 # run_tests.sh -- run every test_*.sh in this directory.
 #
 # Usage: run_tests.sh [NAME...]     e.g. run_tests.sh run diff
+#        QD_TEST_ONLY=TEXT run_tests.sh store   only cases whose name has TEXT
 #
 # No network and no second machine: ssh and scp are replaced by a shim that
 # runs the "remote" command locally in a sandbox per fake host, and the

@@ -219,7 +219,7 @@ EOF
     assert_contains "$(cat err)" "is not a qd store archive"
     # nothing was registered, and nothing was left half-made
     assert_not_contains "$(qd store ls)" "t1"
-    assert_eq "$(find "$(STORES)" -mindepth 1 -maxdepth 1 -printf '%f ')" "lab "
+    assert_eq "$(find "$(STORES)" -mindepth 1 -maxdepth 1 | sed 's|.*/||' | tr '\n' ' ')" "lab "
 }
 
 # provost's store format 4 (PV-015) changed data, not layout: column 2 is
