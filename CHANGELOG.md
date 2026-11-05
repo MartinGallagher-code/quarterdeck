@@ -36,6 +36,15 @@ Nothing `qd` does has changed; the suites run side by side (QD-005).
   that a busy machine can outlast.
 
 ### Fixed
+- **A case could fail after it passed**, in its teardown: git 2.47 and
+  later follow a commit or a fetch with a detached `git maintenance run
+  --auto`, and one still writing into a store's `.git` when the case ended
+  made teardown's `rm -rf` fail ("Directory not empty"). CI's second run
+  with the suites side by side failed so (the remote suite's web page
+  case, git 2.56). Every case now runs git with `maintenance.auto` off
+  (through `GIT_CONFIG_COUNT`, so the stores' own config is untouched);
+  teardown waits for a case's web server to exit and tries the removal a
+  second time.
 - `run_tests.sh --help` (new) and `check.sh --help` print their usage from
   any directory; `check.sh` read itself by a path relative to where it was
   started.
