@@ -5,6 +5,34 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.6.2 — 2026-11-05
+
+Nothing `qd` does has changed; this is for whoever works on it (QD-004).
+
+### Added
+- **`tests/check.sh`**: every check CI runs that can run on one machine,
+  in CI's order -- the version check, the 3.6 compile check, vermin,
+  shellcheck, `node --check` on the page, `reuse lint`, a wheel build with
+  `twine check`, and the whole suite with provost's `batch` and with
+  `QD_PROVOST_BATCH=0`. A check whose tool is missing is skipped and named
+  in the summary, never failed; `--quick` leaves out the suites and the
+  wheel.
+- **`tests/check_version.sh`**, and a CI job running it: fails when
+  `quarterdeck/__init__.py`, `pyproject.toml` and the top of `CHANGELOG.md`
+  do not say the same version, or the top section is not
+  `## X.Y.Z — YYYY-MM-DD`.
+- **`QD_TEST_ONLY=TEXT`** runs only the cases whose name contains TEXT
+  (`QD_TEST_ONLY=import bash tests/run_tests.sh store`).
+- README: **Working on quarterdeck** -- the dev setup, the check command,
+  running one suite or some cases, and what only runs on Linux.
+
+### Fixed
+- **CI's shellcheck job, red on `main` since 0.6.1**: `tests/test_store.sh`
+  took a capture id from `ls | head` (SC2012); it is a glob now.
+- **The suites on macOS**: `find -printf` (GNU only) in the store suite is
+  gone, and the harness no longer doubles the slash at the end of macOS's
+  `TMPDIR`, which broke the run suite's assertions on provost's tips.
+
 ## 0.6.1 — 2026-11-04
 
 ### Fixed

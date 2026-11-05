@@ -42,8 +42,14 @@ stores read from a git copy -- is `quarterdeck/stores.py`.
 ## Tests
 
 ```bash
-bash tests/run_tests.sh
+bash tests/check.sh                    # before pushing: everything CI runs that runs here
+bash tests/run_tests.sh [SUITE...]     # the suites alone; QD_TEST_ONLY=TEXT for some cases
 ```
+
+`tests/check.sh` runs the version check, the 3.6 checks, shellcheck, `node
+--check`, `reuse lint`, the wheel build and the suite on both provost paths,
+skipping (and naming) what is not installed. README's "Working on
+quarterdeck" is the setup.
 
 No network: a fake ssh/scp, stand-in tools, `QD_TEST_KEYS` for the
 explorer, and a real server on loopback for the web API -- but a real

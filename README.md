@@ -882,6 +882,57 @@ and the web suite talks to a real server on loopback.
 
 ---
 
+## Working on quarterdeck
+
+```bash
+python3 -m venv ~/.venvs/qd && . ~/.venvs/qd/bin/activate
+pip install provost binnacle doehelper           # what the suites drive
+pip install vermin reuse build twine shellcheck-py   # what the checks use
+bash tests/check.sh                              # everything below, before pushing
+```
+
+`tests/check.sh` runs every check CI runs that can run on one machine, in
+CI's order, and ends with a summary:
+
+| Check | Tool |
+|---|---|
+| the version agrees in `quarterdeck/__init__.py`, `pyproject.toml` and the top of `CHANGELOG.md` | `tests/check_version.sh` (CI too) |
+| every module compiles; no post-3.6 stdlib API | `tests/check_python_compat.sh`, vermin |
+| the test harness | shellcheck `-e SC1091` |
+| the page parses | `node --check quarterdeck/web/app.js` |
+| licensing headers | `reuse lint` |
+| the wheel builds and its metadata is valid | `python -m build`, `twine check` |
+| the whole suite, with provost's `batch` and with `QD_PROVOST_BATCH=0` | `tests/run_tests.sh` |
+
+A check whose tool is missing is skipped and named in the summary, never
+failed. `--quick` leaves out the two slow ones (the suites and the wheel).
+What only CI does: the suite under a real Python 3.6 (in a container),
+under each of 3.9 to 3.13, under PyPI's provost 2.1.0 (`pip install
+"provost==2.1.0"` into a second venv and point `QD_PROVOST` at it to try it
+here), and the installed wheel's smoke test.
+
+While changing something, run less:
+
+```bash
+bash tests/run_tests.sh store                    # one suite (tests/test_store.sh)
+QD_TEST_ONLY=import bash tests/run_tests.sh store   # only its cases whose name has "import"
+```
+
+doehelper wants Python 3.10 or newer; on an older one the doe suite uses its
+stand-in, as CI's 3.9 and 3.6 jobs do.
+
+The fake hosts are directories on the machine running the tests, so a probe
+case runs that machine's real commands. On macOS three probe cases fail for
+that reason and no other (*a group expands to its probes*, *several probes
+run together*, *binnacle's scripts run on the hosts*: there is no
+`vm.swappiness`, and binnacle's why-slow fails on every host); CI runs them
+on Linux. Run with `TMPDIR=/tmp` there too: macOS's own temp path is long
+enough that `qd store ls` shortens it, and *rename moves a store qd made*
+looks for the part it cut. Every change moves the version in all
+three places (`tests/check_version.sh` says where they disagree).
+
+---
+
 ## Related
 
 - [provost](https://github.com/MartinGallagher-code/provost) — the store: command output turned into data, kept in git
