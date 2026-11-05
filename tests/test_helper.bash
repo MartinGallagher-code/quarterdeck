@@ -127,8 +127,10 @@ has_batch() {
 # systemctl; `command -v` sees functions as well as files, so a command
 # cannot be hidden any other way.
 path_without() {
-    local d p f b x hide
-    d="$(mktemp -d "${TMPDIR:-/tmp}/qd-path.XXXXXX")"
+    local d p f b x hide base
+    # in the case's own temp dir, so it goes when the case does
+    base="${TEST_TMPDIR:-${TMPDIR:-/tmp}}"
+    d="$(mktemp -d "${base%/}/qd-path.XXXXXX")"
     local IFS=:
     for p in $PATH; do
         for f in "$p"/*; do

@@ -327,7 +327,13 @@ t_the_remote_dir_is_never_removed() {
     # a slow run and a quick one, side by side, on the same hosts
     run_qd --push payload.txt --remote-dir rd -- 'sleep 2; cat payload.txt' \
         > /dev/null &
-    sleep 0.7
+    # the quick one starts once the slow one's directory is there, not
+    # after a fixed wait, which a busy machine (the suites side by side)
+    # can outlast
+    for _ in $(seq 1 100); do
+        ls -d "$FAKE_ROOT"/node02/rd/qd.* > /dev/null 2>&1 && break
+        sleep 0.1
+    done
     echo other > other.txt
     run_qd --push other.txt --remote-dir rd -- true > /dev/null
     wait

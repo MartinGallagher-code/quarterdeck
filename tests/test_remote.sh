@@ -194,7 +194,8 @@ EOF
 t_the_web_page_reads_a_remote_store() {
     seed
     qd store new wr01 --remote wr01:store > /dev/null
-    QD_REMOTE_REFRESH=0 "$PY" "$QD_DIR/qd" web -n -q --port 18110 \
+    # a port range of this suite's own (test_xstore.sh says why)
+    QD_REMOTE_REFRESH=0 "$PY" "$QD_DIR/qd" web -n -q --port 18140 \
         --store wr01 > web.out 2> web.err &
     echo $! > web.pid
     URL=""
