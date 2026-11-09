@@ -164,11 +164,11 @@ t_free_text_in_qd_operator_round_trips() {
 
 t_provost_is_told_the_operator() {
     seed
-    real="$(command -v provost)"
+    # QD_PROVOST may be a command line (the 3.6 job's is `bash .../provost`)
     cat > "$FAKE_BIN/provost-logged" <<EOF
 #!/bin/sh
 printf '%s\n' "\${PROVOST_OPERATOR-unset}" >> "$TEST_TMPDIR/provost-op"
-exec "$real" "\$@"
+exec $PROVOST_CMD "\$@"
 EOF
     chmod +x "$FAKE_BIN/provost-logged"
     QD_PROVOST="$FAKE_BIN/provost-logged" QD_OPERATOR=ann \
