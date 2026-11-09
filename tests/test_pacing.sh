@@ -206,6 +206,41 @@ PYEOF
     assert_contains "$(cat out)" "--rate wants"
 }
 
+t_the_open_file_limit_is_respected() {
+    install_fake_ssh
+    : > hosts.txt
+    for i in $(seq 1 60); do fake_host "h$i"; echo "h$i" >> hosts.txt; done
+    # a hard limit of 64: 32 at once would run out of pipes, and every ssh
+    # that could not start would read as a host that did not answer
+    (ulimit -n 64; "$PY" "$QD_DIR/qd" run --ssh "$FAKE_BIN/ssh" -s hosts.txt \
+        -q --no-store -j 32 -- 'sleep 0.1; echo v: 1' > out 2> err)
+    assert_contains "$(cat out)" "60 hosts, 60 ok"
+    assert_contains "$(cat err)" "so 4 run at once instead"
+    # a low soft limit under a high hard one is simply raised, unsaid
+    (ulimit -Sn 64; ulimit -Hn 4096 2> /dev/null || true; "$PY" "$QD_DIR/qd" run \
+        --ssh "$FAKE_BIN/ssh" -s hosts.txt -q --no-store -j 32 \
+        -- 'echo v: 1' > out 2> err)
+    assert_contains "$(cat out)" "60 hosts, 60 ok"
+    assert_not_contains "$(cat err)" "run at once instead"
+    out="$(py '
+from quarterdeck.fleet import fit_jobs
+class R(object):
+    RLIMIT_NOFILE, RLIM_INFINITY = 7, -1
+    def __init__(s, soft, hard, settable=True):
+        s.lim, s.settable = [soft, hard], settable
+    def getrlimit(s, k): return tuple(s.lim)
+    def setrlimit(s, k, v):
+        if not s.settable: raise ValueError("no")
+        s.lim = list(v)
+print(fit_jobs(32, R(1024, 1024)))
+print(fit_jobs(32, R(64, 4096)))
+print(fit_jobs(32, R(64, 64))[0])
+print(fit_jobs(32, R(64, -1, settable=False))[0])
+print(fit_jobs(500, R(256, 256))[0])
+')"
+    assert_eq "$out" "$(printf "(32, '')\n(32, '')\n4\n4\n43")"
+}
+
 run_test "the gate, with a fake clock"           t_the_gate_with_a_fake_clock
 run_test "windows: open, closed, overnight, next" t_windows
 run_test "--max-per holds, and the campaign keeps it" t_max_per_holds_and_is_kept
@@ -213,4 +248,5 @@ run_test "--ramp spaces the starts"              t_a_ramp_spaces_the_starts
 run_test "--window holds parts back"             t_windows_hold_back_parts
 run_test "bad pacing is refused"                 t_bad_pacing_is_refused
 run_test "--rate spaces new connections"         t_rate_spaces_new_connections
+run_test "the open-file limit: raised, or fewer at once" t_the_open_file_limit_is_respected
 finish
