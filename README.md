@@ -557,6 +557,66 @@ side by side*); `--last N@STORE` takes the last N from that store.
 
 ---
 
+## Against requirements: `qd check`
+
+`qd compare` and `qd outliers` say what moved and who stands out. `qd
+check` says whether a run meets fixed limits, one verdict per
+requirement, as a table for a test-readiness review:
+
+```bash
+qd check latest --against limits.tsv          # one row per requirement
+qd check latest --against limits.tsv --each   # one row per host per requirement
+qd check latest --against limits.tsv --keep   # and file the verdicts (qd web, qd export)
+qd check latest --against limits.tsv --format csv -o trr.csv
+```
+
+The thresholds file is TSV (or CSV) with a header. `req`, `column`, `op`
+and `limit` are required; `limit2`, `where`, `agg`, `unit` and `note`
+may be left out or blank:
+
+```text
+req      column  op       limit  limit2  where      agg   unit
+SYS-101  mbps    >=       900            status=ok        Mbps
+SYS-102  rtt     <=       250            rack=r2    p99   us
+SYS-103  status  in       ok,pass
+SYS-104  temp    between  20     45                 max
+```
+
+- **`op`**: `<`, `<=`, `>`, `>=`, `==`, `!=`, `in` (a comma list of
+  words, without regard to case) or `between` (`limit` to `limit2`,
+  inclusive). `==` and `!=` compare numbers as numbers and words as words.
+- **`where`** narrows the rows, in `--where`'s grammar. `--where` on the
+  command line narrows them for every check.
+- **`agg`**: `each` (the default: every row must pass) or one figure over
+  the rows -- `mean`, `median`, `min`, `max`, `sum`, `stdev`, `range`,
+  `p05`, `p25`, `p75`, `p95`, `p99`.
+- **`unit`** is the limit's unit, if the limit does not carry one
+  (`250us` does). Sizes and times are put on one scale, so `0.3ms`
+  fails `<= 250us` and `2G` passes `<= 4096M`, and the observed value is
+  shown in the limit's unit. Units that cannot be compared (a time
+  against a rate) are refused, and the check is not measured; a column
+  that carries no unit is read in the limit's, and the note says so.
+
+Each check is **pass**, **fail** or **not measured**. Blank is never a
+pass: a missing column, no rows left by `where`, or a blank cell is not
+measured. Under `each`, one row that failed fails the check; otherwise
+one unmeasured row makes it not measured. An aggregate over some hosts
+but not all is not measured either, and the note gives the figure it
+would have had and who measured nothing. The `measured` column says how
+many of the rows did.
+
+The exit status is 0 when every check passed, and 1 when any failed or
+was not measured: a finding, as everywhere else in qd. A thresholds
+file qd cannot read (a missing column, an unknown `op` or `agg`, a
+`between` without `limit2`, a word where a number belongs, the same check
+twice) is refused with exit 2, naming the check.
+
+`--keep` files the verdict table in the store as a run of kind `check`,
+named `check-<run>`, so `qd show`, `qd export` and `qd web` read it like
+any other dataset.
+
+---
+
 ## Designed experiments: `qd doe`
 
 ```bash
@@ -922,7 +982,7 @@ The numbers, and how they were measured, are in
 | | |
 |---|---|
 | 0 | done, and every host answered |
-| 1 | a finding: a host that did not answer, a diff or compare that differs, nothing to bin |
+| 1 | a finding: a host that did not answer, a diff or compare that differs, a check that failed or was not measured, nothing to bin |
 | 2 | a usage error, or something could not be read or written |
 | other | `qd do` passes on the tool's own |
 
