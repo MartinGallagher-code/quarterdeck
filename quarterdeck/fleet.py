@@ -22,6 +22,9 @@ from concurrent.futures import ThreadPoolExecutor
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
             "-o", "StrictHostKeyChecking=accept-new"]
 
+# The file in every directory qd makes on a host, holding the run's id.
+SENTINEL = ".qd-owned"
+
 OK, FAILED, TIMEOUT, UNREACHABLE, PUSH_FAILED = (
     "ok", "failed", "timeout", "unreachable", "push-failed")
 
@@ -70,8 +73,11 @@ class Runner(object):
         # --remote-dir, and only that is removed afterwards: never
         # --remote-dir itself (~/bin, say, and everything in it), nor a
         # directory another run or another user is working in.
-        self.work_dir = "%s/qd.%s" % (remote_dir.rstrip("/"),
-                                      secrets.token_hex(6))
+        # The run id names the directory and is written into it, in
+        # SENTINEL, when it is made: cleanup removes a directory only if
+        # it is still this run's (see guarded_rm).
+        self.run_id = secrets.token_hex(6)
+        self.work_dir = "%s/qd.%s" % (remote_dir.rstrip("/"), self.run_id)
         # hosts where this run made the work directory, and where it made
         # --remote-dir too (so that is removed again, if it is empty)
         self._made = {}
@@ -171,15 +177,25 @@ class Runner(object):
         return rc, text(p.stdout), text(p.stderr)
 
     def push(self, host, files):
+        for f in files:
+            if os.path.basename(f) == SENTINEL:
+                return 1, ("qd: cannot push a file named %s: it is the "
+                           "mark qd leaves in its own directory" % SENTINEL)
         d, w = shlex.quote(self.remote_dir), shlex.quote(self.work_dir)
         # mkdir -m 700 refuses a path that is there already, so nothing
         # someone else put there (a directory, a link) is written into; a
         # later pass of a --keep-remote run finds its own directory again
+        s = shlex.quote("%s/%s" % (self.work_dir, SENTINEL))
+        rid = shlex.quote(self.run_id)
+        # a directory this run makes gets the sentinel at once; one that is
+        # there already (a later pass) must hold this run's
         cmd = ("{ [ -d %s ] || echo qd-made-parent; } && mkdir -p %s && "
-               "{ mkdir -m 700 %s 2>/dev/null || "
-               "{ [ -d %s ] && [ ! -L %s ] && [ -O %s ]; } || "
+               "{ { mkdir -m 700 %s 2>/dev/null && "
+               "printf '%%s\\n' %s > %s; } || "
+               "{ [ -d %s ] && [ ! -L %s ] && [ -O %s ] && [ ! -L %s ] && "
+               "[ \"$(cat %s 2>/dev/null)\" = %s ]; } || "
                "{ echo %s >&2; exit 1; }; }") % (
-                   d, d, w, w, w, w, shlex.quote(
+                   d, d, w, rid, s, w, w, w, s, s, rid, shlex.quote(
                        "qd: %s is there already, and is not this run's"
                        % self.work_dir))
         rc, out, err = self._exec(self.ssh_argv(host, cmd), 60)
@@ -204,15 +220,17 @@ class Runner(object):
     def cleanup(self, host):
         """Remove this run's directory from a host -- under sudo when the
         command ran under it, or what it made as root stays -- and
-        --remote-dir too if this run made it and it is empty now.
-        -> an error to report, or ''."""
+        --remote-dir too if this run made it and it is empty now.  The
+        checks of guarded_rm run on the host, under the same sudo as the
+        delete, so a work directory computed wrong is refused there and
+        reported rather than removed.  -> an error to report, or ''."""
         if host.name not in self._made:
             return ""
-        cmd = self.wrap("rm -rf %s" % shlex.quote(self.work_dir))
+        cmd = guarded_rm(self.work_dir, self.run_id)
         if self._made[host.name]:
             cmd += " && { rmdir %s 2>/dev/null || true; }" % shlex.quote(
                 self.remote_dir)
-        rc, _, err = self._exec(self.ssh_argv(host, cmd), 60)
+        rc, _, err = self._exec(self.ssh_argv(host, self.wrap(cmd)), 60)
         if rc == 0:
             return ""
         first = (err or "").strip().splitlines()
@@ -262,6 +280,44 @@ class Runner(object):
         elif rc != 0:
             r.outcome = FAILED
         return r
+
+
+def guarded_rm(work_dir, run_id):
+    """The shell that removes a run's directory on a host, and nothing else.
+
+    It deletes only when every check holds, on the host itself: the path's
+    last part is exactly `qd.<run id>` (so never `/`, `~`, an empty path or
+    --remote-dir itself), no part of it is `..`, it is a directory and not
+    a symlink, and it holds SENTINEL, a plain file, with this run's id.
+    A directory that is not there is nothing to remove.  Anything else is
+    refused with a `qd: refusing to remove` line on stderr and exit 3,
+    which cleanup reports.  This is the one `rm -rf` qd sends to a host.
+    """
+    w = shlex.quote(work_dir)
+    s = shlex.quote("%s/%s" % (work_dir, SENTINEL))
+    rid = shlex.quote(run_id)
+    name = shlex.quote("qd." + run_id)
+
+    def refuse(why):
+        return "{ echo %s >&2; exit 3; }" % shlex.quote(
+            "qd: refusing to remove %s: %s" % (work_dir, why))
+
+    return (
+        "( w=%s; "
+        "case \"/$w\" in */%s) ;; *) %s ;; esac; "
+        "case \"/$w/\" in */../*) %s ;; esac; "
+        "if [ ! -e \"$w\" ] && [ ! -L \"$w\" ]; then exit 0; fi; "
+        "[ ! -L \"$w\" ] || %s; "
+        "[ -d \"$w\" ] || %s; "
+        "[ -f %s ] && [ ! -L %s ] || %s; "
+        "[ \"$(cat %s)\" = %s ] || %s; "
+        "rm -rf -- \"$w\" )") % (
+            w, name, refuse("not this run's qd.%s directory" % run_id),
+            refuse("the path has a .. in it"),
+            refuse("it is a symlink"),
+            refuse("it is not a directory"),
+            s, s, refuse("it holds no %s" % SENTINEL),
+            s, rid, refuse("its %s is another run's" % SENTINEL))
 
 
 def progress(msg):
