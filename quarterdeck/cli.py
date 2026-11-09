@@ -532,6 +532,7 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
             "--every)")
     if args.every is not None and args.every <= 0:
         die("--every wants a number of seconds above 0")
+    gate = gate_of(args)        # a bad --rate is refused before any host
     runner = new_runner(args)
     if args.dry_run:
         dry_run_lines(runner, hs, command, push, stdin)
@@ -549,7 +550,7 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
     results, interrupted = fleet.run_passes(
         hs, lambda h, k: runner.run_one(h, command, list(push) or None,
                                         not args.keep_remote, k, stdin),
-        args.jobs, count, args.every or 0, gate=getattr(args, "_gate", None))
+        args.jobs, count, args.every or 0, gate=gate)
     if not results:
         die("interrupted before any pass finished; nothing was kept", 130)
     if push and args.keep_remote:
@@ -595,7 +596,8 @@ def fleet_runs_together(args, hs, specs, extra=None):
         _, command, stdin = specs[i]
         return runners[i].run_one(h, command, None, True, k, stdin)
 
-    results, interrupted = fleet.run_passes(tasks, one, args.jobs)
+    results, interrupted = fleet.run_passes(tasks, one, args.jobs,
+                                            gate=gate_of(args))
     if not results:
         die("interrupted before any host answered; nothing was kept", 130)
     each = [[] for _ in specs]
@@ -2491,6 +2493,21 @@ def cmd_campaign(args):
     return worst
 
 
+def gate_of(args):
+    """The pacing a fan-out runs under: a campaign's (caps, ramp), and
+    --rate, which spaces new connections whatever the verb.  Where both
+    space starts, the slower wins.  None: nothing paces it."""
+    gate = getattr(args, "_gate", None)
+    rate = getattr(args, "rate", None)
+    if rate:
+        spacing = pacing.parse_rate(rate)
+        if gate is None:
+            gate = args._gate = pacing.Gate([], spacing)
+        elif not gate.spacing or gate.spacing < spacing:
+            gate.spacing = spacing
+    return gate
+
+
 def local_now():
     """The wall clock windows are read against, local time.  QD_NOW
     (YYYY-mm-ddTHH:MM) stands in for it, for the tests."""
@@ -2929,6 +2946,9 @@ def add_ssh(sp):
                    help="scp transport (QD_SCP)")
     g.add_argument("--sudo", action="store_true",
                    help="run the command under sudo -n")
+    g.add_argument("--rate", default=env("RATE"), metavar="N/s",
+                   help="no more than N new connections a second, evenly "
+                   "spaced: for a bastion's MaxStartups (QD_RATE)")
     g.add_argument("--remote-dir", default=env("REMOTE_DIR", "/var/tmp"),
                    help="pushed files go in a directory of the run's own "
                    "in here, removed afterwards (QD_REMOTE_DIR, /var/tmp)")

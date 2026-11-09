@@ -65,6 +65,19 @@ def parse_ramp(text):
     return per / float(m.group(1))
 
 
+def parse_rate(text):
+    """Seconds between new connections from --rate: "10/s", "600/min", or
+    "10", which is a second's worth."""
+    t = (text or "").strip()
+    if t and "/" not in t:
+        t += "/s"
+    try:
+        return parse_ramp(t)
+    except Exception:
+        die("--rate wants connections a second, such as 10, 10/s or "
+            "600/min; got %r" % text)
+
+
 def caps_text(caps):
     return ",".join("%s=%d" % c for c in caps)
 

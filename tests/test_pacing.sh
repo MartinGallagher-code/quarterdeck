@@ -176,10 +176,37 @@ t_bad_pacing_is_refused() {
     assert_contains "$(qd campaign ls)" "no campaigns"
 }
 
+t_rate_spaces_new_connections() {
+    install_fake_ssh
+    : > hosts.txt
+    for i in $(seq -w 1 50); do fake_host "n$i"; echo "n$i" >> hosts.txt; done
+    cat > "$TEST_TMPDIR/stamp.sh" <<'SH'
+"$PY" -c 'import time; print("%.3f" % time.time())' >> "$TIMES"
+SH
+    export TIMES="$TEST_TMPDIR/times" PY
+    : > "$TIMES"
+    t0="$("$PY" -c 'import time; print(time.time())')"
+    qdf_rc run -s hosts.txt -q --no-store --rate 10/s -- bash "$TEST_TMPDIR/stamp.sh" > out 2>&1
+    assert_status "$QD_RC" 0
+    "$PY" - "$TIMES" "$t0" > got <<'PYEOF'
+import sys
+ts = sorted(float(l) for l in open(sys.argv[1]))
+# 50 connections at 10 a second: the last starts about 4.9 s in, and no
+# second holds more than 10 starts, give or take one for process jitter
+busiest = max(sum(1 for u in ts if t <= u < t + 1.0) for t in ts)
+print(len(ts), ts[-1] - float(sys.argv[2]) >= 4.8, busiest <= 11)
+PYEOF
+    assert_eq "$(cat got)" "50 True True"
+    qd_rc run -s hosts.txt -q --no-store --rate fast -- true > out 2>&1
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat out)" "--rate wants"
+}
+
 run_test "the gate, with a fake clock"           t_the_gate_with_a_fake_clock
 run_test "windows: open, closed, overnight, next" t_windows
 run_test "--max-per holds, and the campaign keeps it" t_max_per_holds_and_is_kept
 run_test "--ramp spaces the starts"              t_a_ramp_spaces_the_starts
 run_test "--window holds parts back"             t_windows_hold_back_parts
 run_test "bad pacing is refused"                 t_bad_pacing_is_refused
+run_test "--rate spaces new connections"         t_rate_spaces_new_connections
 finish
