@@ -369,6 +369,17 @@ The mutation guard is agree's: `rm -rf`, `mkfs`, `reboot`, `systemctl
 stop` and the rest are refused without `--yes`. It's a typo guard, not
 security.
 
+**qd deletes only what it made.** A run that pushes makes a directory of
+its own, `qd.<run id>`, in `--remote-dir`, and writes `.qd-owned` into it
+with that id. Afterwards it removes that directory, and `--remote-dir`
+only if this run made it and it is empty. The checks run on the host,
+under the same `sudo -n` as the delete: the path must end in exactly this
+run's `qd.<run id>`, hold no `..`, be a directory and not a symlink, and
+hold a `.qd-owned` with this run's id. Otherwise nothing is deleted, and
+the host's `error` says `qd: refusing to remove` and why.
+`--keep-remote` leaves the directory, mark and all.
+`tests/test_cleanup.sh` holds qd to this.
+
 ### Every knob has a flag and a variable
 
 | Flag | Variable | Default |
