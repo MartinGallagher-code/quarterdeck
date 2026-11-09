@@ -10,7 +10,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quarterdeck"
-version = "0.6.4"
+version = "0.7.0"
 description = "Run commands across a fleet, keep every answer as a dataset, and read it back: statistics, diffs, a terminal explorer and a browser view"
 readme = "README.md"
 requires-python = ">=3.6"
@@ -63,11 +63,21 @@ classifiers = [
 # fleet at all.
 dependencies = []
 
+# The tools qd drives are commands it finds on PATH, never imports, so
+# none is a dependency.  These extras bring them along for a one-line
+# install where the Python is new enough: provost (the store) needs 3.8,
+# binnacle (probes' instruments, campaigns' muster) 3.6.
+[project.optional-dependencies]
+provost = ["provost; python_version >= '3.8'"]
+binnacle = ["binnacle"]
+all = ["provost; python_version >= '3.8'", "binnacle"]
+
 [project.urls]
 Homepage = "https://github.com/MartinGallagher-code/quarterdeck"
 Repository = "https://github.com/MartinGallagher-code/quarterdeck"
 Issues = "https://github.com/MartinGallagher-code/quarterdeck/issues"
 Changelog = "https://github.com/MartinGallagher-code/quarterdeck/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/MartinGallagher-code/quarterdeck#readme"
 
 [project.scripts]
 qd = "quarterdeck.cli:main"

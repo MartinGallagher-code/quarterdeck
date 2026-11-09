@@ -1,0 +1,120 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Martin J. Gallagher
+
+# Publish quarterdeck to PyPI through Trusted Publishing (OIDC: no API
+# token anywhere), with PEP 740 attestations.  provost's release.yml is the
+# model.
+#
+# One-time setup, done on PyPI by the account owner (a session cannot):
+#   https://pypi.org/manage/account/publishing/ -> "Add a new pending
+#   publisher": PyPI project quarterdeck, owner MartinGallagher-code,
+#   repository quarterdeck, workflow release.yml, environment pypi.
+#   For the TestPyPI dry run, the same at https://test.pypi.org with
+#   environment testpypi.
+# and, in this repository's Settings -> Environments, environments named
+# pypi and testpypi (protection rules optional).
+#
+# Then: publishing a GitHub release tagged vX.Y.Z uploads the sdist and
+# wheel built from that tag to PyPI.  "Run workflow" (workflow_dispatch)
+# uploads to TestPyPI by default, for the dry run before the first release.
+name: Release to PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "where to upload: testpypi (the dry run) or pypi"
+        required: true
+        default: testpypi
+        type: choice
+        options: [testpypi, pypi]
+
+jobs:
+  build:
+    name: build sdist + wheel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The tag is the release's word for the version; the three places
+      # CLAUDE.md names must agree with it, or the upload is refused.
+      - name: Version agrees with the tag
+        if: github.event_name == 'release'
+        run: |
+          bash tests/check_version.sh
+          want="${GITHUB_REF_NAME#v}"
+          have="$(python -c 'import quarterdeck; print(quarterdeck.VERSION)')"
+          if [ "$want" != "$have" ]; then
+            echo "tag $GITHUB_REF_NAME but quarterdeck says $have" >&2
+            exit 1
+          fi
+
+      - run: python -m pip install build twine
+      - run: python -m build
+      - run: python -m twine check --strict dist/*
+
+      - name: Smoke-test the wheel in a fresh venv
+        run: |
+          python -m venv "$RUNNER_TEMP/v"
+          "$RUNNER_TEMP/v/bin/pip" install dist/*.whl
+          "$RUNNER_TEMP/v/bin/qd" --version
+          "$RUNNER_TEMP/v/bin/qd" --help > /dev/null
+
+      # The floor: the wheel is built on 3.12, and must install and run on
+      # 3.6 (the build backend cannot run there, so it is not built there).
+      - name: Install the wheel on Python 3.6
+        run: |
+          docker run --rm -v "$PWD/dist:/dist:ro" python:3.6 \
+            bash -euxc 'python -m venv /v && /v/bin/pip install -q /dist/*.whl && /v/bin/qd --version && /v/bin/qd --help > /dev/null'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish-pypi:
+    name: publish to PyPI
+    needs: build
+    if: github.event_name == 'release' || inputs.target == 'pypi'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: pypi
+      url: https://pypi.org/project/quarterdeck/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true
+
+  publish-testpypi:
+    name: publish to TestPyPI (dry run)
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/quarterdeck/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          attestations: true

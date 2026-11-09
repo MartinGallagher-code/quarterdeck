@@ -42,11 +42,18 @@ for a fleet of Linux boxes:
    a browser, or painted on the floor plan.
 
 ```bash
+pip install 'quarterdeck[all]'           # qd, with provost (the store) and binnacle (the instruments)
+pip install quarterdeck                  # or qd alone: it finds provost and binnacle on PATH
+pip install doehelper                    # for qd doe (Python 3.10+)
+```
+
+Or from a clone, which needs nothing installed but provost:
+
+```bash
 git clone https://github.com/MartinGallagher-code/quarterdeck
 pip install provost binnacle             # the store, and the instruments
 ./quarterdeck/qd hints                   # runs from the clone
 pip install ./quarterdeck                # or put qd (and quarterdeck) on PATH
-pip install doehelper                    # for qd doe (Python 3.10+)
 ```
 
 qd itself is Python 3.6+, standard library only. It needs provost to keep
