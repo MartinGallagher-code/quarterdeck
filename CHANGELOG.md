@@ -5,6 +5,26 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.7.0 — 2026-11-09
+
+Campaigns paced for power (QD-020).
+
+### Added
+- **`qd campaign new|run --max-per ATTR=N`**: no more than N hosts sharing
+  a host attribute's value (a PDU, a rack) run at once; other values go
+  past a full one.
+- **`--ramp RATE`** (`6/min`, `1/s`, `120/h`): host starts spaced evenly.
+- **`--window "Mon-Fri 18:00-06:00"`** (repeatable): parts start only
+  inside a window, local time; outside one, `campaign run` starts nothing
+  and says when the next opens. `campaign status` shows the limits and
+  whether a window is open, until when, or when the next opens.
+- All three are kept on the campaign (three new columns at the end of
+  `qd.campaigns`, blank for campaigns defined before), so a resumed or
+  carried-on campaign paces the same; `campaign run`'s flags override.
+- New module `quarterdeck/pacing.py`: the scheduler is a pure function of
+  what is running and the time, so it is tested with a fake clock. New
+  suite `tests/test_pacing.sh` (6 cases).
+
 ## 0.6.4 — 2026-11-05
 
 Nothing `qd` does has changed; the suites run side by side (QD-005).

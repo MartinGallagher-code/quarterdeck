@@ -296,12 +296,14 @@ def fan_out(hosts, fn, jobs, label=""):
     return results
 
 
-def run_passes(hosts, fn, jobs, count=1, every=0.0, sleep=time.sleep):
+def run_passes(hosts, fn, jobs, count=1, every=0.0, sleep=time.sleep,
+               gate=None):
     """`count` passes over the fleet, one starting every `every` seconds.
 
     A pass that runs longer than the interval is followed straight away by
     the next rather than overlapping it.  Ctrl-C between or during passes
-    keeps every pass that finished.  -> (results, interrupted)
+    keeps every pass that finished.  `gate` (pacing.Gate) caps hosts
+    per attribute value and spaces their starts.  -> (results, interrupted)
     """
     results = []
     interrupted = False
@@ -309,8 +311,15 @@ def run_passes(hosts, fn, jobs, count=1, every=0.0, sleep=time.sleep):
         for k in range(1, count + 1):
             t0 = time.monotonic()
             label = "pass %d/%d: " % (k, count) if count > 1 else ""
-            results.extend(fan_out(hosts, lambda h, k=k: fn(h, k), jobs,
-                                   label))
+            if gate is not None and gate.active():
+                from .pacing import gated_fan_out
+                results.extend(gated_fan_out(
+                    hosts, lambda h, k=k: fn(h, k), jobs, gate,
+                    label=label, progress=progress))
+                progress_done()
+            else:
+                results.extend(fan_out(hosts, lambda h, k=k: fn(h, k), jobs,
+                                       label))
             if k < count and every:
                 left = every - (time.monotonic() - t0)
                 if left > 0:
