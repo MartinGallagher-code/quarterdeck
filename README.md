@@ -380,6 +380,7 @@ security.
 | `--max-output` | `QD_MAX_OUTPUT` | 4 MiB per host; past it the host is killed and reported |
 | `--ssh`, `--scp` | `QD_SSH`, `QD_SCP` | `ssh`, `scp` |
 | `--remote-dir` | `QD_REMOTE_DIR` | `/var/tmp` |
+| `--rate` | `QD_RATE` | none: new connections as fast as `--jobs` allows; `10/s` for a bastion's `MaxStartups` |
 | `--store` | `QD_STORE` | a name from `qd store ls` or a directory; else the active store (see Named stores) |
 | | `QD_PROVOST` | `provost` on `PATH` |
 | | `QD_PROVOST_BATCH=0` | file one capture at a time even where provost has `batch` |
@@ -882,6 +883,26 @@ These are binnacle's, for the same reasons:
   that's the table behind it.
 - **Standard library only; Python 3.6 floor;** reads decode `utf-8-sig`
   and a C locale can't lose a report.
+
+---
+
+## At scale
+
+A thousand hosts fan out in seconds at the default `--jobs 32`. qd's
+memory (about 25 MB) and threads (`--jobs` + 1) do not grow with the
+fleet. Filing the answers is what takes the time, about 0.16 s each in
+provost. Two limits matter more than raw size:
+
+- **Open files:** about 5 per host in flight. qd raises its soft
+  `ulimit -n` towards the hard one before a fan-out. If that is still
+  short, it runs fewer at once and says so, rather than letting hosts
+  that could not get a pipe read as unreachable. macOS's default of 256
+  fits about `--jobs 50`.
+- **A bastion:** sshd drops connections past its `MaxStartups`, so
+  through one jump host use `--rate 10/s` (`QD_RATE`).
+
+The numbers, and how they were measured, are in
+[docs/scale.md](docs/scale.md) (`tests/scale.sh` reruns them).
 
 ---
 
