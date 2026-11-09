@@ -853,4 +853,5 @@ WRITERS = {"csv": to_csv, "tsv": to_tsv, "ndjson": to_ndjson,
 def format_for(path, default="csv"):
     ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
     return {"csv": "csv", "tsv": "tsv", "txt": "tsv", "ndjson": "ndjson",
-            "jsonl": "ndjson", "json": "json", "md": "md"}.get(ext, default)
+            "jsonl": "ndjson", "json": "json", "md": "md",
+            "prom": "openmetrics", "om": "openmetrics"}.get(ext, default)

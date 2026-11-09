@@ -15,7 +15,8 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
        qd show|stats|freq|hist|outliers|pivot|trend RUN ...
        qd diff [OLD] NEW                       what changed between two
        qd compare RUN --last N -c COL          N runs side by side
-       qd export RUN [--format overlay]        CSV, JSON, the viewer's TSV
+       qd export RUN [--format overlay]        CSV, JSON, the viewer's TSV,
+                                               Splunk HEC, OpenMetrics
        qd web                                  the store in a browser
        qd floor RUN --layout floor.dc          paint it on the floor plan
        qd hosts | doctor | hints | help
@@ -1559,9 +1560,29 @@ def cmd_export(args):
                 len(o.rows), plural(len(set(o.values("test"))), "overlay"),
                 args.output))
         return 0
+    if fmt == "hec":
+        from . import exporters
+        text, borrowed, untimed = exporters.to_hec(
+            s, getattr(t, "entry", None), args.sourcetype, args.index)
+        write_text(args.output or "-", text)
+        if borrowed:
+            warn("%s had no time of %s own: given the run's"
+                 % (plural(borrowed, "row"),
+                    "its" if borrowed == 1 else "their"))
+        if untimed:
+            warn("%s had no time and no run to take one from: sent "
+                 "without one, Splunk stamps them on arrival"
+                 % plural(untimed, "event"))
+        return 0
+    if fmt in ("openmetrics", "prom", "prometheus"):
+        from . import exporters
+        labels = [c for c in (args.labels or "").split(",") if c.strip()]
+        write_text(args.output or "-", exporters.to_openmetrics(
+            s, getattr(t, "entry", None), args.prefix, labels))
+        return 0
     if fmt not in tablemod.WRITERS:
-        die("unknown --format %r (want csv, tsv, json, ndjson, md, overlay)"
-            % fmt)
+        die("unknown --format %r (want csv, tsv, json, ndjson, md, overlay, "
+            "hec, openmetrics)" % fmt)
     write_text(args.output or "-", tablemod.WRITERS[fmt](s))
     return 0
 
@@ -3246,17 +3267,26 @@ def build_parser():
     sp.set_defaults(fn=cmd_doe, command=[])
 
     sp = verb("export", "write a dataset out: csv, tsv, json, ndjson, md, "
-              "overlay")
+              "overlay, hec, openmetrics")
     sp.add_argument("ref", nargs="?", metavar="RUN")
     add_query(sp)
     sp.add_argument("--cols", metavar="A,B", help="only these columns")
     sp.add_argument("--format", metavar="FMT",
-                    help="csv, tsv, json, ndjson, md, or overlay (the "
-                    "floor-plan viewer's results); default from -o's "
-                    "extension, else csv")
+                    help="csv, tsv, json, ndjson, md, overlay (the "
+                    "floor-plan viewer's results), hec (Splunk HEC "
+                    "events) or openmetrics (Prometheus text); default "
+                    "from -o's extension, else csv")
     sp.add_argument("-o", "--output", metavar="FILE")
     sp.add_argument("--prefix", default="qd_",
-                    help="overlay: prefix on every test name (qd_)")
+                    help="overlay, openmetrics: prefix on every test or "
+                    "metric name (qd_)")
+    sp.add_argument("--sourcetype", metavar="ST",
+                    help="hec: the events' sourcetype (default qd:TABLE)")
+    sp.add_argument("--index", metavar="NAME",
+                    help="hec: the Splunk index (default the token's)")
+    sp.add_argument("--labels", metavar="A,B",
+                    help="openmetrics: columns to label samples by, beside "
+                    "host, peer and run")
     sp.add_argument("--target", metavar="COL",
                     help="overlay: the column naming hosts (default host)")
     sp.add_argument("--run", metavar="LABEL",
