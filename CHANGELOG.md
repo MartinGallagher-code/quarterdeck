@@ -5,6 +5,25 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.7.1 — 2026-11-09
+
+qd at a thousand hosts (QD-019).
+
+### Added
+- **`--rate N/s`** (`QD_RATE`) on every verb that fans out: new
+  connections spaced evenly, for a bastion's sshd `MaxStartups`. With a
+  campaign's `--ramp`, the slower of the two holds.
+- `tests/scale.sh` (not one of the suites): times the fan-out and the
+  filing against N fake hosts, and samples qd's peak memory, threads and
+  open files. `docs/scale.md` has the numbers.
+
+### Fixed
+- **A fan-out no longer outruns the open-file limit.** About 5 files per
+  host in flight: under `ulimit -n 64`, 32 at once reported 81 of 100
+  hosts unreachable, every ssh that could not get a pipe read as a host
+  that did not answer. qd now raises its soft limit towards the hard one,
+  and if that is not enough runs fewer hosts at once and says so.
+
 ## 0.7.0 — 2026-11-09
 
 Campaigns paced for power (QD-020).
