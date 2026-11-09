@@ -18,19 +18,28 @@ Read-only, apart from one thing: a floor-plan overlay is written into qd's
 cache (never the store, which provost commits whole), as `qd floor` does.
 Requests are answered one at a time, and the store is re-read whenever
 provost has filed something since the last one.
+
+Beyond this machine (any host but a loopback one) every request needs a
+token -- QD_WEB_TOKEN, --token-file, or one made at start and printed once
+in the link -- and the overlay is refused unless --allow-writes.  The token
+can also be required on loopback by giving one, for a login node whose
+127.0.0.1 is every user's.  --tls-cert/--tls-key serve https.
 """
 
+import hmac
 import json
 import os
 import posixpath
 import re
 import socket
 import socketserver
+import ssl
 import sys
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, parse_qsl, quote, unquote, \
+    urlencode, urlparse
 
 from . import VERSION
 from . import campaign as camp, compare as comparemod, diff as diffmod, \
@@ -633,12 +642,78 @@ ROUTES = {"/api/entries": "entries", "/api/entry": "entry_info",
 
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
+# the endpoints that change anything on this machine: refused beyond it
+# unless the server was started with --allow-writes
+WRITES = ("/api/overlay",)
+
+COOKIE = "qd_web_token"
+MIN_TOKEN = 16
+TOKEN_IN_URL = re.compile(r"([?&]token=)[^&\s\"]*")
+
+
+def redact(text):
+    """A request line with any ?token= value taken out: the token is never
+    logged."""
+    return TOKEN_IN_URL.sub(r"\1-", text)
+
+
+def new_token():
+    import secrets
+    return secrets.token_urlsafe(24)
+
+
+def read_token(token=None, token_file=None):
+    """The token asked for -- a file's first line, or QD_WEB_TOKEN's value --
+    or None.  Too short to resist guessing is refused."""
+    if token_file:
+        try:
+            with open(token_file) as fh:
+                token = fh.readline()
+        except (IOError, OSError) as exc:
+            die("cannot read the token file %s: %s"
+                % (token_file, exc.strerror or exc))
+        token = token.strip()
+        if not token:
+            die("the token file %s is empty" % token_file)
+    if token is None:
+        return None
+    token = token.strip()
+    if len(token) < MIN_TOKEN or re.search(r"[\s;,\"\\]", token) \
+            or any(ord(c) < 33 or ord(c) > 126 for c in token):
+        die("a qd web token needs at least %d characters, printable ASCII "
+            "with no spaces, quotes, commas, semicolons or backslashes "
+            "(leave it unset and one is made)" % MIN_TOKEN)
+    return token
+
+
+def tls_context(cert, key=None):
+    if key and not cert:
+        die("--tls-key needs --tls-cert")
+    if not cert:
+        return None
+    for f in (cert, key):
+        if f and not os.path.isfile(f):
+            die("no such file: %s" % f)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.options |= getattr(ssl, "OP_NO_TLSv1", 0) | \
+        getattr(ssl, "OP_NO_TLSv1_1", 0)
+    try:
+        ctx.load_cert_chain(cert, key or None)
+    except (ssl.SSLError, OSError, ValueError) as exc:
+        die("cannot use %s%s for TLS: %s"
+            % (cert, " and %s" % key if key else "", exc))
+    return ctx
+
 
 class Handler(BaseHTTPRequestHandler):
     api = None
     apis = None
     quiet = False
     loopback = True
+    token = None
+    writes = True
+    tls = False
+    timeout = 60
     server_version = "quarterdeck/" + VERSION
 
     def host_ok(self):
@@ -654,9 +729,36 @@ class Handler(BaseHTTPRequestHandler):
             host = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
         return host in LOOPBACK
 
+    def authorised(self, q):
+        """Whether the request carries the token, when there is one: as
+        Authorization: Bearer, the cookie, or ?token= on the link printed
+        at start.  Compared in constant time."""
+        if self.token is None:
+            return True
+        offered = []
+        auth = self.headers.get("Authorization") or ""
+        if auth[:7].lower() == "bearer ":
+            offered.append(auth[7:].strip())
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == COOKIE:
+                offered.append(v.strip())
+        offered.extend(q.get("token", []))
+        want = self.token.encode("utf-8")
+        ok = False
+        for t in offered:
+            # every offer is compared, so the time taken says nothing
+            ok = hmac.compare_digest(t.encode("utf-8", "replace"), want) or ok
+        return ok
+
+    def cookie(self):
+        return "%s=%s; Path=/; HttpOnly; SameSite=Strict%s" % (
+            COOKIE, self.token, "; Secure" if self.tls else "")
+
     def log_message(self, fmt, *args):
         if not self.quiet:
-            sys.stderr.write("%s web: %s\n" % (PROG, fmt % args))
+            sys.stderr.write("%s web: %s\n"
+                             % (PROG, redact(fmt % args)))
 
     def send(self, code, body, ctype, extra=None):
         if isinstance(body, str):
@@ -687,6 +789,33 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         path = url.path
         q = parse_qs(url.query, keep_blank_values=True)
+        if not self.authorised(q):
+            if path.startswith("/api/"):
+                self.send_json(401, {"error": "this server needs its token: "
+                                     "open the link qd web printed"})
+            else:
+                self.send(401, "This qd web needs its token: open the link "
+                          "qd web printed when it started (it ends in "
+                          "?token=...).\n", "text/plain; charset=utf-8")
+            return
+        if self.token is not None and "token" in q:
+            # the link printed at start: keep the token in a cookie and
+            # take it out of the address bar and the history
+            rest = [(k, v) for k, v in parse_qsl(url.query, True)
+                    if k != "token"]
+            if not path.startswith("/api/"):
+                # one leading slash: "//host" would send the browser away
+                where = "/" + path.lstrip("/") + \
+                    ("?" + urlencode(rest) if rest else "")
+                self.send(303, "", "text/plain", {
+                    "Location": where, "Set-Cookie": self.cookie()})
+                return
+            del q["token"]
+        if path in WRITES and not self.writes:
+            self.send_json(403, {"error": "this server is read-only beyond "
+                                 "this machine: start qd web with "
+                                 "--allow-writes to let %s write" % path})
+            return
         try:
             if path == "/api/stores":
                 self.send_json(200, self.apis.listing())
@@ -779,11 +908,19 @@ def free_port(host, port):
 
 
 def serve(book, host="127.0.0.1", port=8100, layout=None, open_browser=True,
-          quiet=False, ready=None):
+          quiet=False, ready=None, token=None, token_file=None,
+          tls_cert=None, tls_key=None, allow_writes=False):
     if not os.path.isfile(os.path.join(STATIC, "index.html")):
         die("this install is missing its web page (%s)" % STATIC)
     if layout and not os.path.isfile(layout):
         die("no such layout: %s" % layout)
+    loopback = host in LOOPBACK
+    token = read_token(token, token_file)
+    made = False
+    if token is None and not loopback:
+        # beyond this machine a token is not optional: one is made
+        token, made = new_token(), True
+    ctx = tls_context(tls_cert, tls_key)
     api = Api(book, layout)
 
     class Bound(Handler):
@@ -792,24 +929,48 @@ def serve(book, host="127.0.0.1", port=8100, layout=None, open_browser=True,
     Bound.api = api
     Bound.apis = StoreApis(api)
     Bound.quiet = quiet
-    Bound.loopback = host in LOOPBACK
+    Bound.loopback = loopback
+    Bound.token = token
+    Bound.writes = loopback or allow_writes
+    Bound.tls = ctx is not None
     port = free_port(host, port)
     httpd = ThreadingServer((host, port), Bound)
+    if ctx is not None:
+        # the handshake happens on the first read, in the request's own
+        # thread, so one slow client cannot hold up the rest
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True,
+                                       do_handshake_on_connect=False)
     shown = "[%s]" % host if ":" in host else host
-    url = "http://%s:%d/" % (shown, port)
+    url = "%s://%s:%d/" % ("https" if ctx else "http", shown, port)
+    # the link that carries the token: printed once, only when it was made
+    # here (a token given is the giver's to hand out, and never printed)
+    link = url + "?token=" + token if made else url
     sys.stderr.write("%s web: the store in %s\n" % (PROG, book.shown()))
     if api.floor_available():
         sys.stderr.write("%s web: the floor-plan viewer is at %sfloor/\n"
                          % (PROG, url))
-    sys.stderr.write("%s web: %s   (Ctrl+C to stop)\n" % (PROG, url))
-    if host not in LOOPBACK:
+    sys.stderr.write("%s web: %s   (Ctrl+C to stop)\n" % (PROG, link))
+    if not loopback:
         sys.stderr.write("%s web: listening beyond this machine: anyone who "
-                         "can reach %s:%d can read the store\n"
-                         % (PROG, host, port))
+                         "can reach %s:%d and has the token can read the "
+                         "store\n" % (PROG, host, port))
+        if ctx is None:
+            sys.stderr.write("%s web: WARNING: no TLS -- the token and every "
+                             "figure cross the network in the clear; give "
+                             "--tls-cert and --tls-key, or use ssh -L\n"
+                             % PROG)
+        sys.stderr.write("%s web: %s\n" % (PROG, "writes allowed "
+                         "(--allow-writes): the Floor plan button writes "
+                         "into qd's cache" if allow_writes else "read-only: "
+                         "the Floor plan button is refused (--allow-writes "
+                         "lets it write into qd's cache)"))
+    elif token is not None:
+        sys.stderr.write("%s web: the token is required: open %s?token=... "
+                         "with the one you gave\n" % (PROG, url))
     if ready is not None:
-        ready(url)
+        ready(link)
     if open_browser:
-        threading.Timer(0.3, webbrowser.open, (url,)).start()
+        threading.Timer(0.3, webbrowser.open, (link,)).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

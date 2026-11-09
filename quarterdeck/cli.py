@@ -2659,7 +2659,10 @@ def cmd_web(args):
             "(or point --store at another)" % book.shown())
     return web.serve(book, host=args.host, port=args.port,
                      layout=args.layout, open_browser=not args.no_browser,
-                     quiet=args.quiet)
+                     quiet=args.quiet, token=env("WEB_TOKEN"),
+                     token_file=args.token_file,
+                     tls_cert=args.tls_cert, tls_key=args.tls_key,
+                     allow_writes=args.allow_writes)
 
 
 def cmd_doctor(args):
@@ -3299,6 +3302,22 @@ def build_parser():
                     help="do not open a browser")
     sp.add_argument("-q", "--quiet", action="store_true",
                     help="do not log every request")
+    sp.add_argument("--token-file", metavar="FILE",
+                    default=env("WEB_TOKEN_FILE", None),
+                    help="the token every request needs, from FILE's first "
+                    "line (QD_WEB_TOKEN_FILE; or QD_WEB_TOKEN).  Beyond "
+                    "127.0.0.1 one is made and printed if none is given")
+    sp.add_argument("--tls-cert", metavar="FILE",
+                    default=env("WEB_TLS_CERT", None),
+                    help="serve https with this certificate (PEM; "
+                    "QD_WEB_TLS_CERT)")
+    sp.add_argument("--tls-key", metavar="FILE",
+                    default=env("WEB_TLS_KEY", None),
+                    help="its private key, if not in the cert file "
+                    "(QD_WEB_TLS_KEY)")
+    sp.add_argument("--allow-writes", action="store_true",
+                    help="beyond 127.0.0.1, let Floor plan write its "
+                    "overlay into qd's cache (refused otherwise)")
     sp.set_defaults(fn=cmd_web)
 
     sp = verb("doctor", "which of the toolchain this machine can drive")

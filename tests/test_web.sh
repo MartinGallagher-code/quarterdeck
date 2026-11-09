@@ -13,16 +13,35 @@ start_web() {
     # The interpreter itself goes in the background, not the qd function:
     # $! of a backgrounded function is a subshell, and killing that leaves
     # the server running after the case.  18100 to 18119 are this suite's
-    # (test_xstore.sh says why).
-    "$PY" "$QD_DIR/qd" web -n -q --port 18100 > web.out 2> web.err &
+    # (test_xstore.sh says why).  Extra arguments go to qd web.
+    "$PY" "$QD_DIR/qd" web -n -q --port 18100 "$@" > web.out 2> web.err &
     echo $! > web.pid
+    LINK=""
     for _ in $(seq 1 50); do
-        URL="$(sed -n 's/^qd web: \(http:[^ ]*\).*/\1/p' web.err | tail -1)"
-        [ -n "$URL" ] && break
+        LINK="$(sed -n 's/^qd web: \(https\{0,1\}:[^ ]*\).*/\1/p' web.err | tail -1)"
+        [ -n "$LINK" ] && break
         sleep 0.1
     done
-    [ -n "$URL" ] || { cat web.err; fail "the server did not start"; }
-    export URL
+    [ -n "$LINK" ] || { cat web.err; fail "the server did not start"; }
+    # URL is the server's address; LINK is what was printed, which carries
+    # ?token= when the server made its own token
+    URL="${LINK%%\?*}"
+    TOKEN=""
+    case "$LINK" in *"?token="*) TOKEN="${LINK#*\?token=}" ;; esac
+    export URL LINK TOKEN
+}
+
+stop_web() {
+    kill "$(cat web.pid)" 2> /dev/null
+    wait "$(cat web.pid)" 2> /dev/null || true
+}
+
+# req PATH [HEADER:VALUE...]: the status, the Location and Set-Cookie
+# headers when there are any, then the body, from $URL (0.0.0.0 reached as
+# 127.0.0.1), never following a redirect.  https is verified against
+# $QD_TEST_CA.
+req() {
+    "$PY" "$QD_DIR/tests/web_req.py" "$URL" "$@"
 }
 
 get() {
@@ -301,6 +320,147 @@ t_empty_store_is_refused() {
     assert_contains "$(cat err)" "no store at"
 }
 
+# beyond loopback: a token is made and printed once, every request needs
+# it, the link's ?token= becomes a cookie, and nothing writes
+t_exposed_needs_its_token() {
+    seed
+    start_web --host 0.0.0.0
+    [ -n "$TOKEN" ] || fail "no token in the link: $LINK"
+    assert_contains "$(cat web.err)" "WARNING: no TLS"
+    assert_contains "$(cat web.err)" "read-only"
+    out="$(req /api/entries)"
+    assert_contains "$out" "401"
+    assert_not_contains "$out" "cat load"
+    assert_contains "$(req /)" "401"
+    assert_contains "$(req /app.js)" "401"
+    assert_contains "$(req /floor/files/x)" "401"
+    assert_contains "$(req /api/entries "Authorization:Bearer wrong-token-0123456789")" "401"
+    assert_contains "$(req "/api/entries?token=x$TOKEN")" "401"
+    out="$(req /api/entries "Authorization:Bearer $TOKEN")"
+    assert_contains "$out" "200"
+    assert_contains "$out" "cat load"
+    assert_contains "$(req /api/entries "Cookie:other=1; qd_web_token=$TOKEN")" "200"
+    # the printed link: a cookie, and the token out of the address bar
+    out="$(req "/?token=$TOKEN")"
+    assert_contains "$out" "303"
+    assert_contains "$out" "Location: /"$'\n'
+    assert_contains "$out" "qd_web_token=$TOKEN; Path=/; HttpOnly; SameSite=Strict"
+    assert_not_contains "$out" "Secure"
+    out="$(req "/api/rows?e=latest&token=$TOKEN&limit=1")"
+    assert_contains "$out" "200"
+    assert_contains "$out" '"matched"'
+    # another parameter is kept; a path naming another host is not followed
+    assert_contains "$(req "/x/?a=1&token=$TOKEN")" "Location: /x/?a=1"
+    assert_contains "$(req "//evil.example/?token=$TOKEN")" "Location: /evil.example/"
+    # read-only beyond this machine
+    out="$(req '/api/overlay?e=latest' "Authorization:Bearer $TOKEN")"
+    assert_contains "$out" "403"
+    assert_contains "$out" "--allow-writes"
+    assert_no_file "$XDG_CACHE_HOME/quarterdeck/floor"
+    # the Host check is loopback's: a network reaches it by any name
+    assert_contains "$(req /api/entries "Authorization:Bearer $TOKEN" "Host:wr01.example:18100")" "200"
+    stop_web
+    # a logged request never carries the token: it is printed once, at start
+    "$PY" "$QD_DIR/qd" web -n --host 0.0.0.0 --port 18101 > /dev/null 2> log.err &
+    echo $! > web.pid
+    for _ in $(seq 1 50); do grep -q "token=" log.err && break; sleep 0.1; done
+    t2="$(sed -n 's/^qd web: http[^ ]*?token=\([^ ]*\).*/\1/p' log.err)"
+    [ -n "$t2" ] || fail "no token printed: $(cat log.err)"
+    URL="$(sed -n 's/^qd web: \(http:[^ ?]*\).*/\1/p' log.err)"
+    req "/api/entries?token=$t2" > /dev/null
+    req "/?a=1&token=$t2" > /dev/null
+    req "/api/entries" "Authorization:Bearer $t2" > /dev/null
+    sleep 0.3
+    stop_web
+    assert_eq "$(grep -c -- "$t2" log.err)" "1"
+    assert_contains "$(cat log.err)" "token=-"
+}
+
+t_allow_writes_and_a_given_token() {
+    seed
+    printf '%s\n' "given-token-0123456789" > tok
+    start_web --host 0.0.0.0 --token-file tok --allow-writes
+    # a token given is never printed
+    assert_eq "$TOKEN" ""
+    assert_not_contains "$(cat web.err)" "given-token"
+    assert_contains "$(cat web.err)" "writes allowed"
+    assert_contains "$(req /api/entries)" "401"
+    out="$(req '/api/overlay?e=latest' "Authorization:Bearer given-token-0123456789")"
+    assert_contains "$out" "200"
+    assert_contains "$out" '"samples"'
+    stop_web
+    # QD_WEB_TOKEN on loopback: required there too (a login node's
+    # 127.0.0.1 is every user's), and writes stay allowed there
+    QD_WEB_TOKEN="env-token-0123456789ab" start_web
+    assert_contains "$(req /api/entries)" "401"
+    assert_contains "$(req /api/entries "Authorization:Bearer env-token-0123456789ab")" "200"
+    assert_contains "$(req '/api/overlay?e=latest' "Authorization:Bearer env-token-0123456789ab")" "200"
+    assert_not_contains "$(cat web.err)" "env-token"
+    assert_contains "$(cat web.err)" "the token is required"
+}
+
+t_bad_tokens_and_tls_files_are_refused() {
+    seed
+    QD_WEB_TOKEN=short qd_rc web -n 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "at least 16"
+    QD_WEB_TOKEN="has a space in it 0123" qd_rc web -n 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "no spaces"
+    : > empty
+    qd_rc web -n --token-file empty 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "is empty"
+    qd_rc web -n --token-file nosuch 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "cannot read the token file nosuch"
+    qd_rc web -n --tls-cert nosuch.pem 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "no such file: nosuch.pem"
+    qd_rc web -n --tls-key k.pem 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "--tls-key needs --tls-cert"
+    echo "not a certificate" > bad.pem
+    qd_rc web -n --tls-cert bad.pem 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "cannot use bad.pem for TLS"
+}
+
+t_tls_serves_https() {
+    if ! command -v openssl > /dev/null 2>&1; then
+        echo "  (openssl not installed: TLS case skipped)"
+        return 0
+    fi
+    seed
+    openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost \
+        -keyout key.pem -out cert.pem > /dev/null 2>&1 || fail "openssl req"
+    export QD_TEST_CA="$PWD/cert.pem"
+    start_web --host 0.0.0.0 --tls-cert cert.pem --tls-key key.pem
+    assert_contains "$URL" "https://"
+    assert_not_contains "$(cat web.err)" "WARNING: no TLS"
+    assert_contains "$(req /api/entries)" "401"
+    out="$(req /api/entries "Authorization:Bearer $TOKEN")"
+    assert_contains "$out" "200"
+    assert_contains "$out" "cat load"
+    assert_contains "$(req "/?token=$TOKEN")" "SameSite=Strict; Secure"
+    # plain http to the https port gets no answer, and the server carries on
+    plain="http://127.0.0.1:${URL##*:}"
+    "$PY" -c 'import sys, urllib.request
+try:
+    urllib.request.urlopen(sys.argv[1] + "api/entries", timeout=5)
+    print("answered")
+except Exception:
+    print("refused")' "$plain" > plain.out
+    assert_eq "$(cat plain.out)" "refused"
+    assert_contains "$(req /api/entries "Authorization:Bearer $TOKEN")" "200"
+    stop_web
+    # the key inside the cert file; on loopback, no token, as before
+    cat key.pem cert.pem > both.pem
+    start_web --tls-cert both.pem
+    assert_eq "$TOKEN" ""
+    assert_contains "$(req /api/entries)" "200"
+}
+
 run_test "entries, rows, --where, a bad filter"     t_entries_rows_and_filters
 run_test "column figures match the CLI's"           t_column_figures_match_the_cli
 run_test "a column's unit is its figures' scale"    t_column_unit_is_the_figures_scale
@@ -315,4 +475,8 @@ run_test "the store picker reads named stores"      t_the_store_picker_reads_nam
 run_test "app.js parses"                            t_app_js_parses
 run_test "floor: overlay written, viewer named"       t_floor_writes_the_overlay_and_names_the_viewer
 run_test "no store yet: refused"                    t_empty_store_is_refused
+run_test "beyond loopback: the token, read-only"    t_exposed_needs_its_token
+run_test "--allow-writes; a token given"            t_allow_writes_and_a_given_token
+run_test "bad tokens and TLS files refused"         t_bad_tokens_and_tls_files_are_refused
+run_test "TLS: https, and plain http refused"       t_tls_serves_https
 finish
