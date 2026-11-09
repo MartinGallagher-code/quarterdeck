@@ -37,6 +37,9 @@ read-only there (QD-017).
 - Listening beyond loopback without TLS prints a warning that the token and
   the data cross the network in the clear, and says whether writes are
   allowed.
+- A request path starting `//` is collapsed to one slash before it is
+  routed, as Python 3.12's `http.server` already does, so `//name/` is a
+  path on every Python and never read as a host.
 - CI's test matrix runs on `ubuntu-24.04`: `ubuntu-latest` became 26.04,
   which setup-python has no Python 3.9 for. The same change as QD-014's
   pull request (#15), which found it first.

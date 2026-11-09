@@ -786,7 +786,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(403, {"error": "this server answers requests "
                                  "to 127.0.0.1 or localhost only"})
             return
-        url = urlparse(self.path)
+        # "//name/..." is a path, never a host: 3.12's http.server collapses
+        # the slashes itself, and older ones let urlparse take the name for
+        # a host; collapsed here, every Python routes it alike
+        raw = self.path
+        if raw.startswith("//"):
+            raw = "/" + raw.lstrip("/")
+        url = urlparse(raw)
         path = url.path
         q = parse_qs(url.query, keep_blank_values=True)
         if not self.authorised(q):
