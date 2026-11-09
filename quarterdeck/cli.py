@@ -69,6 +69,7 @@ from .common import (PROG, VERSION_TEXT, QdError, _stdio_safe, die, env,
                      env_float, env_int, plural, warn, write_text)
 from . import diff as diffmod
 from . import filing, fleet, hosts as hostmod, importers, query
+from . import policy as policymod
 from . import render, stats, store as storemod, table as tablemod, tools
 from .store import describe_entry, load_ref, now_iso, shown_id, \
     split_ref, split_store
@@ -420,6 +421,15 @@ def cmd_run(args):
     return job.rc
 
 
+def policy_of(args):
+    """The allow-list and read-only policy, read once per command."""
+    pol = getattr(args, "_policy", None)
+    if pol is None:
+        pol = policymod.from_args(args)
+        args._policy = pol
+    return pol
+
+
 def check_limit(args, hs):
     if args.limit is not None and len(hs) > args.limit and not args.yes:
         die("refusing to run on %d hosts: --limit is %d (add --yes)"
@@ -497,6 +507,9 @@ def add_own_tables(b, rid, label, command, created, took, hs, results,
         storemod.HOST_COLUMNS, [host_row(rid, r) for r in results]))
     counts = outcome_counts(last)
     fields = dict(extra or {})
+    notes = [n for n in (("interrupted after %s" % plural(
+        passes, "pass", "passes")) if interrupted else None,
+        fields.pop("policy", None), fields.pop("notes", None)) if n]
     b.add_own(storemod.RUNS, filing.own_tsv(storemod.RUN_COLUMNS, [run_row(
         rid, fields.pop("kind", "run"), label, command, created,
         duration_s=took, hosts=len(hs), ok=counts.get(fleet.OK, 0),
@@ -505,8 +518,7 @@ def add_own_tables(b, rid, label, command, created, took, hs, results,
         unreachable=counts.get(fleet.UNREACHABLE, 0),
         push_failed=counts.get(fleet.PUSH_FAILED, 0), passes=passes,
         every=every, captures=ncap,
-        notes=("interrupted after %s" % plural(passes, "pass", "passes"))
-        if interrupted else None, **fields)]))
+        notes="; ".join(notes) or None, **fields)]))
 
 
 def say_filing(ncap):
@@ -530,6 +542,13 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
             "--every)")
     if args.every is not None and args.every <= 0:
         die("--every wants a number of seconds above 0")
+    pol = policy_of(args)
+    policymod.check(pol, command, getattr(args, "verb_name", "run"),
+                    len(hs), bool(push), args.sudo,
+                    (extra or {}).get("tool") == "probe")
+    if pol.active:
+        extra = dict(extra or {})
+        extra["policy"] = pol.notes()
     runner = new_runner(args)
     if args.dry_run:
         dry_run_lines(runner, hs, command, push, stdin)
@@ -579,6 +598,13 @@ def fleet_runs_together(args, hs, specs, extra=None):
     its own wait on a dead host (8 s apiece), and its own provost call.
 
     specs: [(label, command, stdin)].  One pass.  -> [Job]"""
+    pol = policy_of(args)
+    for _, command, _ in specs:
+        policymod.check(pol, command, "probe", len(hs), False, args.sudo,
+                        (extra or {}).get("tool") == "probe")
+    if pol.active:
+        extra = dict(extra or {})
+        extra["policy"] = pol.notes()
     runners = [new_runner(args) for _ in specs]
     check_transport(runners[0], False)
     st = store_of(args)
@@ -894,6 +920,8 @@ def cmd_do(args):
     if not cmd:
         die("nothing to do: put the tool and its arguments after --, e.g.\n"
             "  %s do -- mx run --for 60" % PROG)
+    policymod.check_do(policymod.from_args(args),
+                       " ".join(shlex.quote(a) for a in cmd))
     cmd = resolve_argv(cmd)
     st = store_of(args)
     prov = filing.Provost(st)
@@ -2890,6 +2918,15 @@ def add_safety(sp):
                    help="refuse to run wider than N hosts without --yes")
     g.add_argument("--yes", action="store_true",
                    help="proceed past --limit and the mutation guard")
+    g.add_argument("--allow", metavar="FILE",
+                   help="only commands matching a pattern in FILE run; "
+                   "others need --confirm (QD_ALLOW)")
+    g.add_argument("--read-only", action="store_true",
+                   help="only the probes and allow-listed commands; never "
+                   "--push, --script or --sudo (QD_READ_ONLY=1)")
+    g.add_argument("--confirm", action="store_true",
+                   help="ask, at a terminal, to run a command the "
+                   "allow-list does not name")
 
 
 def add_fleet(sp, preview=20):
@@ -2984,6 +3021,9 @@ def build_parser():
     sp.add_argument("--import", dest="import_", action="append",
                     metavar="PATH", help="also read this file or directory "
                     "afterwards; repeatable")
+    sp.add_argument("--read-only", action="store_true",
+                    help="refuse: qd do's tools change the hosts "
+                    "(QD_READ_ONLY=1)")
     sp.add_argument("--no-import", action="store_true",
                     help="keep stdout only; read nothing back")
     sp.add_argument("command", nargs=argparse.REMAINDER,

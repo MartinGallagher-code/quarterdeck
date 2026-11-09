@@ -52,6 +52,7 @@ setup_env() {
     unset QD_REMOTE_DIR QD_MAX_OUTPUT QD_Z QD_ASCII QD_MANIFEST QD_CACHE
     unset QD_MX QD_IPERF_ORCHESTRATOR QD_AGREE QD_DCVIZ QD_WEB_HOST
     unset QD_WEB_PORT QD_TEST_KEYS QD_TEST_SCREEN QD_FILE_JOBS
+    unset QD_ALLOW QD_READ_ONLY
     unset PROVOST_WORKSPACE PROVOST_HOME PROVOST_CONTEXT_COLUMNS PROVOST_QUIET
     # Every case files into a store of its own; QD_PROVOST_BATCH=0 from
     # the caller runs the suites on the one-capture-at-a-time path.

@@ -5,6 +5,28 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.7.0 — 2026-11-09
+
+What may be sent to a fleet: an allow-list and a read-only mode (QD-015).
+
+### Added
+- **`--allow FILE`** (`QD_ALLOW`) on `qd run`, `probe`, `campaign` and
+  `doe`: only commands matching a pattern in FILE run. Anything else is
+  refused (exit 2), unless `--confirm` is given and `CONFIRM` is typed at
+  the terminal; with no terminal it is refused outright. The probes qd
+  ships run by name.
+- **`--read-only`** (`QD_READ_ONLY=1`): only the probes and allow-listed
+  commands; `--push`, `--script`, `--sudo` and `qd do` are refused, and
+  no confirmation lifts it.
+- Every run under a policy records it in its qd.runs notes (read-only,
+  the allow-list's name and sha256, any confirmed override and who
+  confirmed it); every refusal goes to `policy.log` in qd's cache.
+- The mutation guard (DANGER) still applies on top. README's new
+  "Allow-lists and read-only" says plainly that this is policy, not a
+  sandbox.
+- New module `quarterdeck/policy.py`; new suite `tests/test_policy.sh`
+  (9 cases, the confirmation typed at a real pseudo-terminal).
+
 ## 0.6.4 — 2026-11-05
 
 Nothing `qd` does has changed; the suites run side by side (QD-005).
