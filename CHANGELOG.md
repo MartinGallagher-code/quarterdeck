@@ -5,6 +5,45 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.7.0 — 2026-11-09
+
+Every run records who ran it (QD-016).
+
+### Added
+- **`qd.runs` says who ran each run**: five new columns. Every run (`qd
+  run`, `probe`, `campaign`, `doe`, `do`, `import`) records `operator`
+  (`QD_OPERATOR`, else the login user) and `operator_host` (the machine qd
+  ran on). A fan-out also records `ssh_user` (`--user`, else what `ssh -G`
+  gives each host, comma-separated where hosts differ), `ssh_key` (the
+  fingerprint of each key offered: the `-i` or `IdentityFile` keys in
+  `--ssh`, else the agent's from `ssh-add -l`; never the key) and `sudo`
+  (`yes`/`no`). What cannot be found out (no `-G`, no agent, an unreadable
+  key, a lookup over 5 s) is blank, never a guess, and never stops the run.
+  `ssh -G` is a local read of ssh's config, once per distinct host, through
+  the same `--ssh` command, before the fan-out.
+- `qd log RUN` shows `by OPERATOR@HOST` and an `ssh` line (user, key,
+  sudo); `qd log` lists an `operator` column; `qd web`'s `/api/entries`
+  carries `operator` and the run's header shows it.
+- qd sets `PROVOST_OPERATOR` for the provost it runs, unless the caller set
+  one, so a provost that records the operator (PV-027) gets qd's. provost
+  2.3.0 ignores it.
+
+### Compatibility
+- Runs filed by an older qd have none of the columns and show blank; the
+  new columns go at the end of `qd.runs`, and qd 0.6.4 reads a store that
+  holds them (checked by hand: both versions list a store with one run of
+  each).
+
+### Tests
+- `tests/test_operator.sh`, a new suite: the fields of a fan-out,
+  `QD_OPERATOR` and the login user, `--user` reading no config, hosts with
+  users of their own, an ssh without `-G`, the `-i` key and a missing or
+  unreadable one, `--sudo`, `do`/`import` recording the operator only, free
+  text round-tripping, `PROVOST_OPERATOR`, and an older run beside a new
+  one. `tests/test_web.sh` checks the API. The fake ssh answers `ssh -G`
+  (`FAKE_SSH_USER`, `FAKE_SSH_USER_<host>`, `FAKE_NO_DASH_G`) and logs it
+  apart, so `ssh_calls` still counts connections only.
+
 ## 0.6.4 — 2026-11-05
 
 Nothing `qd` does has changed; the suites run side by side (QD-005).

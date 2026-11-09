@@ -37,8 +37,8 @@ from . import campaign as camp, compare as comparemod, diff as diffmod, \
     doe as doemod, query, stats, table as tablemod, tools
 from .common import PROG, QdError, die, env_float, write_text
 from . import store as storemod
-from .store import cache_root, describe_entry, shown_attrs, shown_id, \
-    split_ref, split_store
+from .store import cache_root, describe_entry, operator_shown, \
+    shown_attrs, shown_id, split_ref, split_store
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 
@@ -155,6 +155,7 @@ class Api(object):
                         "command": m.get("command", ""),
                         "summary": e.summary(), "hosts": m.get("hosts"),
                         "rc": m.get("rc"), "group": m.get("group", ""),
+                        "operator": operator_shown(m),
                         "part": m.get("part", ""),
                         "factors": shown_attrs(m.get("factors")),
                         "tables": [{"name": t["name"],
