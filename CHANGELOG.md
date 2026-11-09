@@ -36,6 +36,11 @@ qd deletes only what it made on a host, and a suite holds it to that
   can reach a real path. A mutation case takes the id check out of a copy
   of `fleet.py` and shows the suite then fails.
 
+### Fixed
+- CI's test matrix runs on `ubuntu-24.04`: `ubuntu-latest` moved to 26.04,
+  where setup-python has no Python 3.9, so the 3.9 job failed before it
+  ran anything.
+
 ### Reviewed
 - Every other delete in qd is local and was checked: the temp
   directories of `qd do`, `doe`, `split`, `campaign` and filing
