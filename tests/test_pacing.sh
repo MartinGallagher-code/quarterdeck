@@ -134,7 +134,11 @@ t_a_ramp_spaces_the_starts() {
     gap="$("$PY" - "$TEST_TMPDIR/times" <<'PYEOF'
 import sys
 ts = sorted(float(l.split()[1]) for l in open(sys.argv[1]) if l.startswith("start"))
-print(min(b - a for a, b in zip(ts, ts[1:])) >= 0.2, len(ts))
+# 4 a second: the six starts span at least 1.25 s, and no second holds
+# more than 4 of them, give or take one for process start-up jitter (a
+# stamp is taken inside the host's command, after ssh and bash started)
+busiest = max(sum(1 for u in ts if t <= u < t + 1.0) for t in ts)
+print(ts[-1] - ts[0] >= 1.1 and busiest <= 5, len(ts))
 PYEOF
 )"
     assert_eq "$gap" "True 6"
