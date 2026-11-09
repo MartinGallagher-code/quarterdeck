@@ -37,6 +37,9 @@ read-only there (QD-017).
 - Listening beyond loopback without TLS prints a warning that the token and
   the data cross the network in the clear, and says whether writes are
   allowed.
+- CI's test matrix runs on `ubuntu-24.04`: `ubuntu-latest` became 26.04,
+  which setup-python has no Python 3.9 for. The same change as QD-014's
+  pull request (#15), which found it first.
 
 ## 0.6.4 — 2026-11-05
 

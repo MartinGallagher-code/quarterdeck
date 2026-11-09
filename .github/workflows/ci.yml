@@ -8,7 +8,9 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # ubuntu-latest became 26.04 in November 2026, and setup-python has no
+    # 3.9 for it; 24.04 still has every version in the matrix (QD-014)
+    runs-on: ubuntu-24.04
 
     strategy:
       fail-fast: false
