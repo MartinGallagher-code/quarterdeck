@@ -157,6 +157,13 @@ class Provost(object):
         e["PROVOST_WORKSPACE"] = self.store.root
         e["PROVOST_ASYNC"] = "0"
         e.pop("PROVOST_CONTEXT_COLUMNS", None)
+        # who filed it, for provost's own record of a capture (PV-027);
+        # a PROVOST_OPERATOR the caller set is theirs to keep
+        if not e.get("PROVOST_OPERATOR"):
+            from .whoran import operator
+            who = operator()
+            if who:
+                e["PROVOST_OPERATOR"] = who
         return e
 
     def call(self, args):

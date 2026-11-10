@@ -54,6 +54,7 @@ setup_env() {
     unset QD_WEB_PORT QD_TEST_KEYS QD_TEST_SCREEN QD_FILE_JOBS QD_RATE
     unset QD_WEB_TOKEN QD_WEB_TOKEN_FILE QD_WEB_TLS_CERT QD_WEB_TLS_KEY QD_TEST_CA
     unset PROVOST_WORKSPACE PROVOST_HOME PROVOST_CONTEXT_COLUMNS PROVOST_QUIET
+    unset QD_OPERATOR PROVOST_OPERATOR
     # Every case files into a store of its own; QD_PROVOST_BATCH=0 from
     # the caller runs the suites on the one-capture-at-a-time path.
     export QD_STORE="$TEST_TMPDIR/store"
@@ -226,15 +227,27 @@ assert_dir_exists() {
 install_fake_ssh() {
     cat > "$FAKE_BIN/ssh" <<'SHIM'
 #!/bin/bash
-args=(); host=""
+args=(); host=""; config=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) shift 2;;
     -p) shift 2;;
+    -i) shift 2;;
+    -G) config=1; shift;;
     *) if [ -z "$host" ]; then host="$1"; else args+=("$1"); fi; shift;;
   esac
 done
 host="${host#*@}"
+# ssh -G: the config ssh would use, read locally and logged apart, so it
+# is not counted as a connection.  FAKE_SSH_USER_<host> (dots and dashes
+# as _) gives a host a user of its own, FAKE_NO_DASH_G an ssh without -G.
+if [ -n "$config" ]; then
+  printf 'ssh-G %s\n' "$host" >> "$FAKE_SSH_LOG"
+  [ -n "${FAKE_NO_DASH_G:-}" ] && { echo "ssh: illegal option -- G" >&2; exit 255; }
+  v="FAKE_SSH_USER_${host//[.-]/_}"
+  printf 'user %s\nhostname %s\nport 22\n' "${!v:-${FAKE_SSH_USER:-$(id -un)}}" "$host"
+  exit 0
+fi
 printf 'ssh %s %s\n' "$host" "${args[*]}" >> "$FAKE_SSH_LOG"
 if [ -f "$FAKE_ROOT/$host/.unreachable" ]; then
   echo "ssh: connect to host $host port 22: Connection timed out" >&2
