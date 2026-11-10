@@ -45,9 +45,7 @@ Hosts reached through a Slurm allocation, pdsh or clush as well as ssh
 - `tests/test_via.sh`, with stand-ins for srun, scontrol, pdsh, pdcp and
   clush: every node answering, one failing, one not reached, the job
   captured, the same table through ssh and through pdsh or clush, pushes,
-  timeouts, probes through every launcher, and the doctor. It files with
-  `QD_FILE_JOBS=1`, out of the way of QD-022's store-lock race on CI's
-  provost 2.1.0 job.
+  timeouts, probes through every launcher, and the doctor.
 
 ### Fixed
 - A run filed into a dataset whose other runs carried other `#%` keys --

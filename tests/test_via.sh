@@ -14,12 +14,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_helper.bash"
 seed() {
     install_fake_ssh
     install_fake_launchers
-    # Answers filed one provost after another on the one-capture-at-a-time
-    # path: four at once lose a capture now and then where mkdir is uutils
-    # coreutils before 0.11 (CI's provost 2.1.0 job, QD-022), and this suite
-    # files dozens of runs.  What it tests is how hosts are reached, not
-    # filing; QD-022 fixes the race itself.
-    export QD_FILE_JOBS=1
     for h in node01 node02 node03; do fake_host "$h"; done
     echo "6.1.0-18" > "$FAKE_ROOT/node01/kernel"
     echo "6.1.0-13" > "$FAKE_ROOT/node03/kernel"
