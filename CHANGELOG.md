@@ -30,6 +30,10 @@ A run filed one capture at a time no longer reads back a table short
 - `QD_FILE_JOBS=N` files N at once on that path again. It is safe only
   where `mkdir --version` is not uutils' before 0.11.0. With `batch` it is
   still `batch -j N`.
+- The web case *references are never paths* checked that a refusal held no
+  `42`, the secret's value. The refusal names its temp directory, and one
+  named `qd-test.Bz42H2` failed it. The secret is now a value no temp path
+  can hold.
 
 ### Added
 - A `do` case, *one capture at a time: one provost at a time*. A

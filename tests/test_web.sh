@@ -247,16 +247,18 @@ t_static_page_and_no_escape() {
 # server (DNS rebinding) is turned away
 t_refs_are_never_paths() {
     seed
-    mkdir -p outside && printf 'k\tv\nsecret\t42\n' > outside/secret.tsv
+    # a value no temp path can hold (mktemp's are letters and digits): the
+    # refusal names the path, and qd-test.Bz42H2 once held "42"
+    mkdir -p outside && printf 'k\tv\nsecret\tnever-shown-77\n' > outside/secret.tsv
     start_web
     out="$(get "/api/rows?e=$PWD/outside/secret")"
     assert_contains "$out" "400"
-    assert_not_contains "$out" "42"
+    assert_not_contains "$out" "never-shown-77"
     out="$(get '/api/rows?e=ds:../../outside/secret')"
     assert_contains "$out" "400"
-    assert_not_contains "$out" "42"
+    assert_not_contains "$out" "never-shown-77"
     out="$(get '/api/export?e=ds:../../outside/secret&format=csv')"
-    assert_not_contains "$out" "42"
+    assert_not_contains "$out" "never-shown-77"
     out="$("$PY" - "$URL" <<'EOF'
 import sys, urllib.request, urllib.error
 req = urllib.request.Request(sys.argv[1] + "api/entries",
