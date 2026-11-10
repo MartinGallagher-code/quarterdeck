@@ -379,7 +379,10 @@ def default_per(table, col):
     return None
 
 
-def outliers(table, col, per=None, z=3.5):
+OUTLIER_METHODS = ("mad", "iqr")
+
+
+def outliers(table, col, per=None, z=3.5, method="mad", k=1.5):
     """Who sits far from everybody else, by the median and the MAD.
 
     The robust z-score is 0.6745 (x - median) / MAD (Iglewicz and
@@ -388,8 +391,16 @@ def outliers(table, col, per=None, z=3.5):
     host at a tenth of the speed drags a mean and inflates a stdev until
     it hides inside both.  When most of the fleet agrees exactly (MAD 0)
     every value that differs is reported, since agreement is the norm.
-    Returns (rows, info).
+
+    method="iqr" is Tukey's fences instead: outside the quartiles by more
+    than k (1.5) times the spread between them.  Its score is how far out,
+    in interquartile ranges past the nearer quartile.
+    Returns (rows, info); a row's fifth figure is the robust z, or the
+    IQR score.
     """
+    if method not in OUTLIER_METHODS:
+        die("unknown outlier method %r (want %s)"
+            % (method, ", ".join(OUTLIER_METHODS)))
     name = table.colname(col)
     vals = table.numbers(name)
     if per:
@@ -412,27 +423,165 @@ def outliers(table, col, per=None, z=3.5):
             if v is not None:
                 items.append((r[li] if li is not None else "row %d" % n, v))
     xs = sorted(v for _, v in items)
-    info = {"n": len(xs), "column": name, "per": per, "z": z}
+    info = {"n": len(xs), "column": name, "per": per, "z": z,
+            "method": method, "k": k}
     if not xs:
         return [], info
     med = quantile(xs, .5)
     mad = quantile(sorted(abs(x - med) for x in xs), .5)
-    info.update(median=med, mad=mad)
+    q1, q3 = quantile(xs, .25), quantile(xs, .75)
+    info.update(median=med, mad=mad, q1=q1, q3=q3, iqr=q3 - q1)
     rows = []
     for key, v in items:
-        if mad:
-            rz = 0.6745 * (v - med) / mad
-            hit = abs(rz) > z
+        if method == "iqr":
+            score, hit = _iqr_score(v, q1, q3, k)
+        elif mad:
+            score = 0.6745 * (v - med) / mad
+            hit = abs(score) > z
         else:
-            rz = float("inf") if v > med else float("-inf") if v < med \
+            score = float("inf") if v > med else float("-inf") if v < med \
                 else 0.0
             hit = v != med
         if not hit:
             continue
         rel = 100.0 * v / med if med else None
-        rows.append((key, v, med, rel, rz, "high" if v > med else "low"))
+        rows.append((key, v, med, rel, score, "high" if v > med else "low"))
     rows.sort(key=lambda r: (-abs(r[4]), str(r[0])))
     return rows, info
+
+
+def _iqr_score(v, q1, q3, k):
+    """(how far past the nearer quartile, in IQRs; whether past k).  With
+    the quartiles equal, every value outside them is out, as MAD 0 is."""
+    iqr = q3 - q1
+    if v > q3:
+        return ((v - q3) / iqr if iqr else float("inf")), \
+            (v - q3 > k * iqr if iqr else True)
+    if v < q1:
+        return ((v - q1) / iqr if iqr else float("-inf")), \
+            (q1 - v > k * iqr if iqr else True)
+    return 0.0, False
+
+
+def peer_outliers(groups, col, per=None, z=3.5, method="mad", k=1.5):
+    """Outliers within each peer group: every group its own median and
+    spread, so a host is held against its peers rather than the fleet.
+    groups: [(peer, Table)].  Returns ([(peer, row)], [(peer, info)])."""
+    rows, infos = [], []
+    for peer, t in groups:
+        got, info = outliers(t, col, per, z, method, k)
+        infos.append((peer, info))
+        rows.extend((peer, r) for r in got)
+    rows.sort(key=lambda pr: (-abs(pr[1][4]), str(pr[0]), str(pr[1][0])))
+    return rows, infos
+
+
+# ---------------------------------------------------------------------------
+# two samples: has it moved, or is it noise?
+# ---------------------------------------------------------------------------
+
+def _comb(n, r):
+    if r < 0 or r > n:
+        return 0
+    return math.factorial(n) // (math.factorial(r) * math.factorial(n - r))
+
+
+def _ranks(values):
+    """Ranks from 1, ties sharing their mean rank; and the size of each
+    run of ties."""
+    order = sorted(range(len(values)), key=lambda i: values[i])
+    ranks = [0.0] * len(values)
+    ties = []
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and values[order[j + 1]] == values[order[i]]:
+            j += 1
+        for m in range(i, j + 1):
+            ranks[order[m]] = (i + j) / 2.0 + 1
+        ties.append(j - i + 1)
+        i = j + 1
+    return ranks, ties
+
+
+def _u_counts(m, n):
+    """How many of the C(m+n, m) orderings give each U from 0 to m*n:
+    the coefficients of the Gaussian binomial [m+n, m] in q, built as
+    prod (1 - q^(n+i)) / (1 - q^i) for i = 1..m, in exact integers."""
+    poly = [1] + [0] * (m * n)
+    for i in range(1, m + 1):
+        for d in range(len(poly) - 1, n + i - 1, -1):     # * (1 - q^(n+i))
+            poly[d] -= poly[d - n - i]
+        for d in range(i, len(poly)):                     # / (1 - q^i)
+            poly[d] += poly[d - i]
+    return poly
+
+
+def _norm_sf2(z):
+    """Two-sided normal tail: P(|Z| >= |z|)."""
+    return math.erfc(abs(z) / math.sqrt(2.0))
+
+
+def mann_whitney(x, y):
+    """The Mann-Whitney U test of x against y, two-sided, as scipy's
+    mannwhitneyu(x, y) gives it: exact when either sample has 8 or fewer
+    values and nothing is tied, else the normal approximation with the tie
+    correction and the continuity correction.
+
+    Returns {"u": U of x, "p": p, "method": "exact" or "normal",
+    "effect": the rank-biserial correlation, 2U/(n1 n2) - 1: +1 when every
+    x is above every y, -1 when below, 0 when they interleave}; or None
+    when either sample is empty.  Blanks are the caller's to leave out:
+    None is not a value here.
+    """
+    n1, n2 = len(x), len(y)
+    if not n1 or not n2:
+        return None
+    ranks, ties = _ranks(list(x) + list(y))
+    r1 = sum(ranks[:n1])
+    u1 = r1 - n1 * (n1 + 1) / 2.0
+    u2 = n1 * n2 - u1
+    effect = 2.0 * u1 / (n1 * n2) - 1
+    tied = any(t > 1 for t in ties)
+    if not tied and (n1 <= 8 or n2 <= 8):
+        m, n = (n1, n2) if n1 <= n2 else (n2, n1)
+        counts = _u_counts(m, n)
+        u = int(round(max(u1, u2)))
+        p = 2.0 * sum(counts[u:]) / _comb(m + n, m)
+        return {"u": u1, "p": min(1.0, p), "method": "exact",
+                "effect": effect}
+    n = n1 + n2
+    tie_term = sum(t ** 3 - t for t in ties)
+    var = n1 * n2 / 12.0 * ((n + 1) - tie_term / float(n * (n - 1)))
+    num = u1 - n1 * n2 / 2.0
+    if var <= 0 or num == 0:
+        return {"u": u1, "p": 1.0, "method": "normal", "effect": effect}
+    num -= 0.5 if num > 0 else -0.5
+    p = _norm_sf2(num / math.sqrt(var))
+    return {"u": u1, "p": min(1.0, p), "method": "normal", "effect": effect}
+
+
+def smallest_p(n1, n2):
+    """The smallest two-sided p a rank test can reach with n1 and n2
+    values: 2 / C(n1+n2, n1).  Three a side cannot get below 0.1."""
+    if not n1 or not n2:
+        return 1.0
+    return min(1.0, 2.0 / _comb(n1 + n2, n1))
+
+
+def holm(ps):
+    """Holm's step-down adjustment of several p values, in their order;
+    None stays None.  Controls the chance of any false alarm across every
+    test made, so many keys times many groups do not multiply them."""
+    idx = sorted((i for i, p in enumerate(ps) if p is not None),
+                 key=lambda i: ps[i])
+    m = len(idx)
+    out = list(ps)
+    run = 0.0
+    for j, i in enumerate(idx):
+        run = max(run, min(1.0, (m - j) * ps[i]))
+        out[i] = run
+    return out
 
 
 # ---------------------------------------------------------------------------
