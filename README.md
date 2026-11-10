@@ -1291,7 +1291,7 @@ CI's order, and ends with a summary:
 
 | Check | Tool |
 |---|---|
-| the version agrees in `quarterdeck/__init__.py`, `pyproject.toml` and the top of `CHANGELOG.md` | `tests/check_version.sh` (CI too) |
+| the version agrees in `quarterdeck/__init__.py`, `pyproject.toml` and the top of `CHANGELOG.md` | `tests/check_version.sh` (CI too; CI also checks it is greater than the base branch's) |
 | every module compiles; no post-3.6 stdlib API | `tests/check_python_compat.sh`, vermin |
 | the test harness | shellcheck `-e SC1091` |
 | the page parses | `node --check quarterdeck/web/app.js` |
@@ -1324,7 +1324,9 @@ run together*, *binnacle's scripts run on the hosts*: there is no
 on Linux. Run with `TMPDIR=/tmp` there too: macOS's own temp path is long
 enough that `qd store ls` shortens it, and *rename moves a store qd made*
 looks for the part it cut. Every change moves the version in all
-three places (`tests/check_version.sh` says where they disagree).
+three places (`tests/check_version.sh` says where they disagree), to a
+number greater than `main`'s (`bash tests/check_version.sh origin/main`
+checks that here; CI checks it on every pull request and push to `main`).
 
 ---
 
