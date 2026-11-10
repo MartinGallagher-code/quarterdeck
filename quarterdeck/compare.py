@@ -39,6 +39,8 @@ class Compared(object):
         self.notes = []
         self.baseline = 0
         self.columns = []       # with no column: [(col, [median per run])]
+        self.peers = None       # --peers: the definition, and
+        self.peer_rows = []     # [(peer, [its median per run], flags)]
 
 
 def labels(n):
@@ -83,9 +85,10 @@ def _key_for(tables, key):
 
 
 def compare(tables, column=None, key=None, drift=5.0, agg="median",
-            baseline=0):
+            baseline=0, peers=None):
     """tables: one per run, in time order (each with .entry where it came
-    from the store).  Returns a Compared."""
+    from the store).  With peers (a peers.Peers), each peer group's median
+    per run too.  Returns a Compared."""
     if len(tables) < 2:
         die("compare wants two runs or more (found %d)" % len(tables))
     if agg in ("distinct", "first", "last", "top", "worst", "auto"):
@@ -140,17 +143,84 @@ def compare(tables, column=None, key=None, drift=5.0, agg="median",
             r["delta_pct"] = pct(base, m)
     res.key = _key_for(tables, key)
     _per_key(res, tables, column, agg, drift)
+    if peers is not None:
+        if column is None:
+            die("--peers compares one column, peer group by peer group: "
+                "name it with -c")
+        _per_peer(res, tables, peers, drift)
     return res
+
+
+def _per_peer(res, tables, peers, drift):
+    """Each peer group's value per run: the median of its keys' values
+    (each key one number, as below), so a group of many hosts and one of
+    few count alike; flagged where it moved past the drift."""
+    from .stats import natural_sorted, quantile
+    res.peers = peers
+    peer_of, none = {}, set()
+    for t in tables:
+        at = peers.assigner(t)
+        ki = [t.index(k) for k in res.key]
+        for r in t.rows:
+            k = tuple(r[j] for j in ki)
+            if peer_of.get(k) is None:
+                peer_of[k] = at(r)
+    for k, p in peer_of.items():
+        if p is None:
+            none.add(k)
+    if none:
+        res.notes.append("%d key%s in no peer group of %s: left out of its "
+                         "groups" % (len(none), "" if len(none) == 1 else "s",
+                                     peers.name))
+    by = {}
+    for k, row, _ in res.keys:
+        p = peer_of.get(k)
+        if p is None:
+            continue
+        by.setdefault(p, [[] for _ in tables])
+        for i, v in enumerate(row):
+            if v is not None:
+                by[p][i].append(v)
+    b = res.baseline
+    for p in natural_sorted(list(by)):
+        meds = [quantile(sorted(xs), .5) if xs else None for xs in by[p]]
+        flags = []
+        for i, v in enumerate(meds):
+            if i == b:
+                continue
+            d = pct(meds[b], v)
+            if v is None and meds[b] is not None:
+                flags.append("%s missing" % res.runs[i]["label"])
+            elif d is not None and abs(d) > drift:
+                flags.append("%s drift %+.1f%%" % (res.runs[i]["label"], d)
+                             if d not in (float("inf"), float("-inf"))
+                             else "%s from 0" % res.runs[i]["label"])
+        res.peer_rows.append((p, meds, flags))
+
+
+def peer_table(res):
+    """--peers: one row per peer group, its median in each run."""
+    labs = [r["label"] for r in res.runs]
+    rows = []
+    for p, meds, flags in res.peer_rows:
+        d = last_change(res, meds)
+        rows.append([p] + [num(v) for v in meds] +
+                    [("%.1f" % d) if d not in (None, float("inf"),
+                                               float("-inf")) else "",
+                     "; ".join(flags)])
+    return Table([res.peers.name if res.peers else "peers"] + labs +
+                 ["change_pct", "flags"], rows, "peers")
 
 
 def _own(st):
     return lambda ref: (st, ref)
 
 
-def pick(st, refs=(), group=None, last=None, where=None):
+def pick(st, refs=(), group=None, last=None, where=None, least=2):
     """The runs to compare, oldest first: those named; a group's (a
     campaign's parts or a design's points); or the last N runs like the
-    one named (5 by default), in that run's own store.
+    one named (5 by default), in that run's own store.  `least` is how
+    few will do (one, against a qualified baseline).
 
     `where(ref)` -> (store, ref) says which store a reference is read in
     (REF@STORE); without it every one is read in `st`."""
@@ -174,7 +244,7 @@ def pick(st, refs=(), group=None, last=None, where=None):
                  e.meta.get("name"))]
         ids = [x.id for x in like]
         es = like[:ids.index(e.id) + 1][-(last or 5):]
-        if len(es) < 2:
+        if len(es) < least:
             die("%s is the only run of %r: compare needs another (or name "
                 "the runs to compare)" % (e.id, e.meta.get("name") or
                                           e.meta.get("command")))
