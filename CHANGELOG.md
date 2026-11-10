@@ -5,7 +5,7 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
-## 0.7.3 — 2026-11-10
+## 0.8.1 — 2026-11-10
 
 `qd web` served beyond this machine needs a token, can serve https, and is
 read-only there (QD-017).
@@ -40,6 +40,28 @@ read-only there (QD-017).
 - A request path starting `//` is collapsed to one slash before it is
   routed, as Python 3.12's `http.server` already does, so `//name/` is a
   path on every Python and never read as a host.
+
+## 0.8.0 — 2026-11-10
+
+A run against fixed limits, by requirement (QD-010).
+
+### Added
+- **`qd check RUN --against FILE`**: one verdict per requirement --
+  pass, fail or not measured -- from a thresholds file (TSV or CSV with
+  `req`, `column`, `op`, `limit`, and optionally `limit2`, `where`,
+  `agg`, `unit`, `note`). Ops `<`, `<=`, `>`, `>=`, `==`, `!=`, `in`,
+  `between`; `agg` is `each` (every row must pass) or a figure over the
+  rows (median, p99, max, ...). Sizes and times compare on one scale and
+  read in the limit's unit; units that cannot be compared are refused.
+- Blank is never a pass: a missing column, no rows, a blank cell, or an
+  aggregate over only some hosts is not measured, and exits 1 as a
+  failure does. A thresholds file qd cannot read exits 2, naming the
+  check.
+- `--each` gives a row per host per check; `--keep` files the verdicts
+  as a run of kind `check`, which `qd show`, `qd export` and `qd web`
+  read like any other.
+- New module `quarterdeck/check.py`; new suite `tests/test_check.sh`
+  (8 cases, its web server on port 18160); README "Against requirements".
 
 ## 0.7.2 — 2026-11-10
 

@@ -15,6 +15,7 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
        qd show|stats|freq|hist|outliers|pivot|trend RUN ...
        qd diff [OLD] NEW                       what changed between two
        qd compare RUN --last N -c COL          N runs side by side
+       qd check RUN --against limits.tsv       pass/fail by requirement
        qd export RUN [--format overlay]        CSV, JSON, the viewer's TSV
        qd web                                  the store in a browser
        qd floor RUN --layout floor.dc          paint it on the floor plan
@@ -1327,6 +1328,68 @@ def cmd_outliers(args):
     lines, ot = report_outliers(args, t, s)
     emit(args, ot, lines)
     return 0
+
+
+def cmd_check(args):
+    from . import check as checkmod
+    checks = checkmod.read_thresholds(args.against)
+    t = load(args)
+    s = subset(args, t)
+    results = checkmod.run(s, checks)
+    n = checkmod.counts(results)
+    e = getattr(t, "entry", None)
+    if args.each:
+        vt = tablemod.Table(checkmod.EACH_COLUMNS,
+                            checkmod.each_rows(results), "check")
+    else:
+        vt = tablemod.Table(checkmod.SUMMARY_COLUMNS,
+                            checkmod.summary_rows(results), "check")
+    head = "%s check -- %s against %s (%s): %d pass, %d fail, %d not " \
+        "measured" % (PROG, source_name(t), args.against, scope(args, t, s),
+                      n[checkmod.PASS], n[checkmod.FAIL],
+                      n[checkmod.UNMEASURED])
+    lines = [head]
+    if e is not None:
+        m = e.meta
+        lines.append("  run %s  %s  %s%s" % (
+            shown_id(e), m.get("name") or "", m.get("created") or "",
+            ("  " + m["command"]) if m.get("command") else ""))
+    lines.append("")
+    lines.extend(render.render_table(vt, width=width_of(args), indent="  "))
+    if args.keep:
+        rid = keep_check(args, vt, t, len(checks))
+        lines.append("")
+        lines.append("  filed as %s: qd show %s, qd web, qd export %s"
+                     % (rid, rid, rid))
+    emit(args, vt, lines)
+    return 0 if n[checkmod.PASS] == len(results) else 1
+
+
+def keep_check(args, vt, t, nchecks):
+    """File a verdict table in the store as a run of its own, kind check,
+    so qd web shows it and qd export writes it like any other."""
+    st = store_of(args)
+    prov = filing.Provost(st)
+    prov.require("file the verdicts")
+    label = "check-" + (run_label(t) or "data")
+    created = now_iso()
+    rid = new_run_id(st, label)
+    b = filing.Batch()
+    vt.name = "check"
+    vt.notes = ["qd check %s --against %s" % (
+        run_label(t) or getattr(t, "source", ""),
+        os.path.abspath(args.against))]
+    added = add_tables(b, rid, label, [(os.path.abspath(args.against), vt)])
+    if not added:
+        b.cleanup()
+        die("nothing to file")
+    b.add_own(storemod.RUNS, filing.own_tsv(storemod.RUN_COLUMNS, [run_row(
+        rid, "check", label, "check %s --against %s" % (
+            run_label(t) or "", args.against), created,
+        captures=len(b.inputs), notes="%d checks" % nchecks)]))
+    notes = file_batch(prov, b, "the verdicts")
+    filed(st, rid, notes, b)
+    return rid
 
 
 def report_outliers(args, t, s):
@@ -3167,6 +3230,21 @@ def build_parser():
     add_query(sp, sort=False)
     add_format(sp)
     sp.set_defaults(fn=cmd_outliers)
+
+    sp = verb("check", "pass or fail against a thresholds file, by "
+              "requirement")
+    sp.add_argument("ref", metavar="RUN")
+    sp.add_argument("--against", required=True, metavar="FILE",
+                    help="thresholds: req, column, op, limit [limit2, where, "
+                    "agg, unit, note] (README: qd check)")
+    sp.add_argument("--each", action="store_true",
+                    help="a row per host per check, not one per check")
+    sp.add_argument("--keep", action="store_true",
+                    help="file the verdicts in the store, for qd web and qd "
+                    "export")
+    add_query(sp, sort=False)
+    add_format(sp)
+    sp.set_defaults(fn=cmd_check)
 
     sp = verb("pivot", "long to wide: rows by columns")
     sp.add_argument("ref", metavar="RUN")
