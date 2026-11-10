@@ -119,6 +119,29 @@ beside the rows provost parsed out of its answer, and a row for a host
 that printed nothing. Whichever store it is, `provost ls` there lists what
 qd filed.
 
+### Who ran it
+
+Every run says who ran it and from where, so a fan-out is attributable
+after the fact. `qd log RUN` shows it, `qd log` lists the operator beside
+each run, and `qd web` puts it in the run's header.
+
+| `qd.runs` column | What | Recorded by |
+|---|---|---|
+| `operator` | `QD_OPERATOR`, else your login user | every run |
+| `operator_host` | the machine qd ran on | every run |
+| `ssh_user` | `--user`, else what your ssh config gives each host (`ssh -G`); hosts with users of their own give each, comma-separated | a fan-out |
+| `ssh_key` | the fingerprint of each key qd offered: the `-i` keys (or `IdentityFile`) in `--ssh`, else your agent's (`ssh-add -l`). Never the key itself | a fan-out |
+| `sudo` | `yes` or `no` | a fan-out |
+
+Anything qd cannot find out is blank, never a guess: an ssh without `-G`
+(older than OpenSSH 6.8, or a wrapper), no `ssh-add` or an empty agent,
+or a key file `ssh-keygen` cannot read. Which of several offered keys a
+host accepted is not known without connecting, so `ssh_key` lists every
+one offered. Runs filed before 0.8.2 have none of these columns and show
+blank. qd also passes the operator to provost as `PROVOST_OPERATOR` (unless
+you set it yourself), for a provost that records it (PV-027); provost
+2.3.0 does not yet.
+
 ### Named stores: `qd store`
 
 ```bash
@@ -438,6 +461,7 @@ the account's own ssh and sudo rights on the hosts.
 | `--rate` | `QD_RATE` | none: new connections as fast as `--jobs` allows; `10/s` for a bastion's `MaxStartups` |
 | `--allow` | `QD_ALLOW` | none: every command may run |
 | `--read-only` | `QD_READ_ONLY=1` | off |
+| | `QD_OPERATOR` | your login user: who a run says ran it (see Who ran it) |
 | `--store` | `QD_STORE` | a name from `qd store ls` or a directory; else the active store (see Named stores) |
 | | `QD_PROVOST` | `provost` on `PATH` |
 | | `QD_PROVOST_BATCH=0` | file one capture at a time even where provost has `batch` |

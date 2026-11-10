@@ -75,6 +75,7 @@ from . import filing, fleet, hosts as hostmod, importers, query
 from . import pacing
 from . import policy as policymod
 from . import render, stats, store as storemod, table as tablemod, tools
+from . import whoran
 from .store import describe_entry, load_ref, now_iso, shown_id, \
     split_ref, split_store
 
@@ -354,6 +355,7 @@ def run_row(rid, kind, name, command, created, **kw):
     d = {"run": rid, "kind": kind, "name": name, "command": command,
          "created": created, "finished": now_iso(), "cwd": os.getcwd(),
          "qd": VERSION}
+    d.update(whoran.local())
     d.update(kw)
     return ["" if d.get(c) is None else str(d[c])
             for c in storemod.RUN_COLUMNS]
@@ -566,6 +568,8 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
         prov = filing.Provost(st)
         prov.require("keep the answers")
     count = args.count if args.count else 10 ** 9
+    if st is not None:
+        extra = dict(whoran.fan_out(runner, hs, args.jobs), **(extra or {}))
     t0 = time.time()
     created = now_iso()
     results, interrupted = fleet.run_passes(
@@ -616,6 +620,7 @@ def fleet_runs_together(args, hs, specs, extra=None):
     prov = filing.Provost(st)
     prov.require("keep the answers")
     tasks = [(i, h) for i in range(len(specs)) for h in hs]
+    extra = dict(whoran.fan_out(runners[0], hs, args.jobs), **(extra or {}))
     t0 = time.time()
     created = now_iso()
 
@@ -1117,8 +1122,9 @@ def cmd_log(args):
         cmdline = e.meta.get("command") or ""
         rows.append([e.id, e.meta.get("kind", ""),
                      str(e.table_count()), e.summary(),
+                     e.meta.get("operator", ""),
                      cmdline if len(cmdline) <= 50 else cmdline[:47] + "..."])
-    lines = render.render_rows(["run", "kind", "tables", "size",
+    lines = render.render_rows(["run", "kind", "tables", "size", "operator",
                                 "command"], rows, numeric=[2], max_cell=64,
                                width=width_of(args))
     if len(shown) < len(entries):
