@@ -29,6 +29,7 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
 
 Examples:
   qd run --servers hosts.txt -- uname -r
+  qd run --via srun -- nvidia-smi -L    every node of the Slurm allocation
   qd probe facts inventory -s hosts.txt
   qd compare facts -c cpu.busy_pct --last 5
   qd split -s hosts.txt --by rack --out lists/
@@ -79,7 +80,7 @@ from . import VERSION
 from .common import (PROG, VERSION_TEXT, QdError, _stdio_safe, die, env,
                      env_float, env_int, plural, warn, write_text)
 from . import diff as diffmod
-from . import filing, fleet, hosts as hostmod, importers, query
+from . import filing, fleet, hosts as hostmod, importers, launch, query
 from . import pacing
 from . import policy as policymod
 from . import render, stats, store as storemod, table as tablemod, tools
@@ -213,6 +214,14 @@ def manifest_argv():
 
 
 def collect(args):
+    if getattr(args, "via", None) == "srun" and not (
+            args.servers or args.server or args.layout or args.select
+            or env("SERVERS")):
+        # inside an allocation its nodes are the fleet, not a hosts.txt
+        # that happens to be in this directory
+        hs = launch.allocation_hosts(launch.need_allocation(
+            launch.allocation()))
+        return hs[:args.first] if args.first is not None else hs
     return hostmod.collect_hosts(
         servers=args.servers, inline=args.server, layout=args.layout,
         selectors=args.select, first=args.first,
@@ -474,22 +483,48 @@ class Job(object):
         self.rc = 0 if all(r.outcome == fleet.OK for r in self.last) else 1
 
 
-def new_runner(args):
-    return fleet.Runner(ssh=args.ssh, scp=args.scp, user=args.user,
-                        timeout=args.timeout, max_output=args.max_output,
-                        remote_dir=args.remote_dir, sudo=args.sudo)
+def via_of(args):
+    via = getattr(args, "via", None) or "ssh"
+    if via not in launch.VIAS:
+        die("--via %s (QD_VIA): not a launcher qd knows; one of %s"
+            % (via, ", ".join(launch.VIAS)))
+    return via
 
 
-def check_transport(runner, pushing):
-    for tool, why in ((runner.ssh, True), (runner.scp, pushing)):
-        if why and not shutil.which(tool[0]):
-            die("cannot run %s: not found (--ssh/--scp, QD_SSH/QD_SCP) -- "
-                "no host was contacted" % tool[0])
+def new_runner(args, hs=None):
+    via = via_of(args)
+    if via == "srun" and args.user:
+        warn("--user (QD_SSH_USER) is not used with --via srun: srun runs "
+             "as you")
+    runner = launch.make(via, ssh=args.ssh, scp=args.scp,
+                         user=None if via == "srun" else args.user,
+                         timeout=args.timeout, max_output=args.max_output,
+                         remote_dir=args.remote_dir, sudo=args.sudo)
+    problem = runner.check_hosts(hs or [])
+    if problem:
+        die(problem)
+    return runner
 
 
-def dry_run_lines(runner, hs, command, push=(), stdin=None):
+def check_transport(runner, pushing, stdin=False):
+    for tool in runner.needs(pushing, stdin):
+        if not shutil.which(tool):
+            die("cannot run %s: not found (%s) -- no host was contacted" % (
+                tool, "--ssh/--scp, QD_SSH/QD_SCP" if runner.via == "ssh"
+                else "--via %s" % runner.via))
+
+
+def dry_run_lines(runner, hs, command, push=(), stdin=None, jobs=1):
+    if runner.batched:
+        # one call for every host, as it would run
+        feed = ("%s/%s" % (runner.work_dir, launch.STDIN_NAME)) if stdin \
+            else None
+        out(" ".join(shlex.quote(a) for a in runner.fan_argv(
+            hs, runner.command_for(command, bool(push)), runner.timeout,
+            min(jobs, max(1, len(hs))), feed)))
+        return
     for h in hs:
-        out(" ".join(shlex.quote(a) for a in runner.ssh_argv(
+        out(" ".join(shlex.quote(a) for a in runner.argv(
             h, runner.command_for(command, bool(push)))) +
             (" < %s" % shlex.quote(stdin) if stdin else ""))
 
@@ -565,11 +600,12 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
     if pol.active:
         extra = dict(extra or {})
         extra["policy"] = pol.notes()
-    runner = new_runner(args)
+    runner = new_runner(args, hs)
     if args.dry_run:
-        dry_run_lines(runner, hs, command, push, stdin)
+        dry_run_lines(runner, hs, command, push, stdin, args.jobs)
         return None
-    check_transport(runner, bool(push))
+    check_transport(runner, bool(push), bool(stdin))
+    context = list(context) + runner.context()
     st = prov = None
     if store and not args.no_store:
         # before the fleet, not after: answers with nowhere to go are lost
@@ -581,10 +617,16 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
         extra = dict(whoran.fan_out(runner, hs, args.jobs), **(extra or {}))
     t0 = time.time()
     created = now_iso()
+    many = None
+    if runner.batched:
+        def many(hosts, k, label):
+            return runner.run_many(hosts, command, list(push) or None,
+                                   not args.keep_remote, k, stdin,
+                                   args.jobs, label)
     results, interrupted = fleet.run_passes(
         hs, lambda h, k: runner.run_one(h, command, list(push) or None,
                                         not args.keep_remote, k, stdin),
-        args.jobs, count, args.every or 0, gate=gate)
+        args.jobs, count, args.every or 0, gate=gate, many=many)
     if not results:
         die("interrupted before any pass finished; nothing was kept", 130)
     if push and args.keep_remote:
@@ -623,8 +665,9 @@ def fleet_runs_together(args, hs, specs, extra=None):
     if pol.active:
         extra = dict(extra or {})
         extra["policy"] = pol.notes()
-    runners = [new_runner(args) for _ in specs]
-    check_transport(runners[0], False)
+    runners = [new_runner(args, hs) for _ in specs]
+    check_transport(runners[0], False, any(s for _, _, s in specs))
+    ctx = runners[0].context()
     st = store_of(args)
     prov = filing.Provost(st)
     prov.require("keep the answers")
@@ -638,18 +681,23 @@ def fleet_runs_together(args, hs, specs, extra=None):
         _, command, stdin = specs[i]
         return runners[i].run_one(h, command, None, True, k, stdin)
 
-    results, interrupted = fleet.run_passes(tasks, one, args.jobs,
-                                            gate=gate_of(args))
-    if not results:
-        die("interrupted before any host answered; nothing was kept", 130)
-    each = [[] for _ in specs]
-    for (i, _), r in zip(tasks, results):
-        each[i].append(r)
+    gate = gate_of(args)
+    if runners[0].batched and not (gate is not None and gate.active()):
+        each = run_together(args, hs, specs, runners)
+    else:
+        results, interrupted = fleet.run_passes(tasks, one, args.jobs,
+                                                gate=gate)
+        if not results:
+            die("interrupted before any host answered; nothing was kept",
+                130)
+        each = [[] for _ in specs]
+        for (i, _), r in zip(tasks, results):
+            each[i].append(r)
     b = filing.Batch()
     rids, ncaps = [], []
     for (label, _, _), rs in zip(specs, each):
         rids.append(new_run_id(st, label))
-        ncaps.append(add_answers(b, rids[-1], label, rs, 1))
+        ncaps.append(add_answers(b, rids[-1], label, rs, 1, ctx))
     for (label, command, _), rs, rid, ncap in zip(specs, each, rids, ncaps):
         # a run took as long as its slowest host
         took = round(max(r.started + r.duration for r in rs) - t0, 2)
@@ -660,6 +708,23 @@ def fleet_runs_together(args, hs, specs, extra=None):
     entries = [filed(st, rid, notes, b, cleanup=False) for rid in rids]
     b.cleanup()
     return [Job(rs, False, e, e.load("data")) for rs, e in zip(each, entries)]
+
+
+def run_together(args, hs, specs, runners):
+    """Several commands through pdsh or clush: one call each, side by
+    side, --jobs shared between them.  -> [[Result]] per spec"""
+    from concurrent.futures import ThreadPoolExecutor
+    per = max(1, args.jobs // len(specs))
+
+    def one(i):
+        _, command, stdin = specs[i]
+        return runners[i].run_many(hs, command, None, True, 1, stdin, per)
+
+    try:
+        with ThreadPoolExecutor(max_workers=len(specs)) as ex:
+            return list(ex.map(one, range(len(specs))))
+    except KeyboardInterrupt:
+        die("interrupted before any host answered; nothing was kept", 130)
 
 
 def unfiled_table(results, passes):
@@ -2629,6 +2694,10 @@ def cmd_probe(args):
     for n in names:
         name, kind, how, what, needs = probes.get(n)
         if kind == "tool":
+            if via_of(args) != "ssh":
+                warn("probe %s runs %s, which reaches the hosts over ssh "
+                     "itself: --via %s does not apply to it"
+                     % (name, how[0], via_of(args)))
             worst = max(worst, probe_tool(args, name, how, hs))
     return worst
 
@@ -3479,14 +3548,49 @@ def cmd_doctor(args):
             "parallel" if prov.has_batch() else
             "one capture at a time (this provost has no batch; a newer "
             "one files a run as one commit)"))
+    via = via_of(args)
+    line, ok = launcher_line(via, [r[0] for r in rows if r[1] == "ok"])
+    lines.append("  launcher  %s" % line)
     hints = sorted(set(tools.install_hint(m) for m in missing
                        if tools.install_hint(m)))
-    if "ssh" in missing:
+    if via == "ssh" and "ssh" in missing:
         hints.insert(0, "ssh/scp are needed for qd run: install openssh")
     if hints:
         lines.extend(next_steps([("", h) for h in hints]))
     sys.stdout.write(render.page(lines))
-    return 1 if "ssh" in missing or "scp" in missing else 0
+    if via == "ssh":
+        return 1 if "ssh" in missing or "scp" in missing else 0
+    return 0 if ok else 1
+
+
+def launcher_line(via, here):
+    """What `qd doctor` says of the launcher --via picks, and whether it
+    can run from here."""
+    if via == "ssh":
+        return ("ssh, scp for pushed files (--via or QD_VIA for srun, pdsh "
+                "or clush)", True)
+    if via == "srun":
+        alloc = launch.allocation()
+        if "srun" not in here:
+            return "srun: not found here; --via srun needs Slurm", False
+        if alloc is None:
+            return ("srun: not inside a Slurm allocation (SLURM_JOB_ID is "
+                    "not set); start qd in salloc or sbatch", False)
+        what = ["job %s" % alloc["job"]]
+        if alloc["partition"]:
+            what.append("partition %s" % alloc["partition"])
+        if alloc["nodelist"]:
+            what.append("nodes %s" % alloc["nodelist"])
+        if "scontrol" not in here:
+            what.append("no scontrol, so give the hosts (-s)")
+        return "srun, one step per host: %s" % ", ".join(what), True
+    if via not in here:
+        return "%s: not found here" % via, False
+    copier = "pdcp" if via == "pdsh" else "clush --copy"
+    extra = "" if via == "clush" or "pdcp" in here else \
+        " (no pdcp here: --push, --script and script probes need it)"
+    return ("%s, every host in one call; pushed files by %s%s"
+            % (via, copier, extra), True)
 
 
 HINTS = [
@@ -3636,6 +3740,10 @@ def seconds(text):
 
 def add_ssh(sp):
     g = sp.add_argument_group("ssh")
+    g.add_argument("--via", default=env("VIA", "ssh"), metavar="LAUNCHER",
+                   help="how the hosts are reached: ssh (default), srun "
+                   "(inside a Slurm allocation; its nodes by default), "
+                   "pdsh or clush (QD_VIA)")
     g.add_argument("-u", "--user", default=env("SSH_USER"),
                    help="ssh user (QD_SSH_USER; default: your ssh config)")
     g.add_argument("-j", "--jobs", type=positive,
@@ -3685,7 +3793,8 @@ def add_report(g, preview=20):
 def add_safety(sp):
     g = sp.add_argument_group("safety")
     g.add_argument("--dry-run", action="store_true",
-                   help="print the ssh command per host and stop")
+                   help="print the ssh (srun) command per host, or the "
+                   "pdsh or clush call, and stop")
     g.add_argument("--limit", type=positive, metavar="N",
                    help="refuse to run wider than N hosts without --yes")
     g.add_argument("--yes", action="store_true",
@@ -4272,6 +4381,9 @@ def build_parser():
     sp.set_defaults(fn=cmd_web)
 
     sp = verb("doctor", "which of the toolchain this machine can drive")
+    sp.add_argument("--via", default=env("VIA", "ssh"), metavar="LAUNCHER",
+                    help="check this launcher: ssh (default), srun, pdsh "
+                    "or clush (QD_VIA); exit 1 if it cannot run from here")
     sp.set_defaults(fn=cmd_doctor)
     sp = verb("hints", "what you want to know -> the command")
     sp.set_defaults(fn=cmd_hints)

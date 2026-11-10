@@ -5,6 +5,53 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.11.0 — 2026-11-10
+
+Hosts reached through a Slurm allocation, pdsh or clush as well as ssh
+(QD-008).
+
+### Added
+- **`--via ssh|srun|pdsh|clush`** (`QD_VIA`) on `qd run`, `qd probe`,
+  `qd campaign` and `qd doe`: how the hosts are reached. ssh stays the
+  default and is unchanged. Every launcher keeps the same contract -- a row
+  per host, a host that did not answer a row too, the same outcomes, the
+  same push and cleanup -- in `quarterdeck/launch.py`, behind the hooks
+  `fleet.Runner` now has (`argv`, `_copy`, `outcome_of`, `needs`,
+  `context`).
+  - **srun**: inside the allocation qd is given (never one it asks for),
+    one `srun --overlap -N1 -n1 -w NODE sh -c CMD` step per host. With no
+    hosts named, the fleet is the allocation's nodes (`scontrol show
+    hostnames`). Every answer's prologue carries `sched.job` (provost's
+    run-manifest key, PV-020) and `sched.partition`; a node srun could not
+    start a step on is `unreachable` with srun's reason; srun's own "task
+    0: Exited with exit code N" line is dropped from stderr, the status
+    being `rc`. Files and stdin go through the step's stdin; a timeout
+    stops srun with SIGTERM so its step ends.
+  - **pdsh** and **clush**: one call for every host, the answers told
+    apart by the `host: ` before each line, and each host's exit status
+    from a line qd adds after the command (an `exit` in the command, and a
+    command's own 255, included). Files by `pdcp` or `clush --copy`, then
+    checked on each host for size; a command's stdin is pushed as a file.
+    `--jobs` is the fan-out, `--timeout` each host's `-u`. With `--rate`,
+    each host is a call of its own. A port per host, or two hosts at one
+    address, is refused.
+- `qd doctor --via LAUNCHER` checks it: found here, and for srun, the
+  allocation (job, partition, nodes); exit 1 if it cannot run. Every
+  `qd doctor` lists srun, scontrol, pdsh, pdcp and clush.
+- `qd.runs` has `via` and `sched_job` columns, and `qd log RUN` says
+  `via  srun, job N` for a run that was not over ssh.
+- `--dry-run` prints the srun line per host, or the one pdsh or clush call.
+- `tests/test_via.sh`, with stand-ins for srun, scontrol, pdsh, pdcp and
+  clush: every node answering, one failing, one not reached, the job
+  captured, the same table through ssh and through pdsh or clush, pushes,
+  timeouts, probes through every launcher, and the doctor.
+
+### Fixed
+- A run filed into a dataset whose other runs carried other `#%` keys --
+  a host attribute they had and it did not, or srun's `sched.job` --
+  showed provost's record number as a column `n`, and `key: value`
+  answers as a row per line instead of one per host.
+
 ## 0.10.1 — 2026-11-10
 
 A run filed one capture at a time no longer reads back a table short
@@ -106,6 +153,7 @@ onto it.
   report shares; and a run's table can be read by its listing
   (`Run.load_info`), which two of a `qd do`'s same-named tables need.
   Neither changes any output.
+
 
 ## 0.9.1 — 2026-11-10
 

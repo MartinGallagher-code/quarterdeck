@@ -118,12 +118,25 @@ def tool_version(argv, timeout=10):
     return lines[0].strip() if lines else ""
 
 
+# the launchers --via can use besides ssh, and what each is for
+LAUNCHERS = [
+    ("srun", "--via srun (Slurm): a step per host"),
+    ("scontrol", "--via srun: the allocation's nodes"),
+    ("pdsh", "--via pdsh: every host in one call"),
+    ("pdcp", "--via pdsh: pushed files"),
+    ("clush", "--via clush: every host in one call"),
+]
+
+
 def doctor_rows():
     rows = []
     for name in ("ssh", "scp"):
         p = shutil.which(name)
         rows.append([name, "ok" if p else "MISSING", p or "", "",
                      "every fan-out"])
+    for name, use in LAUNCHERS:
+        p = shutil.which(name)
+        rows.append([name, "ok" if p else "-", p or "", "", use])
     for name, _, _, use in TOOLS:
         argv = find_tool(name)
         if argv:

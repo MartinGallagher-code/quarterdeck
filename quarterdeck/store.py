@@ -50,7 +50,7 @@ RUN_COLUMNS = ("run", "kind", "name", "command", "created", "finished",
                "unreachable", "push_failed", "passes", "every", "rc",
                "captures", "tool", "ran", "version", "cwd", "qd", "notes",
                "group", "part", "factors", "operator", "operator_host",
-               "ssh_user", "ssh_key", "sudo")
+               "ssh_user", "ssh_key", "sudo", "via", "sched_job")
 HOST_COLUMNS = ("run", "host", "addr", "pass", "ts", "status", "rc",
                 "duration_s", "bytes", "error", "attrs", "stderr")
 OUTCOMES = ("ok", "failed", "timeout", "unreachable", "push-failed")
@@ -197,17 +197,28 @@ def context_columns(meta):
 REC = "\x00n"
 
 
-def provost_columns(columns, context=()):
+def provost_columns(columns, context=(), rows=None):
     """The indexes of the columns provost puts first in a dataset -- '#',
     its capture id, its record number -- found by place, under whatever its
     clash rule named them (`_capture`, `_n` beside a data column of that
     name), past the capture's context columns (`context`, which provost
     puts between the capture id and the record number).  A data column
-    called n or capture is data."""
+    called n or capture is data.
+
+    Given the capture's `rows`, a column blank in all of them is passed
+    over on the way to the record number too: it is another capture's
+    context -- a host attribute, srun's sched.job -- that provost put
+    there when the dataset was made, and this capture did not carry."""
+    blank = set()
+    if rows is not None:
+        blank = set(i for i in range(len(columns))
+                    if not any(i < len(r) and r[i].strip() for r in rows))
     pats = (r"^#$", r"^_*capture$", r"^_*n$")
     out, k = [], 0
     for i, c in enumerate(columns):
         if i and c in context:
+            continue
+        if k == 2 and i in blank and not re.match(pats[2], c):
             continue
         while k < len(pats) and not re.match(pats[k], c):
             k += 1
@@ -246,7 +257,11 @@ def widen(records):
     are not that shape (a real table stays a table)."""
     if not records:
         return None
-    cols = [c for c, _ in records[0] if c not in LONG_EXTRA and c != REC]
+    # a column blank on every row is another capture's context, not this
+    # answer's (see provost_columns)
+    cols = [c for c, _ in records[0] if c not in LONG_EXTRA and c != REC
+            and (c in LONG_KEYS or c == "value"
+                 or any(dict(r).get(c, "").strip() for r in records))]
     if len(cols) != 2 or cols[0] not in LONG_KEYS or cols[1] != "value":
         return None
     out, seen = [], set()
@@ -867,7 +882,7 @@ class Run(object):
                     if ds == "unsorted":
                         recs.append((ds, []))   # held: its text is raw
                         continue
-                    own = provost_columns(t.columns, drop)
+                    own = provost_columns(t.columns, drop, t.rows)
                     rec = own[-1] if own and re.match(
                         r"^_*n$", t.columns[own[-1]]) else None
                     keep = [i for i, c in enumerate(t.columns)
@@ -928,7 +943,7 @@ class Run(object):
         cols, rows = [], []
         for ds, t in self.store.capture_rows(cid):
             own = set(t.columns[i] for i in provost_columns(t.columns,
-                                                            drop))
+                                                            drop, t.rows))
             keep = [c for c in t.columns if c not in own and c not in drop]
             for c in keep:
                 if c not in cols:
@@ -1125,6 +1140,9 @@ def describe_entry(e):
            {"yes": "under sudo", "no": "no sudo"}.get(m.get("sudo", ""), "")]
     if any(via):
         out.append("  ssh       %s" % ", ".join(v for v in via if v))
+    if m.get("via") and m["via"] != "ssh":
+        out.append("  via       %s%s" % (m["via"], (", job %s" % m[
+            "sched_job"]) if m.get("sched_job") else ""))
     h = m.get("hosts")
     if h:
         parts = ["%d hosts" % h.get("total", 0)] + [
