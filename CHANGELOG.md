@@ -5,7 +5,7 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
-## 0.8.3 — 2026-11-10
+## 0.8.4 — 2026-11-10
 
 `qd web` served beyond this machine needs a token, can serve https, and is
 read-only there (QD-017).
@@ -40,6 +40,28 @@ read-only there (QD-017).
 - A request path starting `//` is collapsed to one slash before it is
   routed, as Python 3.12's `http.server` already does, so `//name/` is a
   path on every Python and never read as a host.
+
+## 0.8.3 — 2026-11-10
+
+What may be sent to a fleet: an allow-list and a read-only mode (QD-015).
+
+### Added
+- **`--allow FILE`** (`QD_ALLOW`) on `qd run`, `probe`, `campaign` and
+  `doe`: only commands matching a pattern in FILE run. Anything else is
+  refused (exit 2), unless `--confirm` is given and `CONFIRM` is typed at
+  the terminal; with no terminal it is refused outright. The probes qd
+  ships run by name.
+- **`--read-only`** (`QD_READ_ONLY=1`): only the probes and allow-listed
+  commands; `--push`, `--script`, `--sudo` and `qd do` are refused, and
+  no confirmation lifts it.
+- Every run under a policy records it in its qd.runs notes (read-only,
+  the allow-list's name and sha256, any confirmed override and who
+  confirmed it); every refusal goes to `policy.log` in qd's cache.
+- The mutation guard (DANGER) still applies on top. README's new
+  "Allow-lists and read-only" says plainly that this is policy, not a
+  sandbox.
+- New module `quarterdeck/policy.py`; new suite `tests/test_policy.sh`
+  (9 cases, the confirmation typed at a real pseudo-terminal).
 
 ## 0.8.2 — 2026-11-10
 
