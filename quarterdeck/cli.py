@@ -15,6 +15,9 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
        qd show|stats|freq|hist|outliers|pivot|trend RUN ...
        qd diff [OLD] NEW                       what changed between two
        qd compare RUN --last N -c COL          N runs side by side
+       qd peers define|ls|show|rm              hosts that should agree, named
+       qd baseline set|ls|show|rm              qualified baselines, for
+                                               compare --baseline NAME
        qd check RUN --against limits.tsv       pass/fail by requirement
        qd export RUN [--format overlay]        CSV, JSON, the viewer's TSV,
                                                Splunk HEC, OpenMetrics
@@ -33,6 +36,9 @@ Examples:
   qd doe analyze iperf -c mbps
   qd do -- mx run --for 60
   qd stats latest A --by rack           qd outliers latest mbps
+  qd peers define sku --by sku          qd outliers latest mbps --peers sku
+  qd baseline set gold iperf --last 5 --peers sku -c mbps
+  qd compare iperf --last 5 --baseline gold
   qd diff kernel@wr01 kernel@wr02       qd compare facts@lab facts@bench
   qd view latest                        qd web
 
@@ -130,7 +136,8 @@ def out(text=""):
 # the verbs that file into the store, or delete from it; and the actions
 # that do, of the verbs that only sometimes do
 WRITES = ("run", "probe", "do", "import", "rm")
-WRITE_ACTIONS = {"campaign": ("new", "run", "retry"), "doe": ("run",)}
+WRITE_ACTIONS = {"campaign": ("new", "run", "retry"), "doe": ("run",),
+                 "peers": ("define", "rm"), "baseline": ("set", "rm")}
 
 
 def store_of(args):
@@ -1218,6 +1225,15 @@ def _one_column_report(t, s, col, args):
     return lines
 
 
+def peers_of(args, st=None):
+    """--peers NAME: the peer group's definition, from the store."""
+    from . import peers as peersmod
+    name = getattr(args, "peers", None)
+    if not name:
+        return None
+    return peersmod.load(st or home_store(args), name)
+
+
 def cmd_stats(args):
     t = load(args)
     s = subset(args, t)
@@ -1225,12 +1241,23 @@ def cmd_stats(args):
     for b in args.by or []:
         by.extend(x.strip() for x in b.split(",") if x.strip())
     aggs = [a.strip() for a in args.agg.split(",")] if args.agg else None
+    pg = peers_of(args)
+    none = 0
+    if pg is not None:
+        # the peer group as a column of its own, grouped by first
+        s, pcol, none = pg.tagged(s)
+        by = [pcol] + by
     if by:
         g = stats.group_by(s, by, args.columns or None, aggs)
         lines = ["%s stats -- %s by %s (%s): %s" % (
-            PROG, source_name(t), ", ".join(by), scope(args, t, s),
-            plural(len(g.rows), "group")), ""]
+            PROG, source_name(t), ", ".join(by) if pg is None else
+            ", ".join(["peer group %s (%s)" % (pg.name, pg.how())] + by[1:]),
+            scope(args, t, s), plural(len(g.rows), "group")), ""]
         lines.extend(render.render_table(g, width=width_of(args)))
+        if none:
+            lines.append("")
+            lines.append("  %s in no peer group of %s: left out" % (
+                plural(none, "row"), pg.name))
         emit(args, g, lines)
         return 0
     if len(args.columns or []) == 1 and (args.format or "text") == "text":
@@ -1433,23 +1460,22 @@ def report_outliers(args, t, s):
         die("value mixes %d tests here; pick one: --where test=%s"
             % (len(set(s.values("test"))), s.values("test")[0]))
     per = None if args.no_per else (args.per or stats.default_per(s, col))
-    rows, info = stats.outliers(s, col, per, args.z)
+    method = getattr(args, "method", None) or "mad"
+    k = getattr(args, "k", None) or 1.5
+    pg = peers_of(args)
+    if pg is not None:
+        return report_peer_outliers(args, t, s, col, per, method, k, pg)
+    rows, info = stats.outliers(s, col, per, args.z, method, k)
     if not info["n"]:
         die("%s holds no numbers to compare" % col, 1)
     who = per or ("host" if s.has("host") else "row")
-    lines = ["%s outliers -- %s%s in %s (%s): %d %ss, median %s, MAD %s, "
-             "robust z beyond %s" % (
-                 PROG, col, " (median per %s)" % per if per else "",
-                 source_name(t), scope(args, t, s), info["n"], who,
-                 stats.fmt_num(info["median"]), stats.fmt_num(info["mad"]),
-                 stats.fmt_num(args.z)), ""]
-    tr = []
-    for key, v, med, rel, rz, side in rows:
-        tr.append([key, stats.fmt_num(v), "" if rel is None else
-                   stats.fmt_num(rel) + "%",
-                   ("%+.1f" % rz) if abs(rz) != float("inf") else
-                   ("+inf" if rz > 0 else "-inf"), side])
-    ot = tablemod.Table([who, "value", "of_median", "robust_z", "side"], tr,
+    lines = ["%s outliers -- %s%s in %s (%s): %d %ss, median %s, %s, %s" % (
+        PROG, col, " (median per %s)" % per if per else "",
+        source_name(t), scope(args, t, s), info["n"], who,
+        stats.fmt_num(info["median"]), spread_text(info),
+        rule_text(method, args, k)), ""]
+    ot = tablemod.Table([who, "value", "of_median", score_name(method),
+                         "side"], [outlier_cells(r) for r in rows],
                         "outliers")
     if rows:
         lines.extend(render.render_table(ot, width=width_of(args),
@@ -1458,10 +1484,86 @@ def report_outliers(args, t, s):
         lines.append("  %d of %d %ss sit far from the rest%s" % (
             len(rows), info["n"], who,
             "; most of them agree exactly, so every value that differs is "
-            "listed" if not info["mad"] else ""))
+            "listed" if not (info["mad"] if method == "mad" else info["iqr"])
+            else ""))
     else:
-        lines.append("  none: every %s is within %s robust z of the median"
-                     % (who, stats.fmt_num(args.z)))
+        lines.append("  none: every %s is %s" % (who, within_text(method,
+                                                                args, k)))
+    return lines, ot
+
+
+def score_name(method):
+    return "robust_z" if method == "mad" else "iqrs_out"
+
+
+def spread_text(info):
+    if info.get("method") == "iqr":
+        return "quartiles %s .. %s" % (stats.fmt_num(info["q1"]),
+                                       stats.fmt_num(info["q3"]))
+    return "MAD %s" % stats.fmt_num(info["mad"])
+
+
+def rule_text(method, args, k):
+    if method == "iqr":
+        return "past Tukey's fences (%s IQR beyond a quartile)" % \
+            stats.fmt_num(k)
+    return "robust z beyond %s" % stats.fmt_num(args.z)
+
+
+def within_text(method, args, k):
+    if method == "iqr":
+        return "inside Tukey's fences (%s IQR)" % stats.fmt_num(k)
+    return "within %s robust z of the median" % stats.fmt_num(args.z)
+
+
+def outlier_cells(r):
+    key, v, med, rel, score, side = r
+    return [key, stats.fmt_num(v), "" if rel is None else
+            stats.fmt_num(rel) + "%",
+            ("%+.1f" % score) if abs(score) != float("inf") else
+            ("+inf" if score > 0 else "-inf"), side]
+
+
+def report_peer_outliers(args, t, s, col, per, method, k, pg):
+    """outliers --peers: each host held against its own peer group."""
+    groups, none = pg.split(s)
+    rows, infos = stats.peer_outliers(groups, col, per, args.z, method, k)
+    n = sum(i["n"] for _, i in infos)
+    if not n:
+        die("%s holds no numbers to compare in any peer group of %s"
+            % (col, pg.name), 1)
+    who = per or ("host" if s.has("host") else "row")
+    lines = ["%s outliers -- %s%s in %s (%s): %d %ss in %s of %s (%s), "
+             "each against its own group, %s" % (
+                 PROG, col, " (median per %s)" % per if per else "",
+                 source_name(t), scope(args, t, s), n, who,
+                 plural(sum(1 for _, i in infos if i["n"]), "peer group"),
+                 pg.name, pg.how(), rule_text(method, args, k)), ""]
+    spread = "mad" if method == "mad" else "iqr"
+    gt = tablemod.Table(
+        ["peers", who + "s", "median", spread, "outliers"],
+        [[p, str(i["n"]), stats.fmt_num(i.get("median")),
+          stats.fmt_num(i.get(spread)),
+          str(sum(1 for q, _ in rows if q == p))]
+         for p, i in infos if i["n"]], "groups")
+    lines.extend(render.render_table(gt, width=width_of(args), indent="  "))
+    lines.append("")
+    ot = tablemod.Table(["peers", who, "value", "of_median",
+                         score_name(method), "side"],
+                        [[p] + outlier_cells(r) for p, r in rows], "outliers")
+    if rows:
+        lines.extend(render.render_table(ot, width=width_of(args),
+                                         indent="  "))
+        lines.append("")
+        lines.append("  %d of %d %ss sit far from their peers" % (
+            len(rows), n, who))
+    else:
+        lines.append("  none: every %s is %s" % (
+            who, within_text(method, args, k).replace("the median",
+                                                      "its group's median")))
+    if none:
+        lines.append("  %s in no peer group of %s: left out" % (
+            plural(none, "row"), pg.name))
     return lines, ot
 
 
@@ -1768,6 +1870,8 @@ def cmd_compare(args):
                     for r in refs] or ["latest@" + m.group(2)]
     st = st or home_store(args)
     where = lambda ref: ref_store(args, ref)  # noqa: E731
+    if qualified_name(args):
+        return compare_qualified(args, st, refs, last, where)
     entries, baseline = comparemod.with_baseline(
         st, comparemod.pick(st, refs, args.group, last, where),
         args.baseline, where)
@@ -1776,10 +1880,128 @@ def cmd_compare(args):
         tables = [t.derive(rows=query.where(t, args.where)) for t in tables]
     key = [k.strip() for k in args.key.split(",")] if args.key else None
     res = comparemod.compare(tables, args.column, key, args.drift, args.agg,
-                             baseline)
+                             baseline, peers_of(args))
     lines = compare_report(res, args)
-    emit(args, comparemod.wide_table(res), lines)
-    return 1 if any(flags for _, _, flags in res.keys) else 0
+    emit(args, comparemod.peer_table(res) if res.peers is not None
+         else comparemod.wide_table(res), lines)
+    return 1 if any(flags for _, _, flags in res.keys) or \
+        any(flags for _, _, flags in res.peer_rows) else 0
+
+
+def qualified_name(args):
+    """--baseline NAME, when NAME is a qualified baseline in the store
+    (which a run of that name cannot be: `qd baseline set` refuses one)."""
+    from . import baseline as blmod
+    ref = getattr(args, "baseline", None)
+    if not ref or split_store(ref)[1]:
+        return None
+    return ref if blmod.exists(home_store(args), ref) else None
+
+
+def compare_qualified(args, st, refs, last, where):
+    """compare --baseline NAME: later runs held against a qualified
+    baseline -- drift, effect size and significance per peer group."""
+    from . import baseline as blmod, compare as comparemod, \
+        peers as peersmod
+    home = home_store(args)
+    bl = blmod.load(home, args.baseline)
+    if args.peers and args.peers != bl.peers:
+        die("the baseline %s is %s: compare against it groups the way it "
+            "was set (leave --peers out)" % (
+                bl.name, "by peer group %s" % bl.peers if bl.peers
+                else "of every key together, no peer group"))
+    if args.key and [k.strip() for k in args.key.split(",")] != bl.key:
+        die("the baseline %s matches rows on %s: compare against it does "
+            "too (leave --key out)" % (bl.name, ",".join(bl.key)))
+    if args.agg not in ("median", bl.agg):
+        die("the baseline %s reduced each key by %s: compare against it "
+            "does too (leave --agg out)" % (bl.name, bl.agg))
+    if not refs and not args.group:
+        refs = [bl.like] if bl.like else []
+    entries = comparemod.pick(st, refs, args.group, last, where, least=1)
+    # the runs it was set from are not held against it a second time
+    mine = set((home.root, rid) for rid in bl.runs)
+    keep = [e for e in entries if comparemod.ident(e) not in mine]
+    if not keep:
+        die("every run picked is one the baseline %s was set from: compare "
+            "later runs against it (%s compare RUN... --baseline %s)"
+            % (bl.name, PROG, bl.name))
+    tables = [blmod.table_of(e, bl, args.table) for e in keep]
+    if args.where:
+        tables = [t.derive(rows=query.where(t, args.where)) for t in tables]
+    now = peersmod.load(home, bl.peers) if bl.peers and \
+        peersmod.exists(home, bl.peers) else None
+    res = blmod.against(bl, keep, tables, args.column, args.drift,
+                        args.alpha, now, args.min_drift)
+    if len(keep) < len(entries):
+        res.notes.insert(0, "%s the baseline was set from: left out" % (
+            plural(len(entries) - len(keep), "run")))
+    lines = qualified_report(res, args)
+    emit(args, blmod.group_table(res), lines)
+    return 1 if blmod.flagged(res) else 0
+
+
+def qualified_report(res, args):
+    from . import baseline as blmod
+    w = width_of(args)
+    bl = res.baseline
+    lines = ["%s compare -- %s against baseline %s (%s), by %s" % (
+        PROG, plural(len(res.runs), "run"), bl.name, bl.summary(),
+        ",".join(bl.key)),
+        "  set by %s at %s from %s%s" % (
+            bl.operator or "(nobody recorded)", bl.created,
+            plural(len(bl.runs), "run"), ("; " + bl.note) if bl.note
+            else ""),
+        "  a change: a difference of %s%% or more that the Mann-Whitney U "
+        "test finds significant (Holm-adjusted p below %s; %d runs a side "
+        "or more), or a median moved past %s%%" % (
+            stats.fmt_num(res.min_drift), stats.fmt_num(res.alpha),
+            blmod.MIN_RUNS, stats.fmt_num(res.drift))]
+    for r in res.runs:
+        e = r["entry"]
+        cmdline = render.first_line(e.meta.get("command") or "") \
+            if e is not None else ""
+        lines.append("  %-4s %s  %s" % (r["label"], r["id"], cmdline))
+    for n in res.notes:
+        lines.append("  note  %s" % n)
+    lines.append("")
+    gt = blmod.group_table(res)
+    show = ["column"] if len(res.columns) > 1 else []
+    show += ["peers", "base_runs", "base_median", "runs", "median",
+             "drift_pct", "effect", "p", "p_holm", "verdict", "flags"]
+    unit = bl.units.get(res.columns[0], "") if len(res.columns) == 1 else ""
+    lines.append("  %s%s, each peer group: the baseline's runs against "
+                 "these" % (", ".join(res.columns),
+                            " (%s)" % unit if unit else ""))
+    lines.extend(render.render_table(gt.derive(columns=show), width=w,
+                                     indent="  "))
+    changed = [g for g in res.groups if g["flags"]]
+    lines.append("")
+    lines.append("  %d of %s changed" % (
+        len(changed), plural(len(res.groups), "peer group" if len(
+            res.columns) == 1 else "column and peer group")))
+    kt = blmod.key_table(res, only_flagged=True)
+    nk = len(res.keys)
+    lines.append("  %d of %s moved past %s%% from the baseline's median" % (
+        len(kt.rows), plural(nk, "key"), stats.fmt_num(res.drift)))
+    if kt.rows:
+        lim = len(kt.rows) if args.limit == 0 else args.limit
+        lines.extend(render.render_rows(kt.columns, kt.rows[:lim],
+                                        max_cell=48, width=w, indent="  "))
+        if len(kt.rows) > lim:
+            lines.append("  ... %d more: --limit 0 lists every one"
+                         % (len(kt.rows) - lim))
+    tips = [("%s baseline show %s" % (PROG, bl.name),
+             "what the baseline holds, run by run")]
+    if any(g["verdict"] == "too few runs" for g in res.groups):
+        tips.append(("%s compare %s --last %d --baseline %s" % (
+            PROG, bl.like or "RUN", max(blmod.MIN_RUNS, 5), bl.name),
+            "enough runs for the significance test"))
+    tips.append(("%s compare ... --baseline %s --format csv" % (PROG,
+                                                               bl.name),
+                 "the table above, for a spreadsheet"))
+    lines.extend(next_steps(tips))
+    return lines
 
 
 def compare_report(res, args):
@@ -1813,6 +2035,16 @@ def compare_report(res, args):
         unit = (" (%s)" % res.unit) if res.unit else ""
         lines.append("  %s%s" % (res.column, unit))
         lines.extend(render.render_table(show, width=w, indent="  "))
+        if res.peers is not None:
+            pt = comparemod.peer_table(res)
+            moved = sum(1 for _, _, f in res.peer_rows if f)
+            lines.append("")
+            lines.append("  by peer group %s (%s): each group's median of "
+                         "its %ss; %d of %s changed" % (
+                             res.peers.name, res.peers.how(),
+                             ",".join(res.key), moved,
+                             plural(len(res.peer_rows), "group")))
+            lines.extend(render.render_table(pt, width=w, indent="  "))
     elif res.columns:
         cols = ["column"] + [r["label"] for r in res.runs] + ["change_pct"]
         rows = []
@@ -1849,6 +2081,298 @@ def compare_report(res, args):
     tips.append(("%s compare ... --format csv" % PROG,
                  "every key's value per run, for a spreadsheet"))
     lines.extend(next_steps(tips))
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# peers and baseline: peer groups, and what good looked like
+# ---------------------------------------------------------------------------
+
+def _words(values):
+    out_ = []
+    for v in values or []:
+        out_.extend(x.strip() for x in v.split(",") if x.strip())
+    return out_
+
+
+def cmd_peers(args):
+    from . import peers as peersmod
+    st = store_of(args)
+    what = args.action
+    if what == "ls":
+        ps = peersmod.every(st)
+        rows = [[p.name, p.kind(), p.how(),
+                 str(len(p.groups())) if p.members is not None else "",
+                 str(len(p.members)) if p.members is not None else "",
+                 p.created, p.operator, p.note] for p in ps]
+        t = tablemod.Table(["peers", "kind", "how", "groups", "hosts",
+                            "created", "operator", "note"], rows, "peers")
+        if not ps:
+            lines = ["no peer groups in the store %s yet: %s peers define "
+                     "NAME --by COLUMN makes one" % (st.shown(), PROG)]
+        else:
+            lines = ["%s peers -- %s in %s" % (
+                PROG, plural(len(ps), "peer group"), st.shown()), ""]
+            lines.extend(render.render_table(t, width=width_of(args),
+                                             indent="  "))
+        emit(args, t, lines)
+        return 0
+    if not args.name:
+        die("%s peers %s NAME: which peer group?" % (PROG, what))
+    if what == "define":
+        return peers_define(args, st, peersmod)
+    if what == "show":
+        p = peersmod.load(st, args.name)
+        lines = ["%s peers -- %s: %s, defined by %s at %s%s" % (
+            PROG, p.name, p.how(), p.operator or "(nobody recorded)",
+            p.created, ("; " + p.note) if p.note else "")]
+        if args.ref:
+            t = load(args, args.ref)
+            groups, none = p.split(t)
+            hi = peersmod.host_index(t)
+            rows = []
+            for g, gt in groups:
+                hosts = []
+                if hi is not None:
+                    for r in gt.rows:
+                        if r[hi] not in hosts:
+                            hosts.append(r[hi])
+                rows.append([g, str(len(gt.rows)), str(len(hosts)),
+                             label_list(hosts, False, 6)])
+            st_t = tablemod.Table(["peers", "rows", "hosts", "members"],
+                                  rows, "peers")
+            lines.append("  in %s: %s%s" % (
+                source_name(t), plural(len(groups), "group"),
+                ", %s in none" % plural(none, "row") if none else ""))
+        elif p.members is not None:
+            by = {}
+            for h in sorted(p.members):
+                by.setdefault(p.members[h], []).append(h)
+            st_t = tablemod.Table(["peers", "hosts", "members"], [
+                [g, str(len(by[g])), label_list(by[g], False, 6)]
+                for g in p.groups()], "peers")
+        else:
+            st_t = tablemod.Table(["peers", "by"], [[p.name, ",".join(p.by)]],
+                                  "peers")
+            lines.append("  a row's group is its value of %s: name a RUN "
+                         "to see the groups it makes (%s peers show %s RUN)"
+                         % (",".join(p.by), PROG, p.name))
+        lines.append("")
+        lines.extend(render.render_table(st_t, width=width_of(args),
+                                         indent="  "))
+        emit(args, st_t, lines)
+        return 0
+    if what == "rm":
+        p = peersmod.load(st, args.name)
+        out("%s peers rm: %s (%s), from %s" % (PROG, p.name, p.how(),
+                                               st.shown()))
+        if not args.yes:
+            die("nothing removed: add --yes to remove it (the store's "
+                "history keeps it, and baselines set by it keep their own "
+                "record)")
+        peersmod.remove(st, filing.Provost(st), p.name)
+        out("%s peers rm: removed %s" % (PROG, p.name))
+        return 0
+    die("unknown peers action %r (define, ls, show, rm)" % what)
+
+
+def peers_define(args, st, peersmod):
+    peersmod.check_name(args.name)
+    given = [f for f, v in (("--by", args.by), ("--from", args.from_file),
+                            ("--facts", args.facts)) if v]
+    if len(given) != 1:
+        die("define it one way: --by COLS (a column says), --from FILE "
+            "(host and group), or --facts COLS (what the latest facts run "
+            "says of each host)%s" % (" (got %s)" % ", ".join(given)
+                                      if given else ""))
+    if args.run and not (args.by or args.facts):
+        die("--run goes with --by COLS: each host's COLS as that run has it")
+    prov = filing.Provost(st)
+    prov.require("keep the peer group")
+    blank = []
+    if args.from_file:
+        p = peersmod.Peers(args.name, (), peersmod.from_file(args.from_file),
+                           os.path.abspath(args.from_file))
+    elif args.facts or args.run:
+        cols = _words([args.facts or args.by])
+        ref = args.run or "facts"
+        t = load(args, ref)
+        e = getattr(t, "entry", None)
+        members, blank = peersmod.from_run(t, cols, args.name)
+        if not members:
+            die("no host in %s has %s measured: nothing to group" % (
+                source_name(t), ",".join(cols)))
+        p = peersmod.Peers(args.name, [t.colname(c) for c in cols], members,
+                           shown_id(e) if e is not None else ref)
+    else:
+        p = peersmod.Peers(args.name, _words([args.by]))
+    p.note = args.note or ""
+    peersmod.define(st, prov, p, args.replace)
+    lines = ["%s peers -- defined %s: %s" % (PROG, p.name, p.how())]
+    if p.members is not None:
+        by = {}
+        for h in sorted(p.members):
+            by.setdefault(p.members[h], []).append(h)
+        lines.append("  %s of %s" % (plural(len(by), "group"),
+                                     plural(len(p.members), "host")))
+        lines.extend(render.render_rows(
+            ["peers", "hosts", "members"],
+            [[g, str(len(by[g])), label_list(by[g], False, 6)]
+             for g in p.groups()], numeric=[1], width=width_of(args),
+            indent="  "))
+    if blank:
+        lines.append("  %s with %s blank, in no group: %s" % (
+            plural(len(blank), "host"), ",".join(p.by),
+            label_list(blank, False, 8)))
+    lines.extend(next_steps([
+        ("%s stats latest COLUMN --peers %s" % (PROG, p.name),
+         "centre and spread, peer group by peer group"),
+        ("%s outliers latest COLUMN --peers %s" % (PROG, p.name),
+         "each host against its own peers"),
+        ("%s baseline set NAME RUN --last 5 --peers %s" % (PROG, p.name),
+         "what good looks like, per peer group, for compare --baseline")]))
+    sys.stdout.write(render.page(lines))
+    return 0
+
+
+def cmd_baseline(args):
+    from . import baseline as blmod, compare as comparemod, \
+        peers as peersmod
+    st = store_of(args)
+    what = args.action
+    if what == "ls":
+        bls = [blmod.load(st, n) for n in blmod.names(st)]
+        t = tablemod.Table(
+            ["baseline", "created", "operator", "runs", "columns", "peers",
+             "note"],
+            [[b.name, b.created, b.operator, str(len(b.runs)),
+              ",".join(b.columns), b.peers, b.note] for b in bls],
+            "baselines")
+        if not bls:
+            lines = ["no baselines in the store %s yet: %s baseline set NAME "
+                     "RUN --last 5 makes one" % (st.shown(), PROG)]
+        else:
+            lines = ["%s baseline -- %s in %s" % (
+                PROG, plural(len(bls), "baseline"), st.shown()), ""]
+            lines.extend(render.render_table(t, width=width_of(args),
+                                             indent="  "))
+        emit(args, t, lines)
+        return 0
+    if not args.name:
+        die("%s baseline %s NAME: which baseline?" % (PROG, what))
+    if what == "show":
+        bl = blmod.load(st, args.name)
+        t = blmod.show_table(bl)
+        lines = baseline_head(bl)
+        lines.append("")
+        lines.extend(render.render_table(t, width=width_of(args),
+                                         indent="  "))
+        lines.extend(next_steps([("%s compare %s --last 5 --baseline %s" % (
+            PROG, bl.like or "RUN", bl.name), "later runs against it")]))
+        emit(args, t, lines)
+        return 0
+    if what == "rm":
+        bl = blmod.load(st, args.name)
+        out("%s baseline rm: %s (%s), from %s" % (PROG, bl.name,
+                                                  bl.summary(), st.shown()))
+        if not args.yes:
+            die("nothing removed: add --yes to remove it (the store's "
+                "history keeps it)")
+        blmod.remove(st, filing.Provost(st), bl.name)
+        out("%s baseline rm: removed %s" % (PROG, bl.name))
+        return 0
+    if what != "set":
+        die("unknown baseline action %r (set, ls, show, rm)" % what)
+    return baseline_set(args, st, blmod, comparemod, peersmod)
+
+
+def baseline_set(args, st, blmod, comparemod, peersmod):
+    blmod.check_name(st, args.name)
+    if blmod.exists(st, args.name) and not args.replace:
+        old = blmod.load(st, args.name)
+        die("baseline %s is set already (by %s at %s): --replace files the "
+            "new one over it (the old one stays in the store's history)"
+            % (old.name, old.operator or "nobody recorded", old.created))
+    if args.agg in ("distinct", "first", "last", "top", "worst", "auto") or \
+            args.agg not in stats.AGGS:
+        die("a baseline reduces a key's repeated rows to one number: --agg "
+            "median, mean, min, max, sum, stdev, range, p05..p99 or count "
+            "(not %s)" % args.agg)
+    if not args.refs and not args.group:
+        die("set it from which runs? %s baseline set NAME RUN [RUN...], or "
+            "RUN --last N, or --group CAMPAIGN" % PROG)
+    prov = filing.Provost(st)
+    prov.require("keep the baseline")
+    if len(args.refs) == 1 and not args.last and not args.group:
+        entries = [st.resolve(args.refs[0])]
+    else:
+        entries = comparemod.pick(st, args.refs, args.group, args.last,
+                                  least=1)
+    seen, uniq = set(), []
+    for e in entries:
+        if not hasattr(e, "captures"):
+            die("%s is a whole dataset, not a run: a baseline is set from "
+                "runs" % e.id)
+        if e.id not in seen:
+            seen.add(e.id)
+            uniq.append(e)
+    entries = uniq
+    tables = [e.load(args.table) for e in entries]
+    if args.where:
+        tables = [t.derive(rows=query.where(t, args.where)) for t in tables]
+    key = [k.strip() for k in args.key.split(",")] if args.key else \
+        comparemod._key_for(tables, None)
+    for t in tables:
+        for k in key:
+            t.index(k)
+    cols = _words(args.column)
+    if cols:
+        named = []
+        for c in cols:
+            have = [t for t in tables if t.has(c)]
+            if not have:
+                die("no run of these has a column %r (columns: %s)" % (
+                    c, ", ".join(tables[0].columns)))
+            named.append(have[0].colname(c))
+        cols = named
+    else:
+        cols = comparemod.common_numeric(tables)
+        if not cols:
+            die("the runs share no numeric column to keep: name one with -c")
+    pg = peersmod.load(st, args.peers) if args.peers else None
+    bl = blmod.build(args.name, entries, tables, cols, key, args.agg, pg,
+                     args.note or "")
+    blmod.file_baseline(st, prov, bl)
+    lines = ["%s baseline -- set %s" % (PROG, bl.name)] + \
+        baseline_head(bl)[1:]
+    lines.append("")
+    lines.extend(render.render_table(blmod.show_table(bl),
+                                     width=width_of(args), indent="  "))
+    if len(entries) < blmod.MIN_RUNS:
+        lines.append("")
+        lines.append("  from %s: compare against it can say how far a later "
+                     "run drifted, but testing whether that is more than "
+                     "noise takes %d runs a side (4 a side to reach p 0.03)"
+                     % (plural(len(entries), "run"), blmod.MIN_RUNS))
+    lines.extend(next_steps([
+        ("%s compare %s --last 5 --baseline %s" % (
+            PROG, bl.like or "RUN", bl.name), "later runs against it"),
+        ("%s baseline show %s" % (PROG, bl.name), "what it holds")]))
+    sys.stdout.write(render.page(lines))
+    return 0
+
+
+def baseline_head(bl):
+    lines = ["%s baseline -- %s: %s, reduced by %s per %s" % (
+        PROG, bl.name, bl.summary(), bl.agg, ",".join(bl.key)),
+        "  set by %s at %s%s" % (bl.operator or "(nobody recorded)",
+                                 bl.created, ("; " + bl.note) if bl.note
+                                 else ""),
+        "  from %s" % " ".join(bl.runs)]
+    if bl.peers:
+        lines.append("  peer group %s, %s" % (
+            bl.peers, ("by " + ",".join(bl.by)) if bl.by else
+            "each host's group as it was then"))
     return lines
 
 
@@ -2340,7 +2864,8 @@ def cmd_store(args):
 
 
 # qd's own records: a run is deleted from them, never one of them whole
-OWN_DATASETS = (storemod.RUNS, storemod.HOSTS, "qd.campaigns", "qd.designs")
+OWN_DATASETS = (storemod.RUNS, storemod.HOSTS, "qd.campaigns", "qd.designs",
+                "qd.peers", "qd.baselines")
 
 
 def cmd_rm(args):
@@ -2939,6 +3464,11 @@ HINTS = [
      "qd doe run design.json -s hosts.txt -- 'CMD {factor}'; qd doe analyze ..."),
     ("Half the fleet against the other half", "qd split -s hosts.txt --ab --out ab/"),
     ("Who is far from the rest?", "qd outliers latest COLUMN"),
+    ("Who is far from their own peers?",
+     "qd peers define sku --by sku; qd outliers latest COLUMN --peers sku"),
+    ("Is a small slide real, or noise?",
+     "qd baseline set gold NAME --last 5; qd compare NAME --last 5 "
+     "--baseline gold"),
     ("Centre and spread, per rack", "qd stats latest COLUMN --by rack"),
     ("What changed since last time?", "qd diff latest"),
     ("One host's answer, exactly", "provost source cNNNN   (qd log latest names them)"),
@@ -3251,6 +3781,9 @@ def build_parser():
     sp.add_argument("--agg", metavar="LIST",
                     help="with --by: mean,median,min,max,sum,stdev,p05,p95,"
                     "p99,range,count,distinct,first,last,top,worst,auto")
+    sp.add_argument("--peers", metavar="NAME",
+                    help="one row per peer group of NAME (qd peers ls), "
+                    "before any --by")
     add_query(sp, sort=False)
     add_format(sp)
     sp.set_defaults(fn=cmd_stats)
@@ -3294,6 +3827,15 @@ def build_parser():
     sp.add_argument("--z", type=float, default=env_float("Z", 3.5),
                     help="robust z-score past which a value is an outlier "
                     "(QD_Z, 3.5)")
+    sp.add_argument("--method", choices=stats.OUTLIER_METHODS, default="mad",
+                    help="mad: robust z, by the median and MAD (default); "
+                    "iqr: Tukey's fences, by the quartiles")
+    sp.add_argument("--k", type=float, default=1.5,
+                    help="with --method iqr: how many IQRs past a quartile "
+                    "is out (1.5)")
+    sp.add_argument("--peers", metavar="NAME",
+                    help="each host against its own peer group of NAME, not "
+                    "the whole fleet")
     add_query(sp, sort=False)
     add_format(sp)
     sp.set_defaults(fn=cmd_outliers)
@@ -3373,8 +3915,20 @@ def build_parser():
                     "--store or STORE")
     sp.add_argument("--group", metavar="NAME",
                     help="every run of a campaign or a design")
-    sp.add_argument("--baseline", metavar="RUN",
-                    help="what the others are measured against (the first)")
+    sp.add_argument("--baseline", metavar="RUN|NAME",
+                    help="what the others are measured against: a run (the "
+                    "first), or a qualified baseline's NAME (qd baseline "
+                    "ls), which adds the significance test")
+    sp.add_argument("--peers", metavar="NAME",
+                    help="with -c: each peer group's median per run too")
+    sp.add_argument("--alpha", type=float, default=env_float("ALPHA", 0.05),
+                    metavar="P", help="against a qualified baseline: a "
+                    "Holm-adjusted p below P is significant (QD_ALPHA, 0.05)")
+    sp.add_argument("--min-drift", type=float,
+                    default=env_float("MIN_DRIFT", 1.0), metavar="PCT",
+                    help="against a qualified baseline: a significant "
+                    "difference smaller than PCT %% is not a change "
+                    "(QD_MIN_DRIFT, 1)")
     sp.add_argument("--key", metavar="COLS",
                     help="match rows on these (default host, as diff does)")
     sp.add_argument("--drift", type=float, default=env_float("DRIFT", 5.0),
@@ -3390,6 +3944,67 @@ def build_parser():
                     help="changed keys to list (30; 0 for all)")
     add_format(sp)
     sp.set_defaults(fn=cmd_compare)
+
+    sp = verb("peers", "peer groups: hosts that should measure alike, "
+              "named and kept (define, ls, show, rm)")
+    sp.add_argument("action", choices=["define", "ls", "show", "rm"])
+    sp.add_argument("name", nargs="?", metavar="NAME")
+    sp.add_argument("ref", nargs="?", metavar="RUN",
+                    help="show: the groups the hosts of RUN fall in")
+    g = sp.add_argument_group("define (one of)")
+    g.add_argument("--by", metavar="COLS",
+                   help="a row's group is its value of COLS (rack, sku), in "
+                   "whatever is read")
+    g.add_argument("--from", dest="from_file", metavar="FILE",
+                   help="host and group, from a file (TSV, CSV, or two "
+                   "words a line)")
+    g.add_argument("--facts", metavar="COLS",
+                   help="each host's COLS in the latest facts run, frozen: "
+                   "--by COLS --run facts")
+    g.add_argument("--run", metavar="RUN",
+                   help="with --by: freeze each host's group as RUN has it")
+    sp.add_argument("--note", metavar="TEXT", help="define: why, kept with it")
+    sp.add_argument("--replace", action="store_true",
+                    help="define: file over a definition of that name")
+    sp.add_argument("--yes", action="store_true",
+                    help="rm: do it; without it, only say what would go")
+    add_format(sp)
+    sp.set_defaults(fn=cmd_peers)
+
+    sp = verb("baseline", "qualified baselines: blessed runs' figures, kept, "
+              "for compare --baseline NAME (set, ls, show, rm)")
+    sp.add_argument("action", choices=["set", "ls", "show", "rm"])
+    sp.add_argument("name", nargs="?", metavar="NAME")
+    sp.add_argument("refs", nargs="*", metavar="RUN",
+                    help="set: the runs it is made from; one RUN with "
+                    "--last N takes the last N runs like it")
+    sp.add_argument("--last", type=positive, metavar="N",
+                    help="set: the last N runs like RUN")
+    sp.add_argument("--group", metavar="NAME",
+                    help="set: every run of a campaign or a design")
+    sp.add_argument("--peers", metavar="NAME",
+                    help="set: figures per peer group of NAME (default: "
+                    "every key together)")
+    sp.add_argument("-c", "--column", action="append", metavar="COL",
+                    help="set: the columns to keep (repeatable, or a,b; "
+                    "default every numeric column the runs share)")
+    sp.add_argument("--key", metavar="COLS",
+                    help="set: match rows on these (default host, as compare "
+                    "does)")
+    sp.add_argument("--agg", default="median",
+                    help="set: how a key's repeated rows reduce (median)")
+    sp.add_argument("--table", metavar="NAME",
+                    help="set: which table of each run (data)")
+    sp.add_argument("--where", action="append", metavar="EXPR",
+                    help="set: applied to every run")
+    sp.add_argument("--note", metavar="TEXT",
+                    help="set: why these runs are what good looks like")
+    sp.add_argument("--replace", action="store_true",
+                    help="set: file over a baseline of that name")
+    sp.add_argument("--yes", action="store_true",
+                    help="rm: do it; without it, only say what would go")
+    add_format(sp)
+    sp.set_defaults(fn=cmd_baseline)
 
     sp = verb("split", "cut a host list into several: by rack, shards, "
               "waves, random, A/B, pairs ...")

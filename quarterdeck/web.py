@@ -42,8 +42,9 @@ from urllib.parse import parse_qs, parse_qsl, quote, unquote, \
     urlencode, urlparse
 
 from . import VERSION
-from . import campaign as camp, compare as comparemod, diff as diffmod, \
-    doe as doemod, query, stats, table as tablemod, tools
+from . import baseline as blmod, campaign as camp, compare as comparemod, \
+    diff as diffmod, doe as doemod, peers as peersmod, query, stats, \
+    table as tablemod, tools
 from .common import PROG, QdError, die, env_float, write_text
 from . import store as storemod
 from .store import cache_root, describe_entry, operator_shown, \
@@ -374,7 +375,101 @@ class Api(object):
 
     def compare(self, q):
         """N runs side by side: `qd compare`'s engine, its run picking
-        and baseline rule included."""
+        and baseline rule included.  baseline=NAME of a qualified baseline
+        holds the runs against it instead, as `qd compare --baseline NAME`
+        does; peers=NAME adds each peer group's median per run."""
+        bname = one(q, "baseline")
+        if bname and split_store(bname)[1] is None and \
+                blmod.exists(self.book, bname):
+            return self.compare_qualified(q, bname)
+        out = self.compare_runs(q)
+        out.update(self.choices())
+        return out
+
+    def choices(self):
+        """What the page offers to compare by: the store's peer groups
+        and qualified baselines."""
+        return {"peer_groups": peersmod.names(self.book),
+                "baselines": blmod.names(self.book)}
+
+    def compare_qualified(self, q, bname):
+        bl = blmod.load(self.book, bname)
+        group = one(q, "group") or None
+        last = int(one(q, "last") or 0) or None
+        e_ref = one(q, "e") or bl.like or "latest"
+        picked = comparemod.pick(self.book, [e_ref], group, last,
+                                 self.store_for, least=1)
+        mine = set((self.book.root, rid) for rid in bl.runs)
+        keep = [e for e in picked if comparemod.ident(e) not in mine]
+        if not keep:
+            die("every run picked is one the baseline %s was set from: "
+                "pick later runs" % bl.name)
+        tables = [blmod.table_of(e, bl, one(q, "t")) for e in keep]
+        wh = [w for w in q.get("where", []) if w.strip()]
+        if wh:
+            tables = [t.derive(rows=query.where(t, wh)) for t in tables]
+        drift = float(one(q, "drift") or env_float("DRIFT", 5.0))
+        alpha = float(one(q, "alpha") or env_float("ALPHA", 0.05))
+        floor = float(one(q, "min_drift") or env_float("MIN_DRIFT", 1.0))
+        now = peersmod.load(self.book, bl.peers) if bl.peers and \
+            peersmod.exists(self.book, bl.peers) else None
+        res = blmod.against(bl, keep, tables, one(q, "c") or None, drift,
+                            alpha, now, floor)
+        if len(keep) < len(picked):
+            res.notes.insert(0, "%d run%s the baseline was set from: left "
+                             "out" % (len(picked) - len(keep),
+                                      "" if len(picked) - len(keep) == 1
+                                      else "s"))
+        runs = []
+        for r in res.runs:
+            m = r["entry"].meta if r["entry"] is not None else {}
+            h = r["hosts"]
+            runs.append({"label": r["label"], "id": r["id"],
+                         "created": r["created"], "rows": r["rows"],
+                         "command": m.get("command", ""),
+                         "hosts_ok": ("%d/%d" % (h.get("ok", 0),
+                                                 h.get("total", 0)))
+                         if h else ""})
+        only = one(q, "changed") != "0"
+        keys = [{"column": k["column"], "peer": k["peer"],
+                 "key": list(k["key"]), "baseline": k["base_median"],
+                 "base_n": k["base_n"], "values": k["values"],
+                 "median": k["median"], "drift_pct": k["drift_pct"],
+                 "flags": k["flags"]}
+                for k in res.keys if k["flags"] or not only][:500]
+        out = {"qualified": {
+            "name": bl.name, "created": bl.created, "operator": bl.operator,
+            "note": bl.note, "runs": bl.runs, "peers": bl.peers,
+            "by": bl.by, "agg": bl.agg, "columns": bl.columns,
+            "units": bl.units, "summary": bl.summary(),
+            "min_runs": blmod.MIN_RUNS},
+            "runs": runs, "key": bl.key, "column": one(q, "c") or None,
+            "columns_compared": res.columns, "drift": res.drift,
+            "alpha": res.alpha, "min_drift": res.min_drift,
+            "notes": res.notes,
+            "groups": [{"column": g["column"], "peer": g["peer"],
+                        "peer_shown": blmod.shown_peer(g["peer"]),
+                        "base_n": g["base_n"],
+                        "base_median": g["base_median"],
+                        "base_mad": g["base_mad"], "n": g["n"],
+                        "values": g["values"], "median": g["median"],
+                        "drift_pct": g["drift_pct"], "effect": g["effect"],
+                        "p": g["p"], "p_holm": g["p_holm"],
+                        # as the terminal prints them, so the two agree
+                        "effect_text": "" if g["effect"] is None
+                        else "%+.2f" % g["effect"],
+                        "p_text": blmod.p_text(g["p"]),
+                        "p_holm_text": blmod.p_text(g["p_holm"]),
+                        "test": g["test"], "verdict": g["verdict"],
+                        "flags": g["flags"]} for g in res.groups],
+            "groups_changed": sum(1 for g in res.groups if g["flags"]),
+            "keys": keys, "keys_total": len(res.keys),
+            "changed": sum(1 for k in res.keys if k["flags"]),
+            "only_changed": only}
+        out.update(self.choices())
+        return out
+
+    def compare_runs(self, q):
         group = one(q, "group") or None
         last = int(one(q, "last") or 0) or None
         # also=REF@STORE (any number): runs from other stores, set beside
@@ -404,8 +499,10 @@ class Api(object):
                if k.strip()] or None
         drift = float(one(q, "drift") or env_float("DRIFT", 5.0))
         agg = one(q, "agg") or "median"
+        pname = one(q, "peers")
+        peers = peersmod.load(self.book, pname) if pname else None
         res = comparemod.compare(tables, one(q, "c") or None, key, drift,
-                                 agg, base)
+                                 agg, base, peers)
         runs = []
         for r in res.runs:
             m = r["entry"].meta if r["entry"] is not None else {}
@@ -438,7 +535,14 @@ class Api(object):
                             for c, meds, d in
                             comparemod.column_changes(res)],
                 "keys": keys, "keys_total": len(res.keys),
-                "changed": changed, "only_changed": only}
+                "changed": changed, "only_changed": only,
+                "peers": {"name": peers.name, "how": peers.how(),
+                          "rows": [{"peer": p, "medians": meds,
+                                    "change_pct":
+                                    comparemod.last_change(res, meds),
+                                    "flags": flags}
+                                   for p, meds, flags in res.peer_rows]}
+                if peers is not None else None}
 
     def groups(self, q):
         """The campaigns and designs in the store, how far each has got,

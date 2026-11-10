@@ -54,12 +54,19 @@ def cell(text):
         .replace("\n", " ")
 
 
-def own_tsv(columns, rows):
-    """qd's own tables, as provost is to read them: free text escaped."""
+def own_tsv(columns, rows, spaces=False):
+    """qd's own tables, as provost is to read them: free text escaped.
+
+    spaces=True escapes a space in free text too (\\x20), for tables whose
+    text repeats down a column (a baseline's note, on every row of it):
+    provost's TSV reader takes a column of cells like `see 3 4` for two
+    columns and splits it.  Numbers in a list go with `;` between them,
+    for the same reason."""
     text = [c in storemod.TEXT_COLUMNS for c in columns]
+    esc = storemod.escape_spaces if spaces else storemod.escape
     lines = ["\t".join(columns)]
     for r in rows:
-        lines.append("\t".join(storemod.escape(v) if t else cell(v)
+        lines.append("\t".join(esc(v) if t else cell(v)
                                for t, v in zip(text, r)))
     return "\n".join(lines) + "\n"
 

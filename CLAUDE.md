@@ -34,9 +34,21 @@ stores read from a git copy -- is `quarterdeck/stores.py`.
   Anything from a dataset goes into the page with `textContent`.
 - **Standard library only, Python 3.6 floor** (`tests/check_python_compat.sh`
   here, vermin in CI). No f-strings, by the house style.
-- **Every change moves the version**: `quarterdeck/__init__.py`,
-  `pyproject.toml`, and a `## X.Y.Z — YYYY-MM-DD` section at the top of
-  `CHANGELOG.md`, all in the same pull request.
+- **Every change moves the version**, however small (the owner's rule,
+  shared_tools BN-002): `quarterdeck/__init__.py`, `pyproject.toml`, and a
+  `## X.Y.Z — YYYY-MM-DD` section at the top of `CHANGELOG.md`, all in the
+  same pull request, never an "Unreleased" heading. Patch for fixes, docs,
+  tests and CI; minor for anything new a user can use; major only when
+  something that worked stops working the way it did.
+  `tests/check_version.sh` (shared_tools' template; only its `places()` is
+  this repository's) fails when the three disagree, and CI's **version**
+  job also fails a pull request whose version is not greater than its base
+  branch's, and a push to `main` whose version is not greater than what
+  `main` had before it. If `main` moves while a pull request is open,
+  rebase and bump again. Publishing is a separate step, and a person's
+  call: a GitHub release tagged `vX.Y.Z`, which `release.yml` uploads to
+  PyPI. A number that is never published is fine; a change with no number
+  is not.
 - `--help` stays a reference card; README.md is the manual.
 
 ## Tests
@@ -81,6 +93,12 @@ which keeps every project's tickets as files and moves each one Backlog → In P
    ~~~bash
    <shared_tools clone>/scripts/ticket.py new quarterdeck "Imperative title" --request "the request, in the user's own words"
    ~~~
+
+**Every change moves the version**, however small: a pull request into `main` raises
+it in every place it is written and opens `CHANGELOG.md` with that version's own
+dated section, never an "Unreleased" heading left for later. CI fails a pull request
+whose version is not greater than its base branch's. This file's own section on the
+version says where it is written.
 
 The board: https://claude.ai/artifact/HrB3RpVpqGGQS7UZgZsMJm
 

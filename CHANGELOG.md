@@ -5,10 +5,10 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
-## 0.8.7 — 2026-11-10
+## 0.9.1 — 2026-11-10
 
 A run filed one capture at a time no longer reads back a table short
-(QD-022). 0.8.6 is BN-002's number (#24, open alongside this one).
+(QD-022). Started as 0.8.7; renumbered on top of 0.9.0 (QD-009).
 
 ### Fixed
 - **Without provost's `batch` (PyPI's provost 2.1.0, or
@@ -52,6 +52,78 @@ A run filed one capture at a time no longer reads back a table short
   run`s side by side. On a machine with that `mkdir`, the two can take the
   lock together and a capture can be lost. README says so where it
   describes a second campaign worker. The fix belongs in provost.
+
+## 0.9.0 — 2026-11-10
+
+Peer groups and qualified baselines, kept in the store, and a significance
+test that tells a small real slide from run-to-run noise (QD-009).
+
+### Added
+- **`qd peers define NAME`**: a peer group, the hosts that ought to measure
+  alike, kept in the store as qd's own table `qd.peers`. `--by COLS` is a
+  rule (a row's group is its value of COLS, read from whatever is looked
+  at); `--from FILE` (host and group) and `--facts COLS` (each host's COLS
+  from the latest facts run, or `--run RUN`) are lists, frozen when
+  defined. `qd peers ls`, `show NAME [RUN]`, `rm NAME --yes`;
+  `--replace` files a new definition over an old one.
+- **`--peers NAME`** on `qd stats` (a row per peer group, before any
+  `--by`), `qd outliers` (each host against its own group's median and
+  spread, not the fleet's) and `qd compare -c COL` (each group's median per
+  run, flagged past `--drift`).
+- **`qd baseline set NAME RUN...`** (or `RUN --last N`, `--group NAME`;
+  `--peers`, `-c`, `--key`, `--agg`, `--where`, `--note`): a qualified
+  baseline, kept as `qd.baselines` with who set it and when, the runs, and
+  per column, peer group and host every run's value with their median,
+  MAD and count. `qd baseline ls`, `show NAME`, `rm NAME --yes`. A name
+  that is a run's is refused.
+- **`qd compare ... --baseline NAME`** with a qualified baseline: per
+  column and peer group the drift, the effect size (rank-biserial), the
+  Mann-Whitney U p, the Holm-adjusted p across every test in the
+  comparison, and a verdict; host by host, the drift from the baseline's
+  median. A significant difference of `--min-drift` percent or more (1,
+  `QD_MIN_DRIFT`) is a change even inside `--drift`; a drift past `--drift`
+  is still one. Fewer than three runs a side: "too few
+  runs", and the drift alone. `--alpha P` (`QD_ALPHA`, 0.05). The runs the
+  baseline was set from are left out.
+- `qd outliers --method iqr` (Tukey's fences, `--k`, 1.5) beside the robust
+  z, which stays the default.
+- `qd web`'s Compare tab: a Peer groups picker, and qualified baselines in
+  the Baseline list, with the engine's figures (`/api/compare` takes
+  `peers=` and a qualified `baseline=`, and lists both).
+- `stats.mann_whitney`, `smallest_p` and `holm`, standard library only,
+  matching scipy's `mannwhitneyu` (exact for 8 or fewer with no ties, else
+  the normal approximation with tie and continuity corrections) to 1e-15
+  over 4,000 random samples; the suite holds scipy's figures as constants.
+- `tests/test_peers.sh`.
+
+### Changed
+- `qd rm` refuses to delete `qd.peers` and `qd.baselines` whole, as it
+  refuses qd's other records.
+- qd's own tables may escape a space as `\x20` (`filing.own_tsv(...,
+  spaces=True)`, used by the two new tables): provost's TSV reader splits
+  a column of cells like `see 3 4` into two. Reading any table unescapes
+  it; nothing already filed changes.
+
+### Not changed
+- doe has no unpaired two-sample test (its `compare` is a paired t-test
+  between two sessions matched by factor levels, and needs numpy and
+  scipy), so the test is qd's, in the standard library.
+
+## 0.8.6 — 2026-11-10
+
+The version check also compares with the base branch (shared_tools BN-002).
+Nothing about `qd` itself changed.
+
+### Tests
+- **`tests/check_version.sh` is shared_tools' template copy now**: the same
+  agreement check (`quarterdeck/__init__.py`, `pyproject.toml`, the top of
+  `CHANGELOG.md`) that `tests/check.sh`, CI and `release.yml` run, and given
+  a commit it also fails unless the version is greater than that commit's.
+  CI's **version** job runs it against the base branch on a pull request and
+  against what `main` was before a push to it, so a pull request that
+  forgets the bump, or two that take the same number, fail there.
+  `CLAUDE.md` and README say so, and the ticket snippet in `CLAUDE.md` is
+  the current one.
 
 ## 0.8.5 — 2026-11-10
 
