@@ -22,6 +22,9 @@ from concurrent.futures import ThreadPoolExecutor
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
             "-o", "StrictHostKeyChecking=accept-new"]
 
+# The file in every directory qd makes on a host, holding the run's id.
+SENTINEL = ".qd-owned"
+
 OK, FAILED, TIMEOUT, UNREACHABLE, PUSH_FAILED = (
     "ok", "failed", "timeout", "unreachable", "push-failed")
 
@@ -70,8 +73,11 @@ class Runner(object):
         # --remote-dir, and only that is removed afterwards: never
         # --remote-dir itself (~/bin, say, and everything in it), nor a
         # directory another run or another user is working in.
-        self.work_dir = "%s/qd.%s" % (remote_dir.rstrip("/"),
-                                      secrets.token_hex(6))
+        # The run id names the directory and is written into it, in
+        # SENTINEL, when it is made: cleanup removes a directory only if
+        # it is still this run's (see guarded_rm).
+        self.run_id = secrets.token_hex(6)
+        self.work_dir = "%s/qd.%s" % (remote_dir.rstrip("/"), self.run_id)
         # hosts where this run made the work directory, and where it made
         # --remote-dir too (so that is removed again, if it is empty)
         self._made = {}
@@ -171,15 +177,25 @@ class Runner(object):
         return rc, text(p.stdout), text(p.stderr)
 
     def push(self, host, files):
+        for f in files:
+            if os.path.basename(f) == SENTINEL:
+                return 1, ("qd: cannot push a file named %s: it is the "
+                           "mark qd leaves in its own directory" % SENTINEL)
         d, w = shlex.quote(self.remote_dir), shlex.quote(self.work_dir)
         # mkdir -m 700 refuses a path that is there already, so nothing
         # someone else put there (a directory, a link) is written into; a
         # later pass of a --keep-remote run finds its own directory again
+        s = shlex.quote("%s/%s" % (self.work_dir, SENTINEL))
+        rid = shlex.quote(self.run_id)
+        # a directory this run makes gets the sentinel at once; one that is
+        # there already (a later pass) must hold this run's
         cmd = ("{ [ -d %s ] || echo qd-made-parent; } && mkdir -p %s && "
-               "{ mkdir -m 700 %s 2>/dev/null || "
-               "{ [ -d %s ] && [ ! -L %s ] && [ -O %s ]; } || "
+               "{ { mkdir -m 700 %s 2>/dev/null && "
+               "printf '%%s\\n' %s > %s; } || "
+               "{ [ -d %s ] && [ ! -L %s ] && [ -O %s ] && [ ! -L %s ] && "
+               "[ \"$(cat %s 2>/dev/null)\" = %s ]; } || "
                "{ echo %s >&2; exit 1; }; }") % (
-                   d, d, w, w, w, w, shlex.quote(
+                   d, d, w, rid, s, w, w, w, s, s, rid, shlex.quote(
                        "qd: %s is there already, and is not this run's"
                        % self.work_dir))
         rc, out, err = self._exec(self.ssh_argv(host, cmd), 60)
@@ -204,15 +220,17 @@ class Runner(object):
     def cleanup(self, host):
         """Remove this run's directory from a host -- under sudo when the
         command ran under it, or what it made as root stays -- and
-        --remote-dir too if this run made it and it is empty now.
-        -> an error to report, or ''."""
+        --remote-dir too if this run made it and it is empty now.  The
+        checks of guarded_rm run on the host, under the same sudo as the
+        delete, so a work directory computed wrong is refused there and
+        reported rather than removed.  -> an error to report, or ''."""
         if host.name not in self._made:
             return ""
-        cmd = self.wrap("rm -rf %s" % shlex.quote(self.work_dir))
+        cmd = guarded_rm(self.work_dir, self.run_id)
         if self._made[host.name]:
             cmd += " && { rmdir %s 2>/dev/null || true; }" % shlex.quote(
                 self.remote_dir)
-        rc, _, err = self._exec(self.ssh_argv(host, cmd), 60)
+        rc, _, err = self._exec(self.ssh_argv(host, self.wrap(cmd)), 60)
         if rc == 0:
             return ""
         first = (err or "").strip().splitlines()
@@ -264,6 +282,44 @@ class Runner(object):
         return r
 
 
+def guarded_rm(work_dir, run_id):
+    """The shell that removes a run's directory on a host, and nothing else.
+
+    It deletes only when every check holds, on the host itself: the path's
+    last part is exactly `qd.<run id>` (so never `/`, `~`, an empty path or
+    --remote-dir itself), no part of it is `..`, it is a directory and not
+    a symlink, and it holds SENTINEL, a plain file, with this run's id.
+    A directory that is not there is nothing to remove.  Anything else is
+    refused with a `qd: refusing to remove` line on stderr and exit 3,
+    which cleanup reports.  This is the one `rm -rf` qd sends to a host.
+    """
+    w = shlex.quote(work_dir)
+    s = shlex.quote("%s/%s" % (work_dir, SENTINEL))
+    rid = shlex.quote(run_id)
+    name = shlex.quote("qd." + run_id)
+
+    def refuse(why):
+        return "{ echo %s >&2; exit 3; }" % shlex.quote(
+            "qd: refusing to remove %s: %s" % (work_dir, why))
+
+    return (
+        "( w=%s; "
+        "case \"/$w\" in */%s) ;; *) %s ;; esac; "
+        "case \"/$w/\" in */../*) %s ;; esac; "
+        "if [ ! -e \"$w\" ] && [ ! -L \"$w\" ]; then exit 0; fi; "
+        "[ ! -L \"$w\" ] || %s; "
+        "[ -d \"$w\" ] || %s; "
+        "[ -f %s ] && [ ! -L %s ] || %s; "
+        "[ \"$(cat %s)\" = %s ] || %s; "
+        "rm -rf -- \"$w\" )") % (
+            w, name, refuse("not this run's qd.%s directory" % run_id),
+            refuse("the path has a .. in it"),
+            refuse("it is a symlink"),
+            refuse("it is not a directory"),
+            s, s, refuse("it holds no %s" % SENTINEL),
+            s, rid, refuse("its %s is another run's" % SENTINEL))
+
+
 def progress(msg):
     if sys.stderr.isatty():
         sys.stderr.write("\r\033[K%s" % msg)
@@ -296,21 +352,72 @@ def fan_out(hosts, fn, jobs, label=""):
     return results
 
 
-def run_passes(hosts, fn, jobs, count=1, every=0.0, sleep=time.sleep):
+# Open files a host in flight holds in qd: its ssh's stdout and stderr
+# pipes, a stdin file, the selector, and one for luck; and what qd keeps
+# open besides (QD-019, measured by tests/scale.sh).
+FDS_PER_HOST = 5
+FDS_RESERVED = 40
+
+
+def fit_jobs(jobs, limits=None):
+    """(jobs, note): as many hosts at once as the open-file limit allows.
+    The soft limit is raised towards the hard one when it is short; if
+    even that is not enough, fewer hosts run at once and the note says
+    why.  Running out mid-fan-out is worse than slower: every ssh that
+    cannot get a pipe reads as a host that did not answer.  `limits`
+    stands in for the resource module, for the tests."""
+    try:
+        res = limits
+        if res is None:
+            import resource as res
+    except ImportError:             # not POSIX: nothing to ask
+        return jobs, ""
+    need = FDS_RESERVED + FDS_PER_HOST * jobs
+    soft, hard = res.getrlimit(res.RLIMIT_NOFILE)
+    if soft == res.RLIM_INFINITY or soft >= need:
+        return jobs, ""
+    want = need if hard == res.RLIM_INFINITY else min(hard, need)
+    if want > soft:
+        try:
+            res.setrlimit(res.RLIMIT_NOFILE, (want, hard))
+            soft = want
+        except (ValueError, OSError):
+            pass
+    if soft >= need:
+        return jobs, ""
+    fit = max(1, (soft - FDS_RESERVED) // FDS_PER_HOST)
+    return fit, ("%d hosts at once need about %d open files and the limit "
+                 "is %d (ulimit -n), so %d run at once instead; raise "
+                 "`ulimit -n` for more" % (jobs, need, soft, fit))
+
+
+def run_passes(hosts, fn, jobs, count=1, every=0.0, sleep=time.sleep,
+               gate=None):
     """`count` passes over the fleet, one starting every `every` seconds.
 
     A pass that runs longer than the interval is followed straight away by
     the next rather than overlapping it.  Ctrl-C between or during passes
-    keeps every pass that finished.  -> (results, interrupted)
+    keeps every pass that finished.  `gate` (pacing.Gate) caps hosts
+    per attribute value and spaces their starts.  -> (results, interrupted)
     """
     results = []
     interrupted = False
+    jobs, note = fit_jobs(min(jobs, max(1, len(hosts))))
+    if note:
+        sys.stderr.write("qd: %s\n" % note)
     try:
         for k in range(1, count + 1):
             t0 = time.monotonic()
             label = "pass %d/%d: " % (k, count) if count > 1 else ""
-            results.extend(fan_out(hosts, lambda h, k=k: fn(h, k), jobs,
-                                   label))
+            if gate is not None and gate.active():
+                from .pacing import gated_fan_out
+                results.extend(gated_fan_out(
+                    hosts, lambda h, k=k: fn(h, k), jobs, gate,
+                    label=label, progress=progress))
+                progress_done()
+            else:
+                results.extend(fan_out(hosts, lambda h, k=k: fn(h, k), jobs,
+                                       label))
             if k < count and every:
                 left = every - (time.monotonic() - t0)
                 if left > 0:
