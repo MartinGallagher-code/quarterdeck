@@ -403,6 +403,50 @@ the host's `error` says `qd: refusing to remove` and why.
 `--keep-remote` leaves the directory, mark and all.
 `tests/test_cleanup.sh` holds qd to this.
 
+### Allow-lists and read-only
+
+The mutation guard says what may *not* run, and no such list is ever
+complete. For a system under test that must not be changed, say what
+*may*:
+
+```bash
+cat allow.txt
+# what may run on the system under test
+uname *
+cat /proc/*
+nvidia-smi --query-gpu=* --format=csv
+
+qd run --allow allow.txt -s hosts.txt -- uname -r       # runs
+qd run --allow allow.txt -s hosts.txt -- echo hi        # refused
+qd run --allow allow.txt --confirm -s hosts.txt -- echo hi   # asks: type CONFIRM
+qd probe facts inventory --read-only -s hosts.txt       # probes still run
+```
+
+- **`--allow FILE`** (`QD_ALLOW`): one pattern a line, `#` for comments.
+  A pattern matches the whole command as it would be sent (spaces
+  collapsed), with `*` for anything and `?` for one character, so
+  `uname *` does not allow `uname -r; reboot`. A command no pattern
+  matches is refused, with exit 2, unless `--confirm` is given *and*
+  someone at the terminal types `CONFIRM`; with nothing attached to the
+  terminal it is refused outright. The probes qd ships run by name.
+- **`--read-only`** (`QD_READ_ONLY=1`): only the probes and allow-listed
+  commands run, and no confirmation lifts it. `--push`, `--script` and
+  `--sudo` are refused, and so is `qd do`, whose tools deploy agents and
+  servers to the hosts.
+- **On record:** every run under a policy says so in its notes (`qd log
+  RUN`): read-only, the allow-list's name and the first 12 hex digits of
+  its sha256, and any command confirmed outside it, with who confirmed.
+  A refusal files no run, so each one is appended to `policy.log` in
+  qd's cache (`~/.cache/quarterdeck/`): time, operator, verb, command and
+  reason, tab-separated.
+- The mutation guard still applies on top: an allow-list that names
+  `rm *` does not let `rm -rf` past it without `--yes`.
+
+**This is policy, not a sandbox.** An allow-listed shell, a script the
+hosts already hold, or a quoting trick gets past any list of patterns.
+It stops the mistakes and the out-of-scope commands; the real control is
+the account's own ssh and sudo rights on the hosts.
+
 ### Every knob has a flag and a variable
 
 | Flag | Variable | Default |
@@ -415,6 +459,8 @@ the host's `error` says `qd: refusing to remove` and why.
 | `--ssh`, `--scp` | `QD_SSH`, `QD_SCP` | `ssh`, `scp` |
 | `--remote-dir` | `QD_REMOTE_DIR` | `/var/tmp` |
 | `--rate` | `QD_RATE` | none: new connections as fast as `--jobs` allows; `10/s` for a bastion's `MaxStartups` |
+| `--allow` | `QD_ALLOW` | none: every command may run |
+| `--read-only` | `QD_READ_ONLY=1` | off |
 | | `QD_OPERATOR` | your login user: who a run says ran it (see Who ran it) |
 | `--store` | `QD_STORE` | a name from `qd store ls` or a directory; else the active store (see Named stores) |
 | | `QD_PROVOST` | `provost` on `PATH` |
