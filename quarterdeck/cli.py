@@ -490,7 +490,7 @@ def check_transport(runner, pushing):
 def dry_run_lines(runner, hs, command, push=(), stdin=None):
     for h in hs:
         out(" ".join(shlex.quote(a) for a in runner.ssh_argv(
-            h, runner.command_for(command, bool(push)))) +
+            h, runner.command_for(command, bool(push), marked=False))) +
             (" < %s" % shlex.quote(stdin) if stdin else ""))
 
 
@@ -524,6 +524,7 @@ def add_own_tables(b, rid, label, command, created, took, hs, results,
     fields = dict(extra or {})
     notes = [n for n in (("interrupted after %s" % plural(
         passes, "pass", "passes")) if interrupted else None,
+        left_running_note(results),
         fields.pop("policy", None), fields.pop("notes", None)) if n]
     b.add_own(storemod.RUNS, filing.own_tsv(storemod.RUN_COLUMNS, [run_row(
         rid, fields.pop("kind", "run"), label, command, created,
@@ -534,6 +535,21 @@ def add_own_tables(b, rid, label, command, created, took, hs, results,
         push_failed=counts.get(fleet.PUSH_FAILED, 0), passes=passes,
         every=every, captures=ncap,
         notes="; ".join(notes) or None, **fields)]))
+
+
+def left_running_note(results):
+    """The hosts where qd gave up on the command and could not stop it
+    there (QD-026), as a run's note and its summary say them; or None."""
+    names = []
+    for r in results:
+        if r.left_running and r.host.name not in names:
+            names.append(r.host.name)
+    if not names:
+        return None
+    shown = ", ".join(names[:8]) + (
+        " and %d more" % (len(names) - 8) if len(names) > 8 else "")
+    return "may still be running on %s, where qd could not stop it: %s" % (
+        plural(len(names), "host"), shown)
 
 
 def say_filing(ncap):
@@ -713,6 +729,9 @@ def report_run(args, command, hs, job, title=None):
     if interrupted:
         lines.append("  interrupted: kept the %s that finished"
                      % plural(passes, "pass", "passes"))
+    stray = left_running_note(job.results)
+    if stray:
+        lines.append("  NOT STOPPED  the command %s" % stray)
     if entry is not None:
         caps = sorted(entry.captures(), key=storemod.cnum)
         lines.append("  stored   %s in %s  (%s%s)" % (
@@ -3643,11 +3662,12 @@ def add_ssh(sp):
                    help="hosts contacted at once (QD_JOBS, 32)")
     g.add_argument("--timeout", type=seconds,
                    default=env_float("TIMEOUT", 60.0),
-                   help="per-host command timeout, seconds (QD_TIMEOUT, 60)")
+                   help="per-host command timeout, seconds; past it the "
+                   "command is stopped on the host (QD_TIMEOUT, 60)")
     g.add_argument("--max-output", type=positive, metavar="BYTES",
                    default=env_int("MAX_OUTPUT", 4 * 1024 * 1024),
-                   help="per-host output cap; past it the host is killed and "
-                   "reported (QD_MAX_OUTPUT, 4 MiB)")
+                   help="per-host output cap; past it the command is "
+                   "stopped on the host and reported (QD_MAX_OUTPUT, 4 MiB)")
     g.add_argument("--ssh", default=env("SSH", "ssh"), metavar="CMD",
                    help="ssh transport (QD_SSH)")
     g.add_argument("--scp", default=env("SCP", "scp"), metavar="CMD",
@@ -3685,7 +3705,8 @@ def add_report(g, preview=20):
 def add_safety(sp):
     g = sp.add_argument_group("safety")
     g.add_argument("--dry-run", action="store_true",
-                   help="print the ssh command per host and stop")
+                   help="print the ssh command per host and stop (less "
+                   "the line ahead of it that lets qd stop it)")
     g.add_argument("--limit", type=positive, metavar="N",
                    help="refuse to run wider than N hosts without --yes")
     g.add_argument("--yes", action="store_true",
