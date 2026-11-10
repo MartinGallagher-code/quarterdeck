@@ -49,7 +49,8 @@ RUN_COLUMNS = ("run", "kind", "name", "command", "created", "finished",
                "duration_s", "hosts", "ok", "failed", "timeout",
                "unreachable", "push_failed", "passes", "every", "rc",
                "captures", "tool", "ran", "version", "cwd", "qd", "notes",
-               "group", "part", "factors")
+               "group", "part", "factors", "operator", "operator_host",
+               "ssh_user", "ssh_key", "sudo")
 HOST_COLUMNS = ("run", "host", "addr", "pass", "ts", "status", "rc",
                 "duration_s", "bytes", "error", "attrs", "stderr")
 OUTCOMES = ("ok", "failed", "timeout", "unreachable", "push-failed")
@@ -58,7 +59,8 @@ OUTCOMES = ("ok", "failed", "timeout", "unreachable", "push-failed")
 # cell, and provost's TSV reader dropped double quotes until the release
 # with `batch` (PyPI's 2.1.0 still does), so they are escaped too.
 TEXT_COLUMNS = ("command", "ran", "version", "cwd", "notes", "error",
-                "stderr", "attrs", "factors")
+                "stderr", "attrs", "factors", "operator", "operator_host",
+                "ssh_user", "ssh_key")
 
 KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 
@@ -1085,6 +1087,14 @@ def load_ref(store, ref, fmt=None):
     return store.resolve(ref_).load(tname)
 
 
+def operator_shown(meta):
+    """`alice@build1`, `alice`, `@build1`, or blank: who ran a run, where."""
+    who, where = meta.get("operator", ""), meta.get("operator_host", "")
+    if who and where:
+        return "%s@%s" % (who, where)
+    return who or ("@" + where if where else "")
+
+
 def describe_entry(e):
     """What `qd log ENTRY` prints."""
     m = e.meta
@@ -1096,6 +1106,13 @@ def describe_entry(e):
         out.append("  command   %s" % m["command"])
     if m.get("cwd"):
         out.append("  cwd       %s" % m["cwd"])
+    if m.get("operator") or m.get("operator_host"):
+        out.append("  by        %s" % operator_shown(m))
+    via = [("as " + m["ssh_user"]) if m.get("ssh_user") else "",
+           ("key " + m["ssh_key"]) if m.get("ssh_key") else "",
+           {"yes": "under sudo", "no": "no sudo"}.get(m.get("sudo", ""), "")]
+    if any(via):
+        out.append("  ssh       %s" % ", ".join(v for v in via if v))
     h = m.get("hosts")
     if h:
         parts = ["%d hosts" % h.get("total", 0)] + [
