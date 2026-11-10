@@ -87,6 +87,9 @@ t_srun_runs_on_the_allocation() {
     assert_contains "$(qd log latest)" "via       srun, job 4242"
     runs="$(qd show ds:qd.runs --cols via,sched_job --format csv)"
     assert_contains "$runs" "srun,4242"
+    # and the evidence package's record of the run says so too
+    qd_rc report latest --out rep > /dev/null
+    assert_contains "$(cat rep/summary.md)" "- **via**: srun, job 4242"
 }
 
 t_srun_needs_an_allocation() {
@@ -179,6 +182,10 @@ same_as_ssh() {
     assert_contains "$(answer_of latest node01)" "6.1.0-18"
     assert_contains "$(answer_of latest node03)" "last: line"
     assert_contains "$(qd show ds:qd.runs --cols via --format csv)" "$via"
+    qd_rc report latest --out rep > /dev/null
+    assert_contains "$(cat rep/summary.md)" "- **via**: $via"
+    qd_rc report latest~1 --out rep-ssh > /dev/null
+    assert_not_contains "$(cat rep-ssh/summary.md)" "**via**"
 }
 
 t_pdsh_gives_the_same_dataset_as_ssh() { same_as_ssh pdsh; }

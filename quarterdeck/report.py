@@ -690,6 +690,10 @@ def run_facts(e):
             ("exit", m.get("rc")),
             ("by", storemod.operator_shown(m)),
             ("ssh", ", ".join(v for v in via if v)),
+            # how the hosts were reached, when not by ssh (QD-008)
+            ("via", (m["via"] + ((", job %s" % m["sched_job"])
+                                 if m.get("sched_job") else ""))
+             if m.get("via") and m["via"] != "ssh" else ""),
             ("campaign or design", m.get("group")), ("part", m.get("part")),
             ("factors", storemod.shown_attrs(m.get("factors"))
              if m.get("factors") else ""),

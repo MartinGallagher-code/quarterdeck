@@ -894,7 +894,7 @@ evidence/
   command that prints it again (with `--store`, so it works from
   anywhere). `manifest.json` lists every one of those commands.
 - **The summary**, in order: findings; the run (its `qd.runs` record,
-  with who ran it); hosts asked, ok and not answering, with why; the
+  with who ran it, and the launcher and job for a run not over ssh); hosts asked, ok and not answering, with why; the
   figures of every column; the checks; drift against the baseline; the
   outliers; the captures' `#%` keys, the run manifest provost reads
   (PV-020), and the ones `provost annotate` added later; `provost verify`'s

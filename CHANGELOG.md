@@ -39,7 +39,8 @@ Hosts reached through a Slurm allocation, pdsh or clush as well as ssh
   allocation (job, partition, nodes); exit 1 if it cannot run. Every
   `qd doctor` lists srun, scontrol, pdsh, pdcp and clush.
 - `qd.runs` has `via` and `sched_job` columns, and `qd log RUN` says
-  `via  srun, job N` for a run that was not over ssh.
+  `via  srun, job N` for a run that was not over ssh; so does the run's
+  record in `qd report` (QD-021, which merged first).
 - `--dry-run` prints the srun line per host, or the one pdsh or clush call.
 - `tests/test_via.sh`, with stand-ins for srun, scontrol, pdsh, pdcp and
   clush: every node answering, one failing, one not reached, the job
