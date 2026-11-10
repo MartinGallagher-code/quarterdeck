@@ -56,10 +56,16 @@ t_srun_runs_on_the_allocation() {
     assert_contains "$csv" "node03,ok,0,,6.1.0-13"
     assert_contains "$csv" "node04,unreachable,255,srun: error: Unable to create step"
     assert_not_contains "$csv" "Exited with exit code"
-    # the job on every answer, as provost's manifest key; the run says how
-    ds="$(qd show ds:cat --cols host,sched.job,sched.partition --format csv)"
-    assert_contains "$ds" "node01,4242,batch"
-    assert_contains "$ds" "node03,4242,batch"
+    # the job on every answer, as provost's manifest key -- in its
+    # prologue, and a column of every row where provost makes context
+    # columns (with batch) -- and the run says how it reached them
+    assert_contains "$(pv source 1)" "sched.job=4242 sched.partition=batch"
+    assert_contains "$(pv source 2)" "sched.job=4242 sched.partition=batch"
+    if has_batch; then
+        ds="$(qd show ds:cat --cols host,sched.job,sched.partition --format csv)"
+        assert_contains "$ds" "node01,4242,batch"
+        assert_contains "$ds" "node03,4242,batch"
+    fi
     assert_contains "$(qd log latest)" "via       srun, job 4242"
     runs="$(qd show ds:qd.runs --cols via,sched_job --format csv)"
     assert_contains "$runs" "srun,4242"

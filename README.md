@@ -385,8 +385,9 @@ one. With no hosts named, the fleet is the allocation's nodes, as
 is a `hosts.txt` in the directory; `-s` or `-S` names a subset.
 `--overlap` lets each step run beside the job's own. Every answer's `#%`
 prologue carries the job as `sched.job` (provost's run-manifest key,
-PV-020) and the partition as `sched.partition`, so they are columns of
-every row in the dataset (`qd show ds:NAME`), and the run's `qd.runs`
+PV-020) and the partition as `sched.partition`: columns of every row in
+the dataset (`qd show ds:NAME`) with a provost that has `batch`, and in
+each capture's context (`provost source`) with any. The run's `qd.runs`
 row says `via=srun` and the job. A node srun could not start a step on
 is `unreachable` with srun's reason. srun runs as you (`--user` is not
 used) and in the directory qd was started from, as srun does. A command
@@ -405,7 +406,8 @@ fan-out (`-f`), `--timeout` each host's limit (`-u`), and `--user` its
 - A host is reached by name: no port per host (put it in your ssh
   config), and two hosts at one address are refused.
 - A command's stdin (the script probes send binnacle's scripts on it) is
-  pushed as a file beside the command, since neither tool forwards one.
+  pushed as a file beside the command and read from there, since pdsh
+  forwards none (clush is treated the same way).
 - `--rate` spaces hosts out, which one call cannot: with it, each host is
   a call of its own.
 - Some pdsh builds merge a host's stderr into its stdout, or cut very long
