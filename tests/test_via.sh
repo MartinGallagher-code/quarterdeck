@@ -37,6 +37,18 @@ stand_in_binnacle() {
 
 srun_calls() { grep -c '^srun ' "$FAKE_SSH_LOG" || true; }
 
+# One host's answer in a run, exactly as provost was given it, less its
+# '#%' prologue line: from the store's own file, found by the host (every
+# provost has it; `provost source cNNNN` is newer than 2.1.0, and on its
+# one-at-a-time path a run's captures need not be numbered in host order)
+answer_of() {
+    local cap
+    cap="$(qd show "$1" --cols host,capture --format csv |
+        awk -F, -v h="$2" '$1 == h { print $2 }')"
+    [ -n "$cap" ] || fail "no capture for $2 in $1"
+    tail -n +2 "$QD_STORE/captures/$cap/output.txt"
+}
+
 # -- srun -----------------------------------------------------------------------
 
 t_srun_runs_on_the_allocation() {
@@ -153,11 +165,13 @@ same_as_ssh() {
     assert_contains "$a" "node04,unreachable,255,ssh: connect to host node04"
     assert_contains "$a" "node02,failed,3,no luck"
     # each host's answer exactly as ssh brought it back: node03's blank
-    # line and unended last line included (c0001-2 the ssh run's, c0005-6
-    # this one's)
-    assert_eq "$(pv source c0006 | sed '1,/^#% /d' | od -c)" \
-        "$(pv source c0002 | sed '1,/^#% /d' | od -c)"
-    assert_contains "$(pv source c0006)" "last: line"
+    # line and unended last line included
+    for h in node01 node03; do
+        assert_eq "$(answer_of latest "$h" | od -c)" \
+            "$(answer_of latest~1 "$h" | od -c)"
+    done
+    assert_contains "$(answer_of latest node01)" "6.1.0-18"
+    assert_contains "$(answer_of latest node03)" "last: line"
     assert_contains "$(qd show ds:qd.runs --cols via --format csv)" "$via"
 }
 
