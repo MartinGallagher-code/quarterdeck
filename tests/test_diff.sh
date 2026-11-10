@@ -123,4 +123,13 @@ run_test "repeated keys reduced, and said"              t_repeated_keys_are_redu
 run_test "results keyed on test+target, run ignored"    t_results_keyed_on_test_and_target
 run_test "one ref: against the last same run"           t_one_ref_compares_with_the_last_run_of_the_same_thing
 run_test "multi-line text: a unified diff"              t_multiline_text_gets_a_unified_diff
+
+# QD-024, temporary: one case that fails on purpose, to see its share's
+# jobs fail with the suite's output whole and the other shares pass.
+t_qd024_fails_on_purpose() {
+    echo "QD-024: the first line of a deliberate failure"
+    echo "QD-024: the second line"
+    fail "QD-024: deliberately failed"
+}
+run_test "QD-024 temporary: fails on purpose"          t_qd024_fails_on_purpose
 finish
