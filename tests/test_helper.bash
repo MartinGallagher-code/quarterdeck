@@ -5,7 +5,8 @@
 #
 # Sourced by every test_*.sh.  Provides:
 #   run_test NAME FN        run one case in a subshell with a fresh temp dir
-#                           (only if NAME contains $QD_TEST_ONLY, when set)
+#                           (only if NAME contains $QD_TEST_ONLY, when set,
+#                           and is in part $QD_TEST_PART, when set)
 #   assert_eq/contains/not_contains/status/file_exists/no_file
 #   fail MSG                fail a case with a reason no assert_ covers
 #   qd ARGS...              the CLI under test, run from a clone
@@ -36,6 +37,25 @@ TESTS_RUN=0
 TESTS_FAILED=0
 FAILED_NAMES=()
 
+# QD_TEST_PART=I/P runs part I of P of this suite: its 1st, (P+1)th, ...
+# case counted from the Ith, whatever QD_TEST_ONLY says.  run_tests.sh
+# --shard splits its longest suites so (QD-024); unset or empty, every
+# case.
+TESTS_SEEN=0
+TEST_PART_I=1
+TEST_PART_P=1
+case "${QD_TEST_PART:-}" in
+    "") ;;
+    [1-9]/[1-9] | [1-9]/[1-9][0-9] | [1-9][0-9]/[1-9][0-9])
+        TEST_PART_I="${QD_TEST_PART%/*}"
+        TEST_PART_P="${QD_TEST_PART#*/}" ;;
+    *) TEST_PART_I=0 ;;
+esac
+if [ "$TEST_PART_I" -lt 1 ] || [ "$TEST_PART_I" -gt "$TEST_PART_P" ]; then
+    echo "QD_TEST_PART is I/P, whole numbers with 1 <= I <= P < 100: $QD_TEST_PART" >&2
+    exit 2
+fi
+
 setup_env() {
     # macOS's TMPDIR ends in a slash; a doubled one would not match the
     # paths qd prints
@@ -53,7 +73,7 @@ setup_env() {
     unset QD_MX QD_IPERF_ORCHESTRATOR QD_AGREE QD_DCVIZ QD_WEB_HOST
     unset QD_WEB_PORT QD_TEST_KEYS QD_TEST_SCREEN QD_FILE_JOBS QD_RATE
     unset QD_WEB_TOKEN QD_WEB_TOKEN_FILE QD_WEB_TLS_CERT QD_WEB_TLS_KEY QD_TEST_CA
-    unset QD_ALLOW QD_READ_ONLY
+    unset QD_ALLOW QD_READ_ONLY QD_TEST_PART
     unset PROVOST_WORKSPACE PROVOST_HOME PROVOST_CONTEXT_COLUMNS PROVOST_QUIET
     unset QD_OPERATOR PROVOST_OPERATOR
     # Every case files into a store of its own; QD_PROVOST_BATCH=0 from
@@ -95,6 +115,8 @@ teardown_env() {
 
 run_test() {
     local name="$1"; shift
+    TESTS_SEEN=$((TESTS_SEEN + 1))
+    [ $(((TESTS_SEEN - 1) % TEST_PART_P + 1)) -eq "$TEST_PART_I" ] || return 0
     # QD_TEST_ONLY=TEXT runs only the cases whose name contains TEXT
     case "$name" in
         *"${QD_TEST_ONLY:-}"*) ;;

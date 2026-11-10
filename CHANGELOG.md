@@ -5,6 +5,61 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.9.2 — 2026-11-10
+
+CI finishes sooner (QD-024). Nothing `qd` does has changed: only CI, the
+test runner and the docs.
+
+### Measured first
+- **Before:** the last 22 CI runs (#73 to #94, pull requests and pushes to
+  `main`) took 10 min 34 s at the median, wall clock, from 8 min 38 s to
+  12 min 43 s when they passed. Jobs waited for a runner 2 s at the median
+  and 70 s at most, so the time was the long pole, not the queue: the
+  provost 2.1.0 job (median 10 min 31 s) was last in 17 of the 22, and the
+  doe suite was the longest suite in 150 of the 154 suite jobs (118 to
+  400 s on its own).
+- **After:** AFTER_NUMBERS
+
+### Changed
+- **The seven jobs that run the whole suite each run it on three runners**
+  (`test` for Python 3.9 to 3.13, `Python 3.6 compatibility`, `test
+  (provost 2.1.0)`): 26 jobs a run where there were 12, and nothing taken
+  off a pull request: every Python, the 3.6 floor and provost 2.1.0 still
+  run every suite.
+- **A newer push to a pull request cancels that pull request's run still in
+  progress.** A push to `main` is never cancelled: each has a concurrency
+  group of its own, so the version job's push check runs on every one.
+- **Every job has `timeout-minutes`**, about three times its usual time (15
+  for a share of the suite, 5 or 10 for the rest). A hung case used to hold
+  its runner for GitHub's six hours.
+- The shellcheck job uses the runner's own shellcheck, and installs one only
+  where there is none; it also runs the shard check (below).
+
+### Added
+- **`run_tests.sh --shard K/N`** runs share K of N. Suites are dealt by
+  their measured seconds (`TIMES`), the longest first, each to the share
+  with the fewest seconds so far, so every machine deals the same. The
+  longest suites (`PARTS`: doe in three, peers, web, run, xstore and probe
+  in two) are split into parts, each a share of their cases, each part in a
+  different share. Without `--shard` every suite runs whole, as before.
+- **`QD_TEST_PART=I/P`** in `tests/test_helper.bash`: a suite runs its Ith
+  case and every Pth after it.
+- **`run_tests.sh --list`** prints what a run would take, without running
+  it or needing provost.
+- **The start order comes from measured times** for every suite (the mean
+  of four-core runs on both of provost's paths), where it named seven.
+  Every run ends with a `seconds:` line, every suite's seconds, in the form
+  `TIMES` takes.
+- **`tests/check_shards.sh`**, run by CI and `tests/check.sh`: every suite
+  is in exactly one share, whole or as all its parts with no two on one
+  runner, for every N CI uses and 1 to 8; and every sharded job's matrix
+  runs shares 1 to N.
+- **`tests/test_runner.sh`**, a suite for the runner: `--list`, the deal,
+  bad `--shard` arguments (exit 2), a failing suite failing its own share
+  with its output whole, the split parts running every case once, the exit
+  statuses as before, and `check_shards.sh` failing a broken runner or
+  workflow (mutations). It also fails when a suite is missing from `TIMES`.
+
 ## 0.9.1 — 2026-11-10
 
 `release.yml` publishes to PyPI only (QD-023). Nothing about `qd` itself
