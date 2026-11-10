@@ -39,15 +39,16 @@ test runner and the docs.
 - **`run_tests.sh --shard K/N`** runs share K of N. Suites are dealt by
   their measured seconds (`TIMES`), the longest first, each to the share
   with the fewest seconds so far, so every machine deals the same. The
-  longest suites (`PARTS`: doe in three, peers, web, run, xstore and probe
-  in two) are split into parts, each a share of their cases, each part in a
-  different share. Without `--shard` every suite runs whole, as before.
+  longest suites (`PARTS`: doe, peers and web in three; run, xstore,
+  compare and probe in two) are split into parts, each a share of their
+  cases, each part in a different share. Without `--shard` every suite runs
+  whole, as before.
 - **`QD_TEST_PART=I/P`** in `tests/test_helper.bash`: a suite runs its Ith
   case and every Pth after it.
 - **`run_tests.sh --list`** prints what a run would take, without running
   it or needing provost.
-- **The start order comes from measured times** for every suite (the mean
-  of four-core runs on both of provost's paths), where it named seven.
+- **The start order comes from measured times** for every suite, where it
+  named seven: each suite's seconds in CI's seven suite jobs, averaged.
   Every run ends with a `seconds:` line, every suite's seconds, in the form
   `TIMES` takes.
 - **`tests/check_shards.sh`**, run by CI and `tests/check.sh`: every suite

@@ -40,10 +40,12 @@ usage() { sed -n '5,25p' run_tests.sh | sed 's/^# \{0,1\}//'; }
 # the longest first, so the longest is not left to begin last, and how
 # --shard deals them out.  A suite not listed counts as UNLISTED seconds
 # until it is (tests/test_runner.sh fails until it is).  The output is in
-# name order whatever this says.  Measured 2026-11-10 on four cores, four
-# at a time, the mean of provost's two paths (QD-024); a run's last line,
-# `seconds:`, gives every suite's, to measure them again from.
-TIMES="doe:205 peers:189 web:164 run:125 compare:110 xstore:108 probe:97 operator:73 campaign:71 remote:69 do:64 rm:64 view:58 pacing:43 store:39 policy:34 read:28 export:24 split:14 diff:13 check:12 analyze:3 runner:3 cleanup:2"
+# name order whatever this says.  Measured in CI on 2026-11-10 (run #101,
+# QD-024): each suite's seconds in each of the seven jobs that run the
+# suite, four at a time on four cores, parts added up, then the mean of
+# the seven.  A run's last line, `seconds:`, gives every suite's, to
+# measure them again from.
+TIMES="doe:236 peers:231 web:225 run:176 xstore:146 compare:132 probe:108 operator:98 campaign:86 rm:81 do:78 remote:77 view:74 pacing:54 store:41 policy:37 read:35 export:24 runner:18 split:15 diff:14 check:12 analyze:6 cleanup:3"
 UNLISTED=30
 
 # With --shard K/N, a suite listed here is split into that many parts (or
@@ -52,7 +54,7 @@ UNLISTED=30
 # the rest of its share's.  A suite whose cases start a server can be split
 # too, since its parts never run on one machine.  Without --shard, every
 # suite runs whole.
-PARTS="doe:3 web:2 peers:2 xstore:2 run:2 probe:2"
+PARTS="doe:3 peers:3 web:3 run:2 xstore:2 compare:2 probe:2"
 
 # This machine's cores: Linux, then POSIX, then macOS and the BSDs.
 cores() {
