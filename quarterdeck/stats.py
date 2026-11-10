@@ -476,6 +476,22 @@ def peer_outliers(groups, col, per=None, z=3.5, method="mad", k=1.5):
     return rows, infos
 
 
+OUTLIER_SHOWN = ["value", "of_median", "robust_z", "side"]
+
+
+def outlier_cells(rows):
+    """outliers()'s rows as `qd outliers` prints them, after the key:
+    [key, value, of_median, score, side], all text.  The score is the
+    robust z (OUTLIER_SHOWN's robust_z), or the IQRs out with method iqr."""
+    out = []
+    for key, v, med, rel, score, side in rows:
+        out.append([key, fmt_num(v), "" if rel is None else
+                    fmt_num(rel) + "%",
+                    ("%+.1f" % score) if abs(score) != float("inf") else
+                    ("+inf" if score > 0 else "-inf"), side])
+    return out
+
+
 # ---------------------------------------------------------------------------
 # two samples: has it moved, or is it noise?
 # ---------------------------------------------------------------------------

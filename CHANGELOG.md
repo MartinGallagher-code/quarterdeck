@@ -5,6 +5,59 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.10.0 — 2026-11-10
+
+`qd report`: an evidence package for a run or a campaign (QD-021). Written as
+0.9.0; QD-009 merged first with that number, so this is 0.10.0, rebased
+onto it.
+
+### Added
+- **`qd report RUN|campaign:NAME --out DIR`** writes a directory an
+  evaluator can read, check and attach without qd: each table as CSV and
+  JSON (`qd export`'s), `qd stats` and `qd outliers` on it, every host's
+  answer exactly as provost keeps it, `manifest.json`, `summary.md`,
+  `summary.html`, and `SHA256SUMS` over every other file (`sha256sum -c`
+  passes). qd prints the sha256 of `SHA256SUMS`: the line to record in the
+  test report.
+- **Sections that fill in as the features do.** Checks with `--check FILE`
+  (`qd check`, QD-010), or the verdicts `qd check --keep` filed; medians
+  and status changes against `--baseline RUN` (`qd compare`; stored named
+  baselines are QD-009's); who ran it (QD-016) in each run's record; the
+  captures' `#%` keys and `provost annotate`'s post-run keys (PV-020);
+  `provost verify` on the report's captures, with the store's head commit
+  (PV-026). One that has nothing to say is left out and listed, with why,
+  under *Not in this report* and in `manifest.json`.
+- **A campaign** (`campaign:NAME`, or a design's name): its parts and
+  their states, hosts over every part's last run, the parts' medians side
+  by side, a requirement-by-part table of checks, and each part's last run
+  in full. A part not run yet is a finding.
+- **Every figure is the engine's**, computed by the functions the
+  commands use, and each section ends with the exact command (with
+  `--store`) that prints it again; `manifest.json` lists them all.
+- **`summary.html` runs nothing**: static, no script, no request outside
+  the package, every dataset and thresholds-file string escaped, and a
+  Content-Security-Policy of `default-src 'none'`. `summary.md` escapes
+  the same text so no renderer reads it as markup.
+- Each copied capture is checked against the sha256 provost recorded for
+  it; a mismatch is a finding.
+- `--zip` also writes `DIR.zip`; `--drift` (`QD_DRIFT`) and `--z` (`QD_Z`)
+  as `qd compare` and `qd outliers` take them.
+- The package is written beside `--out` and moved into place whole, so a
+  failed report leaves nothing; `--out` must be new or empty and outside
+  the store. Exit 1 when the report records a finding, 2 when it cannot
+  be written (nothing is).
+- `tests/test_report.sh`: the package and its sums, tables and figures
+  against `qd export`, `qd stats`, `qd outliers`, `qd check` and `qd
+  compare` on the same run, hostile HTML and Markdown in a dataset and a
+  thresholds file, sections left out, kept verdicts, an import, the
+  refusals, and a campaign with its zip.
+
+### Changed
+- `qd outliers` builds its rows with `stats.outlier_cells`, which the
+  report shares; and a run's table can be read by its listing
+  (`Run.load_info`), which two of a `qd do`'s same-named tables need.
+  Neither changes any output.
+
 ## 0.9.1 — 2026-11-10
 
 `release.yml` publishes to PyPI only (QD-023). Nothing about `qd` itself

@@ -781,7 +781,11 @@ class Run(object):
             die("%s holds no tables: nothing it filed is in the store any "
                 "more (provost rm, or a store restored to before it)"
                 % self.id)
-        info = _pick(tabs, name, self.id)
+        return self.load_info(_pick(tabs, name, self.id))
+
+    def load_info(self, info):
+        """One of self.tables, read: by its listing rather than its name,
+        which two of a `qd do`'s tables can share."""
         if self.meta.get("kind") == "run":
             t = self._data() if info["name"] == "data" else self._hosts()
         else:
