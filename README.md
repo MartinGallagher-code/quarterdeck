@@ -126,6 +126,29 @@ beside the rows provost parsed out of its answer, and a row for a host
 that printed nothing. Whichever store it is, `provost ls` there lists what
 qd filed.
 
+### Who ran it
+
+Every run says who ran it and from where, so a fan-out is attributable
+after the fact. `qd log RUN` shows it, `qd log` lists the operator beside
+each run, and `qd web` puts it in the run's header.
+
+| `qd.runs` column | What | Recorded by |
+|---|---|---|
+| `operator` | `QD_OPERATOR`, else your login user | every run |
+| `operator_host` | the machine qd ran on | every run |
+| `ssh_user` | `--user`, else what your ssh config gives each host (`ssh -G`); hosts with users of their own give each, comma-separated | a fan-out |
+| `ssh_key` | the fingerprint of each key qd offered: the `-i` keys (or `IdentityFile`) in `--ssh`, else your agent's (`ssh-add -l`). Never the key itself | a fan-out |
+| `sudo` | `yes` or `no` | a fan-out |
+
+Anything qd cannot find out is blank, never a guess: an ssh without `-G`
+(older than OpenSSH 6.8, or a wrapper), no `ssh-add` or an empty agent,
+or a key file `ssh-keygen` cannot read. Which of several offered keys a
+host accepted is not known without connecting, so `ssh_key` lists every
+one offered. Runs filed before 0.8.2 have none of these columns and show
+blank. qd also passes the operator to provost as `PROVOST_OPERATOR` (unless
+you set it yourself), for a provost that records it (PV-027); provost
+2.3.0 does not yet.
+
 ### Named stores: `qd store`
 
 ```bash
@@ -376,6 +399,61 @@ The mutation guard is agree's: `rm -rf`, `mkfs`, `reboot`, `systemctl
 stop` and the rest are refused without `--yes`. It's a typo guard, not
 security.
 
+**qd deletes only what it made.** A run that pushes makes a directory of
+its own, `qd.<run id>`, in `--remote-dir`, and writes `.qd-owned` into it
+with that id. Afterwards it removes that directory, and `--remote-dir`
+only if this run made it and it is empty. The checks run on the host,
+under the same `sudo -n` as the delete: the path must end in exactly this
+run's `qd.<run id>`, hold no `..`, be a directory and not a symlink, and
+hold a `.qd-owned` with this run's id. Otherwise nothing is deleted, and
+the host's `error` says `qd: refusing to remove` and why.
+`--keep-remote` leaves the directory, mark and all.
+`tests/test_cleanup.sh` holds qd to this.
+
+### Allow-lists and read-only
+
+The mutation guard says what may *not* run, and no such list is ever
+complete. For a system under test that must not be changed, say what
+*may*:
+
+```bash
+cat allow.txt
+# what may run on the system under test
+uname *
+cat /proc/*
+nvidia-smi --query-gpu=* --format=csv
+
+qd run --allow allow.txt -s hosts.txt -- uname -r       # runs
+qd run --allow allow.txt -s hosts.txt -- echo hi        # refused
+qd run --allow allow.txt --confirm -s hosts.txt -- echo hi   # asks: type CONFIRM
+qd probe facts inventory --read-only -s hosts.txt       # probes still run
+```
+
+- **`--allow FILE`** (`QD_ALLOW`): one pattern a line, `#` for comments.
+  A pattern matches the whole command as it would be sent (spaces
+  collapsed), with `*` for anything and `?` for one character, so
+  `uname *` does not allow `uname -r; reboot`. A command no pattern
+  matches is refused, with exit 2, unless `--confirm` is given *and*
+  someone at the terminal types `CONFIRM`; with nothing attached to the
+  terminal it is refused outright. The probes qd ships run by name.
+- **`--read-only`** (`QD_READ_ONLY=1`): only the probes and allow-listed
+  commands run, and no confirmation lifts it. `--push`, `--script` and
+  `--sudo` are refused, and so is `qd do`, whose tools deploy agents and
+  servers to the hosts.
+- **On record:** every run under a policy says so in its notes (`qd log
+  RUN`): read-only, the allow-list's name and the first 12 hex digits of
+  its sha256, and any command confirmed outside it, with who confirmed.
+  A refusal files no run, so each one is appended to `policy.log` in
+  qd's cache (`~/.cache/quarterdeck/`): time, operator, verb, command and
+  reason, tab-separated.
+- The mutation guard still applies on top: an allow-list that names
+  `rm *` does not let `rm -rf` past it without `--yes`.
+
+**This is policy, not a sandbox.** An allow-listed shell, a script the
+hosts already hold, or a quoting trick gets past any list of patterns.
+It stops the mistakes and the out-of-scope commands; the real control is
+the account's own ssh and sudo rights on the hosts.
+
 ### Every knob has a flag and a variable
 
 | Flag | Variable | Default |
@@ -387,6 +465,10 @@ security.
 | `--max-output` | `QD_MAX_OUTPUT` | 4 MiB per host; past it the host is killed and reported |
 | `--ssh`, `--scp` | `QD_SSH`, `QD_SCP` | `ssh`, `scp` |
 | `--remote-dir` | `QD_REMOTE_DIR` | `/var/tmp` |
+| `--rate` | `QD_RATE` | none: new connections as fast as `--jobs` allows; `10/s` for a bastion's `MaxStartups` |
+| `--allow` | `QD_ALLOW` | none: every command may run |
+| `--read-only` | `QD_READ_ONLY=1` | off |
+| | `QD_OPERATOR` | your login user: who a run says ran it (see Who ran it) |
 | `--store` | `QD_STORE` | a name from `qd store ls` or a directory; else the active store (see Named stores) |
 | | `QD_PROVOST` | `provost` on `PATH` |
 | | `QD_PROVOST_BATCH=0` | file one capture at a time even where provost has `batch` |
@@ -492,6 +574,40 @@ provost's: a part is a run named after the campaign, its campaign and part
 on every row. The definition is filed too (`qd.campaigns`), and the pool
 can live anywhere every worker can read (`--pool`).
 
+### Pacing: power domains, a ramp, maintenance windows
+
+A burn-in that loads every node on one PDU at once can trip its breaker.
+`campaign new` keeps three limits with the campaign, so every `campaign
+run` -- resumed, or carried on from another machine -- paces the same:
+
+```bash
+qd campaign new burnin -s hosts.txt --by rack --max-per pdu=4 \
+    --ramp 6/min --window "Mon-Fri 18:00-06:00" --window "Sat,Sun 00:00-24:00" \
+    -- ./burnin.sh --minutes 30
+qd campaign status burnin   # at most 4 per pdu; ramp 6/min; windows ... (closed; the next opens Mon 18:00)
+```
+
+- **`--max-per ATTR=N`** (repeatable, or `pdu=4,rack=8`): no more than N
+  hosts sharing a value of ATTR run at once. ATTR is any host attribute
+  in the host list (`node07 pdu=p3 rack=r2`), the same ones `--by` reads.
+  Hosts without it share one count rather than going unlimited. Other
+  values go past a full one, so a cap holds a PDU back without holding
+  the fleet back.
+- **`--ramp RATE`** (`6/min`, `1/s`, `120/h`): host starts are spaced
+  evenly, so the draw rises in steps. The spacing carries on from one
+  part to the next.
+- **`--window SPEC`** (repeatable, `;` between several): `[DAYS]
+  HH:MM-HH:MM` in local time, days as `Mon-Fri` or `Sat,Sun`, a span past
+  midnight belonging to the day it starts (`Fri 18:00-06:00` runs into
+  Saturday morning), no days for every day. `campaign run` starts a part
+  only inside a window; outside one it starts nothing, says when the next
+  opens, and exits 0. A part already running finishes.
+- Flags given to `campaign run` override the kept ones for that run.
+
+The caps and the ramp hold within one worker. Two terminals running one
+campaign each keep their own count; muster still gives them different
+parts.
+
 ---
 
 ## Many runs side by side: `qd compare`
@@ -515,6 +631,66 @@ is the host-by-run table. The exit status is 1 when anything changed, as
 with `diff`. `qd web` shows the same comparison on its Compare tab. Runs
 from other stores go in as `RUN@STORE` (see *Runs from different stores
 side by side*); `--last N@STORE` takes the last N from that store.
+
+---
+
+## Against requirements: `qd check`
+
+`qd compare` and `qd outliers` say what moved and who stands out. `qd
+check` says whether a run meets fixed limits, one verdict per
+requirement, as a table for a test-readiness review:
+
+```bash
+qd check latest --against limits.tsv          # one row per requirement
+qd check latest --against limits.tsv --each   # one row per host per requirement
+qd check latest --against limits.tsv --keep   # and file the verdicts (qd web, qd export)
+qd check latest --against limits.tsv --format csv -o trr.csv
+```
+
+The thresholds file is TSV (or CSV) with a header. `req`, `column`, `op`
+and `limit` are required; `limit2`, `where`, `agg`, `unit` and `note`
+may be left out or blank:
+
+```text
+req      column  op       limit  limit2  where      agg   unit
+SYS-101  mbps    >=       900            status=ok        Mbps
+SYS-102  rtt     <=       250            rack=r2    p99   us
+SYS-103  status  in       ok,pass
+SYS-104  temp    between  20     45                 max
+```
+
+- **`op`**: `<`, `<=`, `>`, `>=`, `==`, `!=`, `in` (a comma list of
+  words, without regard to case) or `between` (`limit` to `limit2`,
+  inclusive). `==` and `!=` compare numbers as numbers and words as words.
+- **`where`** narrows the rows, in `--where`'s grammar. `--where` on the
+  command line narrows them for every check.
+- **`agg`**: `each` (the default: every row must pass) or one figure over
+  the rows -- `mean`, `median`, `min`, `max`, `sum`, `stdev`, `range`,
+  `p05`, `p25`, `p75`, `p95`, `p99`.
+- **`unit`** is the limit's unit, if the limit does not carry one
+  (`250us` does). Sizes and times are put on one scale, so `0.3ms`
+  fails `<= 250us` and `2G` passes `<= 4096M`, and the observed value is
+  shown in the limit's unit. Units that cannot be compared (a time
+  against a rate) are refused, and the check is not measured; a column
+  that carries no unit is read in the limit's, and the note says so.
+
+Each check is **pass**, **fail** or **not measured**. Blank is never a
+pass: a missing column, no rows left by `where`, or a blank cell is not
+measured. Under `each`, one row that failed fails the check; otherwise
+one unmeasured row makes it not measured. An aggregate over some hosts
+but not all is not measured either, and the note gives the figure it
+would have had and who measured nothing. The `measured` column says how
+many of the rows did.
+
+The exit status is 0 when every check passed, and 1 when any failed or
+was not measured: a finding, as everywhere else in qd. A thresholds
+file qd cannot read (a missing column, an unknown `op` or `agg`, a
+`between` without `limit2`, a word where a number belongs, the same check
+twice) is refused with exit 2, naming the check.
+
+`--keep` files the verdict table in the store as a run of kind `check`,
+named `check-<run>`, so `qd show`, `qd export` and `qd web` read it like
+any other dataset.
 
 ---
 
@@ -835,6 +1011,59 @@ reckon) passes through unchanged.
 
 ---
 
+## Into Splunk, Prometheus or a notebook
+
+`qd export` writes a file in the other system's own format. qd makes no
+network call and holds no token: send the file from wherever has the
+credentials, or let the other side's file reader pick it up.
+
+```bash
+qd export latest --format hec -o run.json            # Splunk HEC events
+curl -s https://splunk:8088/services/collector \
+     -H "Authorization: Splunk $HEC_TOKEN" --data-binary @run.json
+
+qd export latest --format openmetrics --labels rack \
+     -o /var/lib/node_exporter/textfile/qd.prom      # node_exporter textfile
+curl -s --data-binary @qd.prom http://pushgw:9091/metrics/job/qd   # or a Pushgateway
+```
+
+**`--format hec`** is one event per row, one per line:
+`{"time", "host", "source": "qd", "sourcetype": "qd:<table>", "fields",
+"event"}`. `event` is the row; `fields` (indexed, so a search can filter
+on them without reading the event) are the run's id, name and kind as
+`qd_run`, `qd_name`, `qd_kind`, and the row's settings: host attributes
+such as `rack`, a design's factors. `time` is the row's own (`ts`,
+`timestamp` or `time`, epoch or ISO 8601) where it has one, else the
+run's, and qd says how many borrowed it; a file that is not a run has no
+time to lend, so those events go without and Splunk stamps them on
+arrival. `--sourcetype` and `--index` set those two. Splunk's file monitor
+reads the same file with the `_json` sourcetype.
+
+**`--format openmetrics`** (or `-o x.prom`) is one gauge per numeric
+column, `qd_<column>` (`--prefix`), one sample per row that measured it,
+labelled `host`, `peer` (when there is one), `run`, and the columns named
+in `--labels`. Sizes go over in bytes and times in seconds, and the name
+says so (`qd_mem_bytes`, `qd_lat_seconds`); any other unit is named in the
+`# HELP` line, and `%` adds `_percent`. A column becomes a label only when
+you name it: every distinct value is another series, so a free-text
+column as a label would flood the server. Two rows that would make the
+same series (two disks on one host) are refused, naming `--labels`, rather
+than written as a file Prometheus rejects. There are no timestamps: the
+textfile collector and the Pushgateway both refuse them.
+
+In both, **a blank cell is left out** -- absent from the event, no sample
+in the metric -- never sent as 0 or an empty string.
+
+For a notebook, the CSV is already the format:
+
+```python
+import pandas as pd
+df = pd.read_csv("run.csv")          # qd export latest -o run.csv
+df.groupby("rack")["mbps"].describe()   # blanks read as NaN: not measured
+```
+
+---
+
 ## Conventions
 
 These are binnacle's, for the same reasons:
@@ -858,12 +1087,32 @@ These are binnacle's, for the same reasons:
 
 ---
 
+## At scale
+
+A thousand hosts fan out in seconds at the default `--jobs 32`. qd's
+memory (about 25 MB) and threads (`--jobs` + 1) do not grow with the
+fleet. Filing the answers is what takes the time, about 0.16 s each in
+provost. Two limits matter more than raw size:
+
+- **Open files:** about 5 per host in flight. qd raises its soft
+  `ulimit -n` towards the hard one before a fan-out. If that is still
+  short, it runs fewer at once and says so, rather than letting hosts
+  that could not get a pipe read as unreachable. macOS's default of 256
+  fits about `--jobs 50`.
+- **A bastion:** sshd drops connections past its `MaxStartups`, so
+  through one jump host use `--rate 10/s` (`QD_RATE`).
+
+The numbers, and how they were measured, are in
+[docs/scale.md](docs/scale.md) (`tests/scale.sh` reruns them).
+
+---
+
 ## Exit status
 
 | | |
 |---|---|
 | 0 | done, and every host answered |
-| 1 | a finding: a host that did not answer, a diff or compare that differs, nothing to bin |
+| 1 | a finding: a host that did not answer, a diff or compare that differs, a check that failed or was not measured, nothing to bin |
 | 2 | a usage error, or something could not be read or written |
 | other | `qd do` passes on the tool's own |
 

@@ -182,8 +182,8 @@ t_a_remote_store_on_one_side() {
 
 # qd web takes the port asked for or one of the 19 above it, and checks it
 # is free before it binds: each suite that starts a server has a range of
-# its own (web 18100, this 18120, remote 18140), so suites run side by
-# side never race for one port.
+# its own (web 18100, this 18120, remote 18140, check 18160), so suites
+# run side by side never race for one port.
 start_web() {
     "$PY" "$QD_DIR/qd" web -n -q --port 18120 > web.out 2> web.err &
     echo $! > web.pid

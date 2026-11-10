@@ -5,7 +5,7 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
-## 0.7.0 — 2026-11-09
+## 0.8.4 — 2026-11-10
 
 Ready for PyPI (QD-007). Nothing `qd` does has changed.
 
@@ -29,6 +29,199 @@ Ready for PyPI (QD-007). Nothing `qd` does has changed.
   classifier: the PEP 639 string needs setuptools 77, which needs Python
   3.9, and the package advertises 3.6. PyPI shows the licence from
   either.
+
+## 0.8.3 — 2026-11-10
+
+What may be sent to a fleet: an allow-list and a read-only mode (QD-015).
+
+### Added
+- **`--allow FILE`** (`QD_ALLOW`) on `qd run`, `probe`, `campaign` and
+  `doe`: only commands matching a pattern in FILE run. Anything else is
+  refused (exit 2), unless `--confirm` is given and `CONFIRM` is typed at
+  the terminal; with no terminal it is refused outright. The probes qd
+  ships run by name.
+- **`--read-only`** (`QD_READ_ONLY=1`): only the probes and allow-listed
+  commands; `--push`, `--script`, `--sudo` and `qd do` are refused, and
+  no confirmation lifts it.
+- Every run under a policy records it in its qd.runs notes (read-only,
+  the allow-list's name and sha256, any confirmed override and who
+  confirmed it); every refusal goes to `policy.log` in qd's cache.
+- The mutation guard (DANGER) still applies on top. README's new
+  "Allow-lists and read-only" says plainly that this is policy, not a
+  sandbox.
+- New module `quarterdeck/policy.py`; new suite `tests/test_policy.sh`
+  (9 cases, the confirmation typed at a real pseudo-terminal).
+
+## 0.8.2 — 2026-11-10
+
+Every run records who ran it (QD-016).
+
+### Added
+- **`qd.runs` says who ran each run**: five new columns. Every run (`qd
+  run`, `probe`, `campaign`, `doe`, `do`, `import`, `check`) records
+  `operator` (`QD_OPERATOR`, else the login user) and `operator_host` (the
+  machine qd ran on). A fan-out also records `ssh_user` (`--user`, else what
+  `ssh -G` gives each host, comma-separated where hosts differ), `ssh_key`
+  (the fingerprint of each key offered: the `-i` or `IdentityFile` keys in
+  `--ssh`, else the agent's from `ssh-add -l`; never the key) and `sudo`
+  (`yes`/`no`). What cannot be found out (no `-G`, no agent, an unreadable
+  key, a lookup over 5 s) is blank, never a guess, and never stops the run.
+  `ssh -G` is a local read of ssh's config, once per distinct host, through
+  the same `--ssh` command, before the fan-out.
+- `qd log RUN` shows `by OPERATOR@HOST` and an `ssh` line (user, key,
+  sudo); `qd log` lists an `operator` column; `qd web`'s `/api/entries`
+  carries `operator` and the run's header shows it.
+- qd sets `PROVOST_OPERATOR` for the provost it runs, unless the caller set
+  one, so a provost that records the operator (PV-027) gets qd's. provost
+  2.3.0 ignores it.
+
+### Compatibility
+- Runs filed by an older qd have none of the columns and show blank; the
+  new columns go at the end of `qd.runs`, and qd 0.6.4 reads a store that
+  holds them (checked by hand: both versions list a store with one run of
+  each).
+
+### Tests
+- `tests/test_operator.sh`, a new suite: the fields of a fan-out,
+  `QD_OPERATOR` and the login user, `--user` reading no config, hosts with
+  users of their own, an ssh without `-G`, the `-i` key and a missing or
+  unreadable one, `--sudo`, `do`/`import` recording the operator only, free
+  text round-tripping, `PROVOST_OPERATOR`, and an older run beside a new
+  one. `tests/test_web.sh` checks the API. The fake ssh answers `ssh -G`
+  (`FAKE_SSH_USER`, `FAKE_SSH_USER_<host>`, `FAKE_NO_DASH_G`) and logs it
+  apart, so `ssh_calls` still counts connections only.
+
+## 0.8.1 — 2026-11-10
+
+Runs go to Splunk and Prometheus as files (QD-013).
+
+### Added
+- **`qd export --format hec`**: newline-delimited Splunk HTTP Event
+  Collector events, one per row, with `time`, `host`, `source` (`qd`),
+  `sourcetype` (`qd:<table>`, or `--sourcetype`), optional `--index`,
+  indexed `fields` (`qd_run`, `qd_name`, `qd_kind` and the row's host
+  attributes and factors) and the row as `event`. The time is the row's
+  own `ts`/`timestamp`/`time` (epoch or ISO 8601), else the run's, and qd
+  says on stderr how many rows borrowed the run's or went without.
+- **`qd export --format openmetrics`** (also `prom`, and `-o x.prom`):
+  one gauge per numeric column, labelled by host, peer, run and the
+  columns named in `--labels`; sizes in bytes and times in seconds, with
+  `_bytes`/`_seconds` on the name; no timestamps, so node_exporter's
+  textfile collector and the Pushgateway take it. Two rows that would
+  make one series are refused (exit 2), naming `--labels`.
+- Both leave a blank cell out (no field, no sample), never 0 or "".
+  qd makes no network call for either: README's new "Into Splunk,
+  Prometheus or a notebook" shows the `curl` and the pandas one-liner.
+- New module `quarterdeck/exporters.py`; new suite `tests/test_export.sh`
+  (7 cases).
+
+## 0.8.0 — 2026-11-10
+
+A run against fixed limits, by requirement (QD-010).
+
+### Added
+- **`qd check RUN --against FILE`**: one verdict per requirement --
+  pass, fail or not measured -- from a thresholds file (TSV or CSV with
+  `req`, `column`, `op`, `limit`, and optionally `limit2`, `where`,
+  `agg`, `unit`, `note`). Ops `<`, `<=`, `>`, `>=`, `==`, `!=`, `in`,
+  `between`; `agg` is `each` (every row must pass) or a figure over the
+  rows (median, p99, max, ...). Sizes and times compare on one scale and
+  read in the limit's unit; units that cannot be compared are refused.
+- Blank is never a pass: a missing column, no rows, a blank cell, or an
+  aggregate over only some hosts is not measured, and exits 1 as a
+  failure does. A thresholds file qd cannot read exits 2, naming the
+  check.
+- `--each` gives a row per host per check; `--keep` files the verdicts
+  as a run of kind `check`, which `qd show`, `qd export` and `qd web`
+  read like any other.
+- New module `quarterdeck/check.py`; new suite `tests/test_check.sh`
+  (8 cases, its web server on port 18160); README "Against requirements".
+
+## 0.7.2 — 2026-11-10
+
+qd at a thousand hosts (QD-019).
+
+### Added
+- **`--rate N/s`** (`QD_RATE`) on every verb that fans out: new
+  connections spaced evenly, for a bastion's sshd `MaxStartups`. With a
+  campaign's `--ramp`, the slower of the two holds.
+- `tests/scale.sh` (not one of the suites): times the fan-out and the
+  filing against N fake hosts, and samples qd's peak memory, threads and
+  open files. `docs/scale.md` has the numbers.
+
+### Fixed
+- **A fan-out no longer outruns the open-file limit.** About 5 files per
+  host in flight: under `ulimit -n 64`, 32 at once reported 81 of 100
+  hosts unreachable, every ssh that could not get a pipe read as a host
+  that did not answer. qd now raises its soft limit towards the hard one,
+  and if that is not enough runs fewer hosts at once and says so.
+
+## 0.7.1 — 2026-11-10
+
+Campaigns paced for power (QD-020).
+
+### Added
+- **`qd campaign new|run --max-per ATTR=N`**: no more than N hosts sharing
+  a host attribute's value (a PDU, a rack) run at once; other values go
+  past a full one.
+- **`--ramp RATE`** (`6/min`, `1/s`, `120/h`): host starts spaced evenly.
+- **`--window "Mon-Fri 18:00-06:00"`** (repeatable): parts start only
+  inside a window, local time; outside one, `campaign run` starts nothing
+  and says when the next opens. `campaign status` shows the limits and
+  whether a window is open, until when, or when the next opens.
+- All three are kept on the campaign (three new columns at the end of
+  `qd.campaigns`, blank for campaigns defined before), so a resumed or
+  carried-on campaign paces the same; `campaign run`'s flags override.
+- New module `quarterdeck/pacing.py`: the scheduler is a pure function of
+  what is running and the time, so it is tested with a fake clock. New
+  suite `tests/test_pacing.sh` (6 cases).
+
+## 0.7.0 — 2026-11-09
+
+qd deletes only what it made on a host, and a suite holds it to that
+(QD-014).
+
+### Changed
+- **Every directory qd makes on a host is marked.** `--push` and
+  `--script` write `.qd-owned`, holding the run's id, into the run's
+  `qd.<id>` directory as they make it. A later pass of the same run
+  pushes into it again only while that mark is still its own; a file
+  named `.qd-owned` cannot be pushed.
+- **Cleanup checks on the host before it deletes**, under the same
+  `sudo -n` as the delete: the path must end in exactly this run's
+  `qd.<id>`, hold no `..`, be a directory and not a symlink, and hold a
+  plain `.qd-owned` with this run's id. Anything else is refused and
+  reported in the host's `error` (`qd: could not remove ...: qd: refusing
+  to remove ...`), and nothing is deleted. Before, cleanup ran `rm -rf` on
+  the computed path on trust. A missing directory is nothing to remove,
+  as before.
+
+### Added
+- `tests/test_cleanup.sh`: the invariant as a suite. It makes a run's
+  directory through the fake ssh, then breaks it the ways a bug could (an
+  empty path, `/`, `~`, `.`, `..`, `--remote-dir` itself, a `..` in the
+  path, a symlinked directory, a missing mark, another run's id, a mark
+  that is a link, a file in its place, another run's `qd.*`), under
+  `--sudo` too, and checks each is refused with every canary left. A
+  stand-in `rm` refuses any delete outside the case's temp dir, so no case
+  can reach a real path. A mutation case takes the id check out of a copy
+  of `fleet.py` and shows the suite then fails.
+
+### Fixed
+- CI's test matrix runs on `ubuntu-24.04`: `ubuntu-latest` moved to 26.04,
+  where setup-python has no Python 3.9, so the 3.9 job failed before it
+  ran anything.
+
+### Reviewed
+- Every other delete in qd is local and was checked: the temp
+  directories of `qd do`, `doe`, `split`, `campaign` and filing
+  (`tempfile.mkdtemp`, removed in `finally`); the id-claims cache (`rmdir`
+  of empty entries only); `qd store rm --delete` (only a provost store or
+  an empty directory, under the store's lock); a remote store's copy (in
+  qd's own `remotes` directory, under a name `NAME_RE` allows, no `..`);
+  the store lock (removed only while it carries this process's owner
+  record); the export's temp file. `qd rm` deletes through provost. None
+  needed a change.
 
 ## 0.6.4 — 2026-11-05
 

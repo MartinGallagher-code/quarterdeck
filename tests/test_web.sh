@@ -65,6 +65,17 @@ t_entries_rows_and_filters() {
     assert_contains "$out" "no column"
 }
 
+t_entries_carry_the_operator() {
+    install_fake_ssh
+    fake_host a
+    echo 0.5 > "$FAKE_ROOT/a/load"
+    QD_OPERATOR=ann qdf run -s a -q -- cat load > /dev/null
+    start_web
+    out="$(get /api/entries)"
+    assert_contains "$out" '"operator": "ann@'
+    assert_contains "$(get '/api/entry?e=latest')" "by        ann@"
+}
+
 t_column_figures_match_the_cli() {
     seed
     start_web
@@ -302,6 +313,7 @@ t_empty_store_is_refused() {
 }
 
 run_test "entries, rows, --where, a bad filter"     t_entries_rows_and_filters
+run_test "entries carry the operator"              t_entries_carry_the_operator
 run_test "column figures match the CLI's"           t_column_figures_match_the_cli
 run_test "a column's unit is its figures' scale"    t_column_unit_is_the_figures_scale
 run_test "group, pivot, trend"                      t_group_pivot_trend

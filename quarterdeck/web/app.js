@@ -351,6 +351,7 @@
     head.append(h("h1", { text: entryTitle(e) }));
     const meta = [h("span", { class: "mono", text: e.id }), h("span", { class: "kind", text: e.kind })];
     if (m.created) meta.push(h("span", { text: m.created.replace("T", " ").replace("Z", " UTC") }));
+    if (e.operator) meta.push(h("span", { text: "by " + e.operator }));
     if (m.parse) meta.push(h("span", { text: "parsed as " + m.parse }));
     if (m.passes > 1) meta.push(h("span", { text: m.passes + " passes, every " + m.every + "s" }));
     if (m.duration_s != null) meta.push(h("span", { text: "took " + m.duration_s + "s" }));

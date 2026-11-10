@@ -15,7 +15,9 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
        qd show|stats|freq|hist|outliers|pivot|trend RUN ...
        qd diff [OLD] NEW                       what changed between two
        qd compare RUN --last N -c COL          N runs side by side
-       qd export RUN [--format overlay]        CSV, JSON, the viewer's TSV
+       qd check RUN --against limits.tsv       pass/fail by requirement
+       qd export RUN [--format overlay]        CSV, JSON, the viewer's TSV,
+                                               Splunk HEC, OpenMetrics
        qd web                                  the store in a browser
        qd floor RUN --layout floor.dc          paint it on the floor plan
        qd hosts | doctor | hints | help
@@ -55,6 +57,7 @@ Full manual: https://github.com/MartinGallagher-code/quarterdeck#readme
 """
 
 import argparse
+import datetime
 import os
 import re
 import shlex
@@ -69,7 +72,10 @@ from .common import (PROG, VERSION_TEXT, QdError, _stdio_safe, die, env,
                      env_float, env_int, plural, warn, write_text)
 from . import diff as diffmod
 from . import filing, fleet, hosts as hostmod, importers, query
+from . import pacing
+from . import policy as policymod
 from . import render, stats, store as storemod, table as tablemod, tools
+from . import whoran
 from .store import describe_entry, load_ref, now_iso, shown_id, \
     split_ref, split_store
 
@@ -349,6 +355,7 @@ def run_row(rid, kind, name, command, created, **kw):
     d = {"run": rid, "kind": kind, "name": name, "command": command,
          "created": created, "finished": now_iso(), "cwd": os.getcwd(),
          "qd": VERSION}
+    d.update(whoran.local())
     d.update(kw)
     return ["" if d.get(c) is None else str(d[c])
             for c in storemod.RUN_COLUMNS]
@@ -418,6 +425,15 @@ def cmd_run(args):
         return 0
     report_run(args, command, hs, job)
     return job.rc
+
+
+def policy_of(args):
+    """The allow-list and read-only policy, read once per command."""
+    pol = getattr(args, "_policy", None)
+    if pol is None:
+        pol = policymod.from_args(args)
+        args._policy = pol
+    return pol
 
 
 def check_limit(args, hs):
@@ -497,6 +513,9 @@ def add_own_tables(b, rid, label, command, created, took, hs, results,
         storemod.HOST_COLUMNS, [host_row(rid, r) for r in results]))
     counts = outcome_counts(last)
     fields = dict(extra or {})
+    notes = [n for n in (("interrupted after %s" % plural(
+        passes, "pass", "passes")) if interrupted else None,
+        fields.pop("policy", None), fields.pop("notes", None)) if n]
     b.add_own(storemod.RUNS, filing.own_tsv(storemod.RUN_COLUMNS, [run_row(
         rid, fields.pop("kind", "run"), label, command, created,
         duration_s=took, hosts=len(hs), ok=counts.get(fleet.OK, 0),
@@ -505,8 +524,7 @@ def add_own_tables(b, rid, label, command, created, took, hs, results,
         unreachable=counts.get(fleet.UNREACHABLE, 0),
         push_failed=counts.get(fleet.PUSH_FAILED, 0), passes=passes,
         every=every, captures=ncap,
-        notes=("interrupted after %s" % plural(passes, "pass", "passes"))
-        if interrupted else None, **fields)]))
+        notes="; ".join(notes) or None, **fields)]))
 
 
 def say_filing(ncap):
@@ -530,6 +548,14 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
             "--every)")
     if args.every is not None and args.every <= 0:
         die("--every wants a number of seconds above 0")
+    gate = gate_of(args)        # a bad --rate is refused before any host
+    pol = policy_of(args)
+    policymod.check(pol, command, getattr(args, "verb_name", "run"),
+                    len(hs), bool(push), args.sudo,
+                    (extra or {}).get("tool") == "probe")
+    if pol.active:
+        extra = dict(extra or {})
+        extra["policy"] = pol.notes()
     runner = new_runner(args)
     if args.dry_run:
         dry_run_lines(runner, hs, command, push, stdin)
@@ -542,12 +568,14 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
         prov = filing.Provost(st)
         prov.require("keep the answers")
     count = args.count if args.count else 10 ** 9
+    if st is not None:
+        extra = dict(whoran.fan_out(runner, hs, args.jobs), **(extra or {}))
     t0 = time.time()
     created = now_iso()
     results, interrupted = fleet.run_passes(
         hs, lambda h, k: runner.run_one(h, command, list(push) or None,
                                         not args.keep_remote, k, stdin),
-        args.jobs, count, args.every or 0)
+        args.jobs, count, args.every or 0, gate=gate)
     if not results:
         die("interrupted before any pass finished; nothing was kept", 130)
     if push and args.keep_remote:
@@ -579,12 +607,20 @@ def fleet_runs_together(args, hs, specs, extra=None):
     its own wait on a dead host (8 s apiece), and its own provost call.
 
     specs: [(label, command, stdin)].  One pass.  -> [Job]"""
+    pol = policy_of(args)
+    for _, command, _ in specs:
+        policymod.check(pol, command, "probe", len(hs), False, args.sudo,
+                        (extra or {}).get("tool") == "probe")
+    if pol.active:
+        extra = dict(extra or {})
+        extra["policy"] = pol.notes()
     runners = [new_runner(args) for _ in specs]
     check_transport(runners[0], False)
     st = store_of(args)
     prov = filing.Provost(st)
     prov.require("keep the answers")
     tasks = [(i, h) for i in range(len(specs)) for h in hs]
+    extra = dict(whoran.fan_out(runners[0], hs, args.jobs), **(extra or {}))
     t0 = time.time()
     created = now_iso()
 
@@ -593,7 +629,8 @@ def fleet_runs_together(args, hs, specs, extra=None):
         _, command, stdin = specs[i]
         return runners[i].run_one(h, command, None, True, k, stdin)
 
-    results, interrupted = fleet.run_passes(tasks, one, args.jobs)
+    results, interrupted = fleet.run_passes(tasks, one, args.jobs,
+                                            gate=gate_of(args))
     if not results:
         die("interrupted before any host answered; nothing was kept", 130)
     each = [[] for _ in specs]
@@ -894,6 +931,8 @@ def cmd_do(args):
     if not cmd:
         die("nothing to do: put the tool and its arguments after --, e.g.\n"
             "  %s do -- mx run --for 60" % PROG)
+    policymod.check_do(policymod.from_args(args),
+                       " ".join(shlex.quote(a) for a in cmd))
     cmd = resolve_argv(cmd)
     st = store_of(args)
     prov = filing.Provost(st)
@@ -1083,8 +1122,9 @@ def cmd_log(args):
         cmdline = e.meta.get("command") or ""
         rows.append([e.id, e.meta.get("kind", ""),
                      str(e.table_count()), e.summary(),
+                     e.meta.get("operator", ""),
                      cmdline if len(cmdline) <= 50 else cmdline[:47] + "..."])
-    lines = render.render_rows(["run", "kind", "tables", "size",
+    lines = render.render_rows(["run", "kind", "tables", "size", "operator",
                                 "command"], rows, numeric=[2], max_cell=64,
                                width=width_of(args))
     if len(shown) < len(entries):
@@ -1325,6 +1365,68 @@ def cmd_outliers(args):
     return 0
 
 
+def cmd_check(args):
+    from . import check as checkmod
+    checks = checkmod.read_thresholds(args.against)
+    t = load(args)
+    s = subset(args, t)
+    results = checkmod.run(s, checks)
+    n = checkmod.counts(results)
+    e = getattr(t, "entry", None)
+    if args.each:
+        vt = tablemod.Table(checkmod.EACH_COLUMNS,
+                            checkmod.each_rows(results), "check")
+    else:
+        vt = tablemod.Table(checkmod.SUMMARY_COLUMNS,
+                            checkmod.summary_rows(results), "check")
+    head = "%s check -- %s against %s (%s): %d pass, %d fail, %d not " \
+        "measured" % (PROG, source_name(t), args.against, scope(args, t, s),
+                      n[checkmod.PASS], n[checkmod.FAIL],
+                      n[checkmod.UNMEASURED])
+    lines = [head]
+    if e is not None:
+        m = e.meta
+        lines.append("  run %s  %s  %s%s" % (
+            shown_id(e), m.get("name") or "", m.get("created") or "",
+            ("  " + m["command"]) if m.get("command") else ""))
+    lines.append("")
+    lines.extend(render.render_table(vt, width=width_of(args), indent="  "))
+    if args.keep:
+        rid = keep_check(args, vt, t, len(checks))
+        lines.append("")
+        lines.append("  filed as %s: qd show %s, qd web, qd export %s"
+                     % (rid, rid, rid))
+    emit(args, vt, lines)
+    return 0 if n[checkmod.PASS] == len(results) else 1
+
+
+def keep_check(args, vt, t, nchecks):
+    """File a verdict table in the store as a run of its own, kind check,
+    so qd web shows it and qd export writes it like any other."""
+    st = store_of(args)
+    prov = filing.Provost(st)
+    prov.require("file the verdicts")
+    label = "check-" + (run_label(t) or "data")
+    created = now_iso()
+    rid = new_run_id(st, label)
+    b = filing.Batch()
+    vt.name = "check"
+    vt.notes = ["qd check %s --against %s" % (
+        run_label(t) or getattr(t, "source", ""),
+        os.path.abspath(args.against))]
+    added = add_tables(b, rid, label, [(os.path.abspath(args.against), vt)])
+    if not added:
+        b.cleanup()
+        die("nothing to file")
+    b.add_own(storemod.RUNS, filing.own_tsv(storemod.RUN_COLUMNS, [run_row(
+        rid, "check", label, "check %s --against %s" % (
+            run_label(t) or "", args.against), created,
+        captures=len(b.inputs), notes="%d checks" % nchecks)]))
+    notes = file_batch(prov, b, "the verdicts")
+    filed(st, rid, notes, b)
+    return rid
+
+
 def report_outliers(args, t, s):
     col = s.colname(args.column)
     if s.is_results() and col == "value" and len(set(s.values("test"))) > 1:
@@ -1559,9 +1661,29 @@ def cmd_export(args):
                 len(o.rows), plural(len(set(o.values("test"))), "overlay"),
                 args.output))
         return 0
+    if fmt == "hec":
+        from . import exporters
+        text, borrowed, untimed = exporters.to_hec(
+            s, getattr(t, "entry", None), args.sourcetype, args.index)
+        write_text(args.output or "-", text)
+        if borrowed:
+            warn("%s had no time of %s own: given the run's"
+                 % (plural(borrowed, "row"),
+                    "its" if borrowed == 1 else "their"))
+        if untimed:
+            warn("%s had no time and no run to take one from: sent "
+                 "without one, Splunk stamps them on arrival"
+                 % plural(untimed, "event"))
+        return 0
+    if fmt in ("openmetrics", "prom", "prometheus"):
+        from . import exporters
+        labels = [c for c in (args.labels or "").split(",") if c.strip()]
+        write_text(args.output or "-", exporters.to_openmetrics(
+            s, getattr(t, "entry", None), args.prefix, labels))
+        return 0
     if fmt not in tablemod.WRITERS:
-        die("unknown --format %r (want csv, tsv, json, ndjson, md, overlay)"
-            % fmt)
+        die("unknown --format %r (want csv, tsv, json, ndjson, md, overlay, "
+            "hec, openmetrics)" % fmt)
     write_text(args.output or "-", tablemod.WRITERS[fmt](s))
     return 0
 
@@ -2372,12 +2494,13 @@ def cmd_campaign(args):
         groups = [(g, members) for g, members in groups if members]
         pool = os.path.abspath(args.pool) if args.pool else \
             camp.default_pool(args.name)
-        camp.define(st, prov, args.name, groups, command, how, pool)
+        pace = campaign_pacing(args)
+        camp.define(st, prov, args.name, groups, command, how, pool, pace)
         lines = ["%s campaign -- %s: %s, %s, %s" % (
             PROG, args.name, plural(len(groups), "part"),
             plural(sum(len(m) for _, m in groups), "host"), how),
             "  pool     %s (muster's: `muster status --pool %s`)"
-            % (pool, pool)]
+            % (pool, pool)] + pacing_lines(pace)
         lines.extend(next_steps([
             ("%s campaign run %s" % (PROG, args.name),
              "every part in turn (--parts N for some)"),
@@ -2390,7 +2513,9 @@ def cmd_campaign(args):
         summ, rows = camp.describe(st, c)
         lines = ["%s campaign -- %s: %s, %s" % (
             PROG, c.name, plural(len(c.parts), "part"), c.split),
-            "  command  %s" % c.command,
+            "  command  %s" % c.command] + pacing_lines(
+                {"max_per": c.max_per, "ramp": c.ramp,
+                 "window": c.window}) + [
             "  PROGRESS   " + camp.progress(c, summ), ""]
         t = tablemod.Table(camp.STATUS_COLUMNS, rows, "parts")
         lines.extend(render.render_table(t, width=width_of(args),
@@ -2438,9 +2563,25 @@ def cmd_campaign(args):
             shown += 1
         return 0
     filing.Provost(st).require("keep the parts")
+    pace = campaign_pacing(args, c)
+    windows = pacing.parse_windows([pace["window"]] if pace["window"]
+                                   else [])
+    args._gate = pacing.Gate(pacing.parse_caps([pace["max_per"]]
+                                               if pace["max_per"] else []),
+                             pacing.parse_ramp(pace["ramp"]))
+    for ln in pacing_lines(pace):
+        out(ln.strip())
     done, worst = 0, 0
     limit = args.parts or 10 ** 9
     while done < limit:
+        now = local_now()
+        if not pacing.in_window(windows, now):
+            nxt = pacing.next_open(windows, now)
+            out("%s campaign %s -- outside its windows (%s): no part "
+                "started; the next opens %s" % (
+                    PROG, c.name, pacing.windows_text(windows),
+                    nxt.strftime("%a %Y-%m-%d %H:%M") if nxt else "never"))
+            break
         part, held = camp.take(c, args.lease)
         if part is None:
             break
@@ -2464,10 +2605,76 @@ def cmd_campaign(args):
     st.reset()
     summ, _ = camp.describe(st, c)
     out("PROGRESS   " + camp.progress(c, summ))
-    if not done:
+    if not done and pacing.in_window(windows, local_now()):
         out("  nothing was left to take: `%s campaign status %s`"
             % (PROG, c.name))
     return worst
+
+
+def gate_of(args):
+    """The pacing a fan-out runs under: a campaign's (caps, ramp), and
+    --rate, which spaces new connections whatever the verb.  Where both
+    space starts, the slower wins.  None: nothing paces it."""
+    gate = getattr(args, "_gate", None)
+    rate = getattr(args, "rate", None)
+    if rate:
+        spacing = pacing.parse_rate(rate)
+        if gate is None:
+            gate = args._gate = pacing.Gate([], spacing)
+        elif not gate.spacing or gate.spacing < spacing:
+            gate.spacing = spacing
+    return gate
+
+
+def local_now():
+    """The wall clock windows are read against, local time.  QD_NOW
+    (YYYY-mm-ddTHH:MM) stands in for it, for the tests."""
+    fake = env("NOW")
+    if fake:
+        try:
+            return datetime.datetime.strptime(fake, "%Y-%m-%dT%H:%M")
+        except ValueError:
+            die("QD_NOW wants YYYY-mm-ddTHH:MM, got %r" % fake)
+    return datetime.datetime.now().replace(second=0, microsecond=0)
+
+
+def campaign_pacing(args, c=None):
+    """The pacing a campaign runs with, as text: the flags given, else
+    what `campaign new` kept.  Every value is parsed here, so a bad one
+    is refused before anything starts."""
+    pace = {}
+    for key, flag in (("max_per", args.max_per), ("ramp", args.ramp),
+                      ("window", args.window)):
+        if isinstance(flag, list):
+            flag = ";".join(flag) if key == "window" else ",".join(flag)
+        pace[key] = flag or (getattr(c, key, "") if c is not None else "")
+    pacing.parse_caps([pace["max_per"]] if pace["max_per"] else [])
+    pacing.parse_ramp(pace["ramp"])
+    pacing.parse_windows([pace["window"]] if pace["window"] else [])
+    return pace
+
+
+def pacing_lines(pace):
+    lines = []
+    if pace.get("max_per"):
+        lines.append("  at most  %s running at once" % ", ".join(
+            "%d per %s" % (n, a) for a, n in
+            pacing.parse_caps([pace["max_per"]])))
+    if pace.get("ramp"):
+        lines.append("  ramp     %s (a host start every %ss)" % (
+            pace["ramp"], stats.fmt_num(pacing.parse_ramp(pace["ramp"]))))
+    if pace.get("window"):
+        ws = pacing.parse_windows([pace["window"]])
+        now = local_now()
+        if pacing.in_window(ws, now):
+            when = "open now, until %s" % pacing.window_closes(
+                ws, now).strftime("%a %H:%M")
+        else:
+            nxt = pacing.next_open(ws, now)
+            when = "closed; the next opens %s" % (
+                nxt.strftime("%a %Y-%m-%d %H:%M") if nxt else "never")
+        lines.append("  windows  %s  (%s)" % (pacing.windows_text(ws), when))
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -2857,6 +3064,9 @@ def add_ssh(sp):
                    help="scp transport (QD_SCP)")
     g.add_argument("--sudo", action="store_true",
                    help="run the command under sudo -n")
+    g.add_argument("--rate", default=env("RATE"), metavar="N/s",
+                   help="no more than N new connections a second, evenly "
+                   "spaced: for a bastion's MaxStartups (QD_RATE)")
     g.add_argument("--remote-dir", default=env("REMOTE_DIR", "/var/tmp"),
                    help="pushed files go in a directory of the run's own "
                    "in here, removed afterwards (QD_REMOTE_DIR, /var/tmp)")
@@ -2890,6 +3100,15 @@ def add_safety(sp):
                    help="refuse to run wider than N hosts without --yes")
     g.add_argument("--yes", action="store_true",
                    help="proceed past --limit and the mutation guard")
+    g.add_argument("--allow", metavar="FILE",
+                   help="only commands matching a pattern in FILE run; "
+                   "others need --confirm (QD_ALLOW)")
+    g.add_argument("--read-only", action="store_true",
+                   help="only the probes and allow-listed commands; never "
+                   "--push, --script or --sudo (QD_READ_ONLY=1)")
+    g.add_argument("--confirm", action="store_true",
+                   help="ask, at a terminal, to run a command the "
+                   "allow-list does not name")
 
 
 def add_fleet(sp, preview=20):
@@ -2984,6 +3203,9 @@ def build_parser():
     sp.add_argument("--import", dest="import_", action="append",
                     metavar="PATH", help="also read this file or directory "
                     "afterwards; repeatable")
+    sp.add_argument("--read-only", action="store_true",
+                    help="refuse: qd do's tools change the hosts "
+                    "(QD_READ_ONLY=1)")
     sp.add_argument("--no-import", action="store_true",
                     help="keep stdout only; read nothing back")
     sp.add_argument("command", nargs=argparse.REMAINDER,
@@ -3072,6 +3294,21 @@ def build_parser():
     add_query(sp, sort=False)
     add_format(sp)
     sp.set_defaults(fn=cmd_outliers)
+
+    sp = verb("check", "pass or fail against a thresholds file, by "
+              "requirement")
+    sp.add_argument("ref", metavar="RUN")
+    sp.add_argument("--against", required=True, metavar="FILE",
+                    help="thresholds: req, column, op, limit [limit2, where, "
+                    "agg, unit, note] (README: qd check)")
+    sp.add_argument("--each", action="store_true",
+                    help="a row per host per check, not one per check")
+    sp.add_argument("--keep", action="store_true",
+                    help="file the verdicts in the store, for qd web and qd "
+                    "export")
+    add_query(sp, sort=False)
+    add_format(sp)
+    sp.set_defaults(fn=cmd_check)
 
     sp = verb("pivot", "long to wide: rows by columns")
     sp.add_argument("ref", metavar="RUN")
@@ -3219,6 +3456,14 @@ def build_parser():
     sp.add_argument("--lease", default="2h",
                     help="run: how long a part is held before it comes back "
                     "(2h)")
+    sp.add_argument("--max-per", action="append", metavar="ATTR=N",
+                    help="no more than N hosts sharing ATTR's value at once, "
+                    "e.g. pdu=4 (repeatable; new keeps it, run may override)")
+    sp.add_argument("--ramp", metavar="RATE",
+                    help="host starts no faster than RATE: 6/min, 1/s, 120/h")
+    sp.add_argument("--window", action="append", metavar="SPEC",
+                    help="start parts only inside these hours: \"Mon-Fri "
+                    "18:00-06:00\" (repeatable, local time)")
     add_format(sp)
     sp.set_defaults(fn=cmd_campaign, command=[])
 
@@ -3246,17 +3491,26 @@ def build_parser():
     sp.set_defaults(fn=cmd_doe, command=[])
 
     sp = verb("export", "write a dataset out: csv, tsv, json, ndjson, md, "
-              "overlay")
+              "overlay, hec, openmetrics")
     sp.add_argument("ref", nargs="?", metavar="RUN")
     add_query(sp)
     sp.add_argument("--cols", metavar="A,B", help="only these columns")
     sp.add_argument("--format", metavar="FMT",
-                    help="csv, tsv, json, ndjson, md, or overlay (the "
-                    "floor-plan viewer's results); default from -o's "
-                    "extension, else csv")
+                    help="csv, tsv, json, ndjson, md, overlay (the "
+                    "floor-plan viewer's results), hec (Splunk HEC "
+                    "events) or openmetrics (Prometheus text); default "
+                    "from -o's extension, else csv")
     sp.add_argument("-o", "--output", metavar="FILE")
     sp.add_argument("--prefix", default="qd_",
-                    help="overlay: prefix on every test name (qd_)")
+                    help="overlay, openmetrics: prefix on every test or "
+                    "metric name (qd_)")
+    sp.add_argument("--sourcetype", metavar="ST",
+                    help="hec: the events' sourcetype (default qd:TABLE)")
+    sp.add_argument("--index", metavar="NAME",
+                    help="hec: the Splunk index (default the token's)")
+    sp.add_argument("--labels", metavar="A,B",
+                    help="openmetrics: columns to label samples by, beside "
+                    "host, peer and run")
     sp.add_argument("--target", metavar="COL",
                     help="overlay: the column naming hosts (default host)")
     sp.add_argument("--run", metavar="LABEL",
