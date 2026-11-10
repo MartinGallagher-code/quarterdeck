@@ -17,8 +17,13 @@ test runner and the docs.
   and 70 s at most, so the time was the long pole, not the queue: the
   provost 2.1.0 job (median 10 min 31 s) was last in 17 of the 22, and the
   doe suite was the longest suite in 150 of the 154 suite jobs (118 to
-  400 s on its own).
-- **After:** AFTER_NUMBERS
+  400 s).
+- **After:** this pull request's runs took 301 s (#101), 291 s (#104) and
+  299 s (#108), wall clock: 5 min at most, under half the baseline's 10 min
+  25 s for pull requests (half is 5 min 12 s). The last job is now a share
+  of the provost 2.1.0 job, 271 to 297 s; jobs waited 3 to 15 s for a
+  runner. A newer push cancelled the run still going (#103, cancelled when
+  #104 started).
 
 ### Changed
 - **The seven jobs that run the whole suite each run it on three runners**
