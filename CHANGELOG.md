@@ -5,6 +5,22 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.8.6 — 2026-11-10
+
+The version check also compares with the base branch (shared_tools BN-002).
+Nothing about `qd` itself changed.
+
+### Tests
+- **`tests/check_version.sh` is shared_tools' template copy now**: the same
+  agreement check (`quarterdeck/__init__.py`, `pyproject.toml`, the top of
+  `CHANGELOG.md`) that `tests/check.sh`, CI and `release.yml` run, and given
+  a commit it also fails unless the version is greater than that commit's.
+  CI's **version** job runs it against the base branch on a pull request and
+  against what `main` was before a push to it, so a pull request that
+  forgets the bump, or two that take the same number, fail there.
+  `CLAUDE.md` and README say so, and the ticket snippet in `CLAUDE.md` is
+  the current one.
+
 ## 0.8.5 — 2026-11-10
 
 Ready for PyPI (QD-007). Nothing `qd` does has changed.
