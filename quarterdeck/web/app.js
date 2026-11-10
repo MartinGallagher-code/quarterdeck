@@ -104,10 +104,10 @@
   };
 
   const TABS = [["table", "Table"], ["group", "Group"], ["pivot", "Pivot"],
-    ["trend", "Trend"], ["diff", "Diff"], ["compare", "Compare"], ["about", "About"]];
+    ["trend", "Trend"], ["diff", "Diff"], ["compare", "Compare"], ["join", "Telemetry"], ["about", "About"]];
   // The tabs that read the run rather than one table's columns, kept when
   // another run is picked
-  const RUN_TABS = ["table", "about", "diff", "compare"];
+  const RUN_TABS = ["table", "about", "diff", "compare", "join"];
 
   function readHash() {
     const q = new URLSearchParams(location.hash.slice(1));
@@ -508,7 +508,7 @@
         return;
       }
       const fn = { table: viewTable, group: viewGroup, pivot: viewPivot,
-        trend: viewTrend, diff: viewDiff, compare: viewCompare, about: viewAbout }[S.tab] || viewTable;
+        trend: viewTrend, diff: viewDiff, compare: viewCompare, join: viewJoin, about: viewAbout }[S.tab] || viewTable;
       await fn(view);
     } catch (err) {
       showError(err);
@@ -1395,6 +1395,66 @@
     clear($("view")).append(h("div", { class: "card" },
       h("h3", { text: g.rows.length + " " + (g.kind === "design" ? "points" : "parts") }),
       plainTable(g.columns, rows, { numeric: g.columns.map((c, j) => ["hosts", "runs", "point", "block"].includes(c) ? j : -1) })));
+  }
+
+  // -------------------------------------------------------------------------
+  // Telemetry: the run's rows beside samples the store keeps, as `qd join`
+  // lines them up -- every figure from the engine
+  // -------------------------------------------------------------------------
+
+  async function viewJoin(view) {
+    renderFilterbar();
+    clear(view);
+    // what `qd import --telemetry` filed: a run with a table called telemetry
+    const tels = S.entries.filter((e) => e.id !== S.e && e.tables.some((t) => t.name === "telemetry"));
+    const tel = S.p.tel !== undefined ? S.p.tel : (tels.length ? tels[0].id : "");
+    const opts = tels.map((e) => [e.id, e.id + "  " + (entryTitle(e) || "").slice(0, 40)]);
+    if (tel && !opts.some((o) => o[0] === tel)) opts.unshift([tel, tel]);
+    const winIn = h("input", { type: "text", value: S.p.window || "", placeholder: "run", "aria-label": "Window", style: { width: "8em" } });
+    const aggIn = h("input", { type: "text", value: S.p.agg || "", placeholder: "mean,max", "aria-label": "Figures" });
+    const metIn = h("input", { type: "text", value: S.p.metrics || "", placeholder: "every metric", "aria-label": "Metrics" });
+    const timeIn = h("input", { type: "text", value: S.p.time || "", placeholder: "the run's own", "aria-label": "Row times" });
+    const run = h("button", { type: "button", class: "primary", text: "Join", onclick: () => {
+      S.p.window = winIn.value.trim(); S.p.agg = aggIn.value.trim();
+      S.p.metrics = metIn.value.trim(); S.p.time = timeIn.value.trim(); renderView();
+    } });
+    view.append(h("div", { class: "controls" },
+      opts.length ? select("Telemetry", tel, opts, (v) => { S.p.tel = v; renderView(); }) : null,
+      h("label", { title: "run, or widened either side: +-30, 2m" }, "Window", winIn),
+      h("label", { title: "mean, max, min, median, p95, p99, stdev, count, first, last, delta, rate" }, "Figures", aggIn),
+      h("label", { title: "names, or patterns with * and ?" }, "Metrics", metIn),
+      h("label", { title: "a column of the rows' own times, or two: a start and an end" }, "Row times", timeIn), run));
+    if (!tel) {
+      view.append(h("p", { class: "empty", text: "No telemetry in this store yet. Export temperatures, power or link " +
+        "counters from Splunk, CloudVision or a collector to a CSV, then: qd import EXPORT.csv --telemetry" }));
+      renderCli("");
+      return;
+    }
+    const d = await api("/api/join", tableParams({ tel: tel, window: S.p.window || null, agg: S.p.agg || null,
+      metrics: S.p.metrics || null, time: S.p.time || null, sort: S.sort || null }));
+    renderCli(["qd join", shq(refArg()), shq(tel), S.p.window ? "--window " + shq(S.p.window) : "",
+      S.p.agg ? "--agg " + shq(S.p.agg) : "", S.p.metrics ? "--metrics " + shq(S.p.metrics) : "",
+      S.p.time ? "--time " + shq(S.p.time) : "", whereArgs()].filter(Boolean).join(" "));
+    view.append(h("div", { class: "tiles" },
+      tile("Rows", d.total, null),
+      tile("With telemetry", d.with, d.with ? "good" : "serious"),
+      tile("Nothing in the window", d.without, d.without ? "serious" : null),
+      tile("Metrics", d.metrics.length, null)));
+    view.append(h("ul", { class: "notes" }, d.notes.map((n) => h("li", { text: n }))));
+    if (!d.figures.length || !d.rows.length) {
+      view.append(h("p", { class: "empty", text: d.rows.length ? "No samples in any row's window." : "No rows." }));
+      return;
+    }
+    // the host first, then what the telemetry said, then the rest of the
+    // run's own columns
+    const lead = d.columns.slice(0, d.lead);
+    const first = lead.filter((c) => c === "host" || c === "pass");
+    const order = first.concat(d.figures, lead.filter((c) => !first.includes(c)));
+    const idx = order.map((c) => d.columns.indexOf(c));
+    if (d.matched > d.rows.length) {
+      view.append(h("p", { class: "count", text: "the first " + d.rows.length + " of " + d.matched + " rows" }));
+    }
+    view.append(resultTable({ columns: order, kinds: d.kinds, rows: d.rows.map((r) => idx.map((i) => r[i])) }, {}));
   }
 
   // -------------------------------------------------------------------------

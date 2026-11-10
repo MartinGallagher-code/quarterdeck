@@ -12,11 +12,11 @@ not measured, so it is left out of the event or the sample, never written
 as 0 or "".
 """
 
-import calendar
 import json
 import re
 
 from .common import die
+from .importers import epoch_of
 from .table import slug, to_base
 
 # The columns that name the host, in the order qd looks for them (the same
@@ -29,45 +29,14 @@ ROW_TIME_COLS = ("ts", "timestamp", "time")
 NOT_METRICS = ("rc", "pass", "ts", "timestamp", "time", "#", "n", "capture",
                "addr", "line_no", "bytes")
 
-_ISO_RE = re.compile(
-    r"^(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d)(?::(\d\d)(\.\d+)?)?"
-    r"\s*(Z|[+-]\d\d:?\d\d)?$")
-
 
 def to_epoch(text):
     """Seconds since the epoch for a cell: an epoch number (seconds, or
-    milliseconds when it is too large to be seconds) or an ISO 8601 time,
-    UTC unless it says otherwise.  None when it is neither."""
-    s = (text or "").strip()
-    if not s:
-        return None
-    try:
-        v = float(s)
-    except ValueError:
-        v = None
-    if v is not None:
-        if v != v or v in (float("inf"), float("-inf")) or v < 0:
-            return None
-        return v / 1000.0 if v > 1e11 else v
-    m = _ISO_RE.match(s)
-    if not m:
-        return None
-    y, mo, d, h, mi = (int(m.group(i)) for i in range(1, 6))
-    sec = int(m.group(6) or 0)
-    try:
-        t = calendar.timegm((y, mo, d, h, mi, sec, 0, 0, 0))
-    except (ValueError, OverflowError):
-        return None
-    if not (1 <= mo <= 12 and 1 <= d <= 31 and h < 24 and mi < 60
-            and sec < 61):
-        return None
-    frac = float(m.group(7)) if m.group(7) else 0.0
-    tz = m.group(8)
-    if tz and tz != "Z":
-        sign = -1 if tz[0] == "-" else 1
-        digits = tz[1:].replace(":", "")
-        t -= sign * (int(digits[:2]) * 3600 + int(digits[2:]) * 60)
-    return t + frac
+    milliseconds, microseconds or nanoseconds when it is too large to be
+    seconds) or an ISO 8601 time, UTC unless it says otherwise.  None when
+    it is neither.  The one reader of times: importers.epoch_of, which
+    `qd join` reads telemetry with too."""
+    return epoch_of(text)
 
 
 def _first(table, names):
