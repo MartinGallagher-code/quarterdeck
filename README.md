@@ -299,8 +299,8 @@ without `--yes`. Then provost deletes it, as one commit, so the store's git
 history keeps what was there. A run goes whole: every host's answer and
 every table it filed, from whichever datasets they are in (other runs'
 rows in those datasets stay), and its rows in `qd.runs` and `qd.hosts`.
-qd's own records (`qd.runs`, `qd.hosts`, `qd.campaigns`, `qd.designs`) are
-never deleted whole by `qd rm`. A run that was part of a campaign is said,
+qd's own records (`qd.runs`, `qd.hosts`, `qd.campaigns`, `qd.designs`,
+`qd.peers`, `qd.baselines`) are never deleted whole by `qd rm`. A run that was part of a campaign is said,
 with the `qd campaign retry` that runs that part again.
 
 Deleting one run needs `provost rm --capture`, which is newer than provost
@@ -623,14 +623,104 @@ One row per run (hosts that answered, n, median, mean, min, p95, max, and
 the change from the baseline), then host by host every run's value side by
 side, flagged where a median moved more than `--drift` percent (5) from the
 baseline or the host's status was not ok. The baseline is the first run, or
-`--baseline RUN`. Runs over different hosts (a campaign's parts) are
-compared as wholes. With no column, every numeric column the runs share is
+`--baseline RUN`, or a qualified baseline's name (`--baseline NAME`, next
+section), which adds a significance test. `--peers NAME` with `-c` adds a
+row per peer group: its median in each run, flagged where it moved past
+`--drift`; `--format csv` is then that table. Runs over different hosts (a
+campaign's parts) are compared as wholes. With no column, every numeric column the runs share is
 compared by its median, leaving out what the runs *were* rather than what
 they measured: a design's factors and the hosts' attributes. `--format csv`
 is the host-by-run table. The exit status is 1 when anything changed, as
 with `diff`. `qd web` shows the same comparison on its Compare tab. Runs
 from other stores go in as `RUN@STORE` (see *Runs from different stores
 side by side*); `--last N@STORE` takes the last N from that store.
+
+---
+
+## Peer groups and qualified baselines: `qd peers`, `qd baseline`
+
+A drift threshold says a host moved 5%. It cannot say whether 3% is a
+real slide or a run that happened to be slow, and it says nothing until
+the 5% is crossed. Two things kept in the store answer that: **peer
+groups**, the hosts that ought to measure alike, and **qualified
+baselines**, what those groups measured on runs someone vouched for.
+
+```bash
+qd peers define sku --by sku                     # a row's group is its sku column
+qd peers define pods --from pods.tsv             # host and group, from a file
+qd peers define hw --facts kernel,bios           # each host's kernel and BIOS, from the latest facts run
+qd peers ls                                      # qd peers show NAME [RUN], qd peers rm NAME --yes
+
+qd stats latest mbps --peers sku                 # centre and spread, group by group
+qd outliers latest mbps --peers sku              # each host against its own peers
+
+qd baseline set gold iperf --last 5 --peers sku -c mbps --note "after the BIOS update"
+qd baseline show gold                            # what it holds, run by run; qd baseline ls, rm
+qd compare iperf --last 5 --baseline gold        # later runs against it
+```
+
+**A peer group** is one of two kinds. `--by COLS` is a rule: a row's group
+is its value of those columns (a host attribute like `rack` or `sku`, which
+qd puts on every row), in whatever is read. `--from FILE` (a `host` and a
+`group` column, or two words a line) and `--facts COLS` are lists, frozen
+when defined: `--facts kernel,bios` reads each host's values from the
+latest `facts` run (`--run RUN` reads another), so the groups are what the
+hosts actually are, and a later facts run moves nobody until the group is
+defined again. A blank in a `by` column, a blank fact, or a host the list
+does not name is in no group, and is said to be left out: not measured is
+not a group of its own. `--replace` files a new definition over an old
+one; the old one stays in the store's history.
+
+`qd stats --peers NAME` groups by the peer group first (before any
+`--by`). `qd outliers --peers NAME` holds each host against its own group's
+median and spread rather than the fleet's, so a host that is ordinary
+fleet-wide but far from its own SKU is found, and one that only looks odd
+because its SKU is different is not.
+
+**A qualified baseline** is set from one or more runs (named, `RUN --last
+N`, or `--group CAMPAIGN`) and kept as qd's own table, `qd.baselines`:
+who set it (the operator, as on a run) and when, the note, the runs, and,
+for each column, peer group and host, the value every run gave, with their
+median, spread (MAD) and count. It is not "the first run in the list": a
+bad run cannot become the baseline by being first, and who blessed it is on
+record. A name that is a run's is refused, so `--baseline NAME` is never
+ambiguous; `--replace` sets it again.
+
+Each run is reduced the way `compare` reduces one (a host's rows to their
+median, `--agg`), and a peer group to the median of its hosts, so the
+group has one value per run and the runs are the replicates.
+`qd compare ... --baseline NAME` then gives, per column and peer group:
+
+| Figure | What |
+|---|---|
+| `drift_pct` | the runs' median against the baseline's, in percent |
+| `effect` | the rank-biserial correlation, −1 to +1: +1 when every run is above every baseline run |
+| `p` | the Mann–Whitney U test, two-sided: exact for 8 runs or fewer with no ties, else the normal approximation with the tie and continuity corrections (scipy's `mannwhitneyu` figures) |
+| `p_holm` | `p` adjusted by Holm's method for the number of tests in the comparison (columns × peer groups), so many groups do not multiply false alarms |
+| `verdict` | significant (`p_holm` below `--alpha`, 0.05), not significant, too few runs, not measured |
+
+A significant difference is a change even inside `--drift`: that is the
+point, a slide seen before a fixed limit is crossed. It has to be at least
+`--min-drift` percent (1, `QD_MIN_DRIFT`), because runs with no noise at
+all make any difference a sure one, and 0.03% is not a slide anyone acts
+on: smaller, the verdict says "significant (under 1%)" and nothing is
+flagged. A median past `--drift` is still a change whatever the test
+says. The test needs **three
+runs a side**; with fewer the drift alone is used and the verdict says so.
+With exactly three a side the smallest p a rank test can give is 0.1, so
+nothing can be significant at 0.05 and the report says that too: four a
+side reach 0.029, five 0.008. Host by host, each host's median over the
+runs is held against its baseline median by the drift alone (one test per
+host would be hundreds of tests on a handful of runs). The runs the
+baseline was set from are left out of what is held against it. A blank is
+not measured: a run that did not measure a host gives it no value, never a
+zero, and a baseline's count is of the runs that measured it. `--format
+csv` is the per-group table; the exit status is 1 when anything changed.
+
+The test is qd's, in the standard library: design_of_experiments' `doe`
+compares two sessions run by run (a paired t-test, matched by factor
+levels), which is not this question, and needs numpy, scipy and Python
+3.9 or newer.
 
 ---
 
@@ -809,6 +899,8 @@ qd stats latest mbps loss_pct --by rack       # per group (--agg mean,p95,...)
 qd freq latest A                              # who said what
 qd hist latest rtt_p99 --bins 20
 qd outliers latest mbps                       # far from the median, by MAD
+qd outliers latest mbps --peers sku           # far from its own peer group's
+qd stats latest mbps --peers sku              # per peer group (qd peers)
 qd pivot latest --rows host --cols peer --values pps
 qd trend latest load1 --by host --over ts
 qd diff latest                                # against the last run of the same thing
@@ -862,6 +954,10 @@ drags the mean and inflates the standard deviation until it hides inside
 both. When most of the fleet agrees exactly (MAD of 0), every value that
 differs is listed. When hosts repeat (a time series, a mesh), each host is
 reduced to its median first, so a hundred rows count as one opinion.
+`--method iqr` uses Tukey's fences instead: outside the quartiles by more
+than `--k` (1.5) interquartile ranges, scored in IQRs past the nearer
+quartile. `--peers NAME` holds each host against its own peer group
+(`qd peers`), each group with its own median and spread.
 
 ### `diff`: what changed
 
@@ -934,7 +1030,7 @@ missed.
 
 An import, a `ds:NAME` dataset or a file says nothing of when it was
 measured (an import keeps when it was imported), so those need `--time`.
-`ts` is kept to the millisecond from 0.9.0. Runs filed before kept the
+`ts` is kept to the millisecond from 0.10.0. Runs filed before kept the
 whole second, so their windows run a second longer to cover what was cut
 off, and the notes say so. A sample counts when its time is at or after
 the start and at or before the end: both edges are in.
@@ -1077,7 +1173,10 @@ engine's, as everywhere.
   every run of its campaign or design; a row per run with where the column
   sat and how far it moved from the baseline, then every host's value per
   run, flagged where it drifted or its status went from ok. Click a host
-  to open the latest run filtered to it.
+  to open the latest run filtered to it. **Peer groups** adds each group's
+  median per run; a **qualified** baseline in the Baseline list holds the
+  runs against it, with the drift, effect, p, Holm-adjusted p and verdict
+  per peer group, as `qd compare --baseline NAME` prints them.
 - **Floor plan** writes the view as an overlay and opens it in the
   datacenter viewer, served by the same server at `/floor/` when
   `datacenter-layout-viewer` is installed. Without `--layout`, use

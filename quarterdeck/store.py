@@ -60,7 +60,10 @@ OUTCOMES = ("ok", "failed", "timeout", "unreachable", "push-failed")
 # with `batch` (PyPI's 2.1.0 still does), so they are escaped too.
 TEXT_COLUMNS = ("command", "ran", "version", "cwd", "notes", "error",
                 "stderr", "attrs", "factors", "operator", "operator_host",
-                "ssh_user", "ssh_key")
+                "ssh_user", "ssh_key",
+                # qd.peers and qd.baselines: column names and group values
+                # are anyone's words (a facts run's cpu.model)
+                "note", "by", "source", "peer", "key", "key_cols", "column")
 
 KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 
@@ -71,12 +74,17 @@ SCAN_SLACK = 5000
 _ESC = {"\\": "\\\\", "\t": "\\t", "\n": "\\n", "\r": "\\r", '"': "\\x22"}
 _ESC_RE = re.compile(r'[\\\t\n\r"]')
 _UNESC = {"\\\\": "\\", "\\t": "\t", "\\n": "\n", "\\r": "\r",
-          "\\x22": '"'}
-_UNESC_RE = re.compile(r"\\(?:\\|t|n|r|x22)")
+          "\\x22": '"', "\\x20": " "}
+_UNESC_RE = re.compile(r"\\(?:\\|t|n|r|x22|x20)")
 
 
 def escape(text):
     return _ESC_RE.sub(lambda m: _ESC[m.group(0)], text or "")
+
+
+def escape_spaces(text):
+    """escape, and a space as \\x20 too (filing.own_tsv says why)."""
+    return escape(text).replace(" ", "\\x20")
 
 
 def unescape(text):

@@ -172,6 +172,40 @@ t_compare_is_the_terminal_s() {
     assert_contains "$out" "400"
 }
 
+# a qualified baseline and peer groups: the page gets the terminal's figures
+t_compare_against_a_qualified_baseline() {
+    imp() {
+        printf 'host,sku,v\na,x,%s\nb,x,%s\nc,y,200\nd,y,200\n' "$1" "$1" \
+            > q.csv
+        qd import q.csv --name q > /dev/null
+    }
+    qd peers define sku --by sku > /dev/null
+    for v in 100.0 100.2 99.9 100.1 99.8; do imp "$v"; done
+    QD_OPERATOR=tester qd baseline set good q --last 5 --peers sku -c v \
+        > /dev/null
+    for v in 97.0 97.2 96.9 97.1 96.8; do imp "$v"; done
+    start_web
+    out="$(get '/api/compare?e=latest&last=5&baseline=good&c=v')"
+    assert_contains "$out" '"name": "good"'
+    assert_contains "$out" '"operator": "tester"'
+    assert_contains "$out" '"verdict": "significant"'
+    assert_contains "$out" '"p_text": "0.0079"'
+    assert_contains "$out" '"p_holm_text": "0.016"'
+    assert_contains "$out" '"effect_text": "-1.00"'
+    assert_contains "$out" '"verdict": "not significant"'
+    # the same figures the terminal prints
+    term="$(qd compare q --last 5 --baseline good -c v --format csv)" || true
+    assert_contains "$term" "v,x,5,100,0.1,5,97,-3.0,-1.00,0.0079,0.016,significant"
+    # run against run, with each peer group's median per run
+    out="$(get '/api/compare?e=latest&last=2&c=v&peers=sku')"
+    assert_contains "$out" '"peer_groups": ["sku"]'
+    assert_contains "$out" '"baselines": ["good"]'
+    assert_contains "$out" '"peer": "x", "medians": [97.1, 96.8]'
+    out="$(get '/api/compare?e=latest&last=2&c=v&peers=nosuch')"
+    assert_contains "$out" "400"
+    assert_contains "$out" "no peer group"
+}
+
 t_join_is_the_terminal_s() {
     seed
     # telemetry for the latest run's hosts, inside each one's window, kept
@@ -521,6 +555,7 @@ run_test "a column's unit is its figures' scale"    t_column_unit_is_the_figures
 run_test "group, pivot, trend"                      t_group_pivot_trend
 run_test "diff defaults to the last same run"       t_diff_defaults_to_the_last_same_run
 run_test "compare: the terminal's verdict"           t_compare_is_the_terminal_s
+run_test "compare: a qualified baseline, peer groups" t_compare_against_a_qualified_baseline
 run_test "campaigns and designs, and their runs"     t_campaigns_and_designs_are_listed
 run_test "telemetry joined as the terminal joins it" t_join_is_the_terminal_s
 run_test "raw answers, export, overlay"             t_raw_export_and_overlay

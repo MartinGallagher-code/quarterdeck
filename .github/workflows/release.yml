@@ -9,27 +9,20 @@
 #   https://pypi.org/manage/account/publishing/ -> "Add a new pending
 #   publisher": PyPI project quarterdeck, owner MartinGallagher-code,
 #   repository quarterdeck, workflow release.yml, environment pypi.
-#   For the TestPyPI dry run, the same at https://test.pypi.org with
-#   environment testpypi.
-# and, in this repository's Settings -> Environments, environments named
-# pypi and testpypi (protection rules optional).
+# and, in this repository's Settings -> Environments, an environment named
+# pypi (protection rules optional).
 #
-# Then: publishing a GitHub release tagged vX.Y.Z uploads the sdist and
-# wheel built from that tag to PyPI.  "Run workflow" (workflow_dispatch)
-# uploads to TestPyPI by default, for the dry run before the first release.
+# Then either of these uploads the sdist and wheel to PyPI:
+#   - publishing a GitHub release tagged vX.Y.Z (built from that tag), or
+#   - "Run workflow" (workflow_dispatch) on main (built from main's tip;
+#     this makes no tag and no GitHub release).
+# There is no TestPyPI dry run (QD-023): PyPI is the only target.
 name: Release to PyPI
 
 on:
   release:
     types: [published]
   workflow_dispatch:
-    inputs:
-      target:
-        description: "where to upload: testpypi (the dry run) or pypi"
-        required: true
-        default: testpypi
-        type: choice
-        options: [testpypi, pypi]
 
 jobs:
   build:
@@ -42,16 +35,23 @@ jobs:
         with:
           python-version: "3.12"
 
-      # The tag is the release's word for the version; the three places
-      # CLAUDE.md names must agree with it, or the upload is refused.
-      - name: Version agrees with the tag
-        if: github.event_name == 'release'
+      # The three places CLAUDE.md names must agree on the version, or the
+      # upload is refused.  A release's tag must agree with them too.  The
+      # button has no tag to check, so it publishes main and nothing else:
+      # PyPI never lets a number be reused, so a branch's upload could not
+      # be taken back.
+      - name: Version agrees with itself, and with the tag
         run: |
           bash tests/check_version.sh
-          want="${GITHUB_REF_NAME#v}"
-          have="$(python -c 'import quarterdeck; print(quarterdeck.VERSION)')"
-          if [ "$want" != "$have" ]; then
-            echo "tag $GITHUB_REF_NAME but quarterdeck says $have" >&2
+          if [ "$GITHUB_EVENT_NAME" = release ]; then
+            want="${GITHUB_REF_NAME#v}"
+            have="$(python -c 'import quarterdeck; print(quarterdeck.VERSION)')"
+            if [ "$want" != "$have" ]; then
+              echo "tag $GITHUB_REF_NAME but quarterdeck says $have" >&2
+              exit 1
+            fi
+          elif [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "Run workflow publishes main only, and this run is on $GITHUB_REF" >&2
             exit 1
           fi
 
@@ -81,7 +81,6 @@ jobs:
   publish-pypi:
     name: publish to PyPI
     needs: build
-    if: github.event_name == 'release' || inputs.target == 'pypi'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
@@ -96,25 +95,4 @@ jobs:
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          attestations: true
-
-  publish-testpypi:
-    name: publish to TestPyPI (dry run)
-    needs: build
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    environment:
-      name: testpypi
-      url: https://test.pypi.org/project/quarterdeck/
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
           attestations: true

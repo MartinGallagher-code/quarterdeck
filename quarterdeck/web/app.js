@@ -1239,6 +1239,7 @@
     if (S.p.last && !named) parts.push("--last " + S.p.last);
     if (S.p.c) parts.push("-c " + shq(S.p.c));
     if (S.p.baseline) parts.push("--baseline " + shq(S.p.baseline));
+    if (S.p.peers && S.p.c && !(d && d.qualified)) parts.push("--peers " + shq(S.p.peers));
     if (S.p.drift) parts.push("--drift " + S.p.drift);
     if (S.p.key) parts.push("--key " + shq(S.p.key));
     parts.push(whereArgs());
@@ -1258,6 +1259,7 @@
     try {
       d = await api("/api/compare", { e: S.e, t: S.t, group: group || null, last: S.p.last || null,
         c: S.p.c || null, baseline: S.p.baseline || null, drift: S.p.drift || null,
+        peers: S.p.peers && S.p.c ? S.p.peers : null,
         key: S.p.key || null, changed: S.p.all ? "0" : null, where: S.where, also: alsoRefs() });
     } catch (err) { refusal = err; }
 
@@ -1272,11 +1274,22 @@
     } });
     const ctl = [select("Runs", group, runsOpts, (v) => { S.p.group = v; delete S.p.baseline; renderView(); }),
       h("label", null, "How many, latest last", lastIn)];
-    if (d) {
+    if (d && d.qualified) {
+      // against a qualified baseline: its columns, and the way back to runs
+      ctl.push(select("Column", S.p.c || "", [["", "every column it holds"]].concat(d.qualified.columns.map((c) => [c, c])),
+        (v) => { S.p.c = v; renderView(); }));
+      ctl.push(select("Baseline", S.p.baseline, [["", "the first run (no qualified baseline)"]].concat(
+        d.baselines.map((b) => [b, "qualified: " + b])), (v) => { S.p.baseline = v; renderView(); }));
+    } else if (d) {
       ctl.push(select("Column", S.p.c || "", [["", "every numeric column"]].concat(d.numeric.map((c) => [c, c])),
         (v) => { S.p.c = v; renderView(); }));
       ctl.push(select("Baseline", S.p.baseline || "", d.runs.map((r, i) => [i === 0 && !S.p.baseline ? "" : r.id,
-        r.label + "  " + r.id]), (v) => { S.p.baseline = v; renderView(); }));
+        r.label + "  " + r.id]).concat((d.baselines || []).map((b) => [b, "qualified: " + b])),
+        (v) => { S.p.baseline = v; renderView(); }));
+      if ((d.peer_groups || []).length) {
+        ctl.push(select("Peer groups", S.p.peers || "", [["", "(none)"]].concat(d.peer_groups.map((n) => [n, n])),
+          (v) => { S.p.peers = v; renderView(); }));
+      }
     }
     // a run from another store, set beside these (REF@STORE)
     const others = otherStores();
@@ -1300,11 +1313,18 @@
       ctl.push(h("button", { type: "button", text: "Drop the other stores' runs",
         onclick: () => { S.p.also = ""; delete S.p.baseline; renderView(); } }));
     }
-    ctl.push(h("label", null, "A change is past %", driftIn), h("label", null, "Match rows on", keyIn), go);
+    // a qualified baseline matches rows the way it was set: no key to pick
+    ctl.push(h("label", null, "A change is past %", driftIn));
+    if (!(d && d.qualified)) ctl.push(h("label", null, "Match rows on", keyIn));
+    ctl.push(go);
     view.append(h("div", { class: "controls" }, ctl));
     renderCli(compareCli(group, d));
     if (!d) {
       view.append(h("p", { class: "empty", text: String(refusal.message || refusal) }));
+      return;
+    }
+    if (d.qualified) {
+      viewQualified(view, d);
       return;
     }
 
@@ -1328,6 +1348,16 @@
         .concat([i === d.baseline ? "baseline" : pctText(r.change_pct)]));
       view.append(h("div", { class: "card" }, h("h3", { text: d.column + (d.unit ? " (" + d.unit + ")" : "") + ", each run" }),
         plainTable(["run", "hosts ok"].concat(stat).concat(["change"]), rows, { numeric: [2, 3, 4, 5, 6, 7, 8] })));
+      if (d.peers) {
+        // each peer group's median per run, as `qd compare --peers` prints it
+        const prow = d.peers.rows.map((p) => [p.peer].concat(p.medians.map(fmtNum)).concat([pctText(p.change_pct), p.flags.join("; ")]));
+        const moved = d.peers.rows.filter((p) => p.flags.length).length;
+        view.append(h("div", { class: "card" },
+          h("h3", { text: "By peer group " + d.peers.name + " (" + d.peers.how + "): " + moved + " of " + d.peers.rows.length + " changed" }),
+          plainTable([d.peers.name].concat(d.runs.map((r) => r.label)).concat(["change", "flags"]), prow, {
+            numeric: d.runs.map((r, i) => i + 1).concat([d.runs.length + 1]),
+            rowClass: (i) => d.peers.rows[i].flags.length ? "flagged" : null })));
+      }
     } else if (d.columns.length) {
       const rows = d.columns.map((c) => [c.column].concat(c.medians.map(fmtNum)).concat([pctText(c.change_pct)]));
       view.append(h("div", { class: "card" }, h("h3", { text: "Medians, each run" }),
@@ -1359,6 +1389,52 @@
     } else if (!d.changed) {
       card.append(h("p", { class: "empty", text: d.column ? "Nothing moved past the threshold, and no status changed." :
         "No status changed. Pick a column to compare its values " + d.key.join(", ") + " by " + d.key.join(", ") + "." }));
+    }
+    view.append(card);
+  }
+
+  // Later runs against a qualified baseline, as `qd compare --baseline NAME`
+  // prints them: every figure (drift, effect, p, verdict) is the engine's
+  function viewQualified(view, d) {
+    const q = d.qualified;
+    const runRows = d.runs.map((r) => [r.label,
+      h("button", { type: "button", class: "link mono", text: r.id, onclick: (ev) => { ev.stopPropagation(); openEntry(r.id); } }),
+      r.hosts_ok, String(r.rows), (r.created || "").replace("T", " ").replace("Z", "")]);
+    view.append(h("div", { class: "card" }, h("h3", { text: d.runs.length + " runs against baseline " + q.name }),
+      plainTable(["run", "id", "hosts ok", "rows", "created"], runRows, { numeric: [3] })));
+    const notes = ["baseline " + q.name + ": " + q.summary + ", set by " + (q.operator || "(nobody recorded)") + " at " +
+      q.created.replace("T", " ").replace("Z", "") + (q.note ? "; " + q.note : ""),
+      "a change: a difference of " + fmtNum(d.min_drift) + "% or more that the Mann-Whitney U test finds significant " +
+      "(Holm-adjusted p below " + fmtNum(d.alpha) + "; " + q.min_runs + " runs a side or more), or a median moved past " +
+      fmtNum(d.drift) + "%"];
+    view.append(h("ul", { class: "notes" }, notes.concat(d.notes).map((n) => h("li", { text: n }))));
+    const many = d.columns_compared.length > 1;
+    const grows = d.groups.map((g) => (many ? [g.column] : []).concat([g.peer_shown, String(g.base_n), fmtNum(g.base_median),
+      String(g.n), fmtNum(g.median), pctText(g.drift_pct), g.effect_text, g.p_text, g.p_holm_text, g.verdict, g.flags.join("; ")]));
+    const off = many ? 1 : 0;
+    view.append(h("div", { class: "card" },
+      h("h3", { text: d.groups_changed + " of " + d.groups.length + (many ? " columns and peer groups" : " peer groups") + " changed" +
+        (many ? "" : ": " + d.columns_compared[0] + (q.units[d.columns_compared[0]] ? " (" + q.units[d.columns_compared[0]] + ")" : "")) }),
+      plainTable((many ? ["column"] : []).concat(["peers", "baseline runs", "baseline median", "runs", "median", "drift",
+        "effect", "p", "p (Holm)", "verdict", "flags"]), grows, {
+        numeric: [1, 2, 3, 4, 5, 6, 7, 8].map((j) => j + off),
+        rowClass: (i) => d.groups[i].flags.length ? "flagged" : null })));
+    const all = h("input", { type: "checkbox", checked: S.p.all ? true : null,
+      onchange: () => { S.p.all = all.checked ? "1" : ""; renderView(); } });
+    const card = h("div", { class: "card" },
+      h("h3", { text: d.changed + " of " + d.keys_total + " keys moved past " + fmtNum(d.drift) + "% from the baseline" }),
+      h("label", { class: "count" }, all, " every key, not only those that moved"));
+    if (d.keys.length) {
+      const peers = !!q.peers;
+      const krows = d.keys.map((k) => [k.column].concat(peers ? [k.peer == null ? "" : k.peer] : []).concat(k.key)
+        .concat([fmtNum(k.baseline)]).concat(k.values.map(fmtNum)).concat([pctText(k.drift_pct), k.flags.join("; ")]));
+      const lead = 1 + (peers ? 1 : 0) + d.key.length;
+      card.append(plainTable(["column"].concat(peers ? ["peers"] : []).concat(d.key).concat(["baseline"])
+        .concat(d.runs.map((r) => r.label)).concat(["drift", "flags"]), krows, {
+        numeric: [lead].concat(d.runs.map((r, i) => lead + 1 + i)).concat([lead + 1 + d.runs.length]),
+        rowClass: (i) => d.keys[i].flags.length ? "flagged" : null }));
+    } else if (!d.changed) {
+      card.append(h("p", { class: "empty", text: "No key moved past the threshold." }));
     }
     view.append(card);
   }

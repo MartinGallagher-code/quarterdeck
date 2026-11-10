@@ -30,9 +30,10 @@ usage() { sed -n '5,17p' run_tests.sh | sed 's/^# \{0,1\}//'; }
 
 # The slowest suites start first, so the longest of them is not left to
 # begin last (seconds, one at a time, in CI's provost 2.1.0 job: doe 203,
-# xstore 130, web 121, run 116, compare 113, probe 107).  This sets only
-# the order they start in; the output is in name order whatever it says.
-SLOW="doe xstore web run compare probe"
+# xstore 130, web 121, run 116, compare 113, probe 107; peers about 80
+# here).  This sets only the order they start in; the output is in name
+# order whatever it says.
+SLOW="doe xstore web run compare probe peers"
 
 # This machine's cores: Linux, then POSIX, then macOS and the BSDs.
 cores() {
