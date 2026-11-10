@@ -5,6 +5,23 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.9.1 — 2026-11-10
+
+`release.yml` publishes to PyPI only (QD-023). Nothing about `qd` itself
+changed. (This pull request first took 0.8.7; 0.9.0 reached `main` while
+it was open, so it is 0.9.1 instead, and 0.8.7 was never on `main`.)
+
+### Changed
+- **No TestPyPI dry run.** The `publish to TestPyPI (dry run)` job, the
+  `testpypi` environment and "Run workflow"'s `target` choice are gone,
+  along with the TestPyPI setup in the workflow's header. PyPI's trusted
+  publisher is the only one this needs.
+- **"Run workflow" uploads to PyPI**, from `main` only (a run on any other
+  ref stops before building), and now runs `tests/check_version.sh` first,
+  as a release always did. It makes no tag and no GitHub release; a
+  published GitHub release tagged `vX.Y.Z` still does both, and still has
+  its tag checked against the version.
+
 ## 0.9.0 — 2026-11-10
 
 Peer groups and qualified baselines, kept in the store, and a significance
