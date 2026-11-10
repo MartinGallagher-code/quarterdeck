@@ -35,6 +35,12 @@ test runner and the docs.
 - The shellcheck job uses the runner's own shellcheck, and installs one only
   where there is none; it also runs the shard check (below).
 
+### Fixed
+- The web suite's *references are never paths* failed whenever the random
+  name of its temp dir held "42", the secret it checks is never served:
+  the refusal quotes the path (CI run #104, `qd-test.Mk42SS`). The secret
+  is now a word no temp dir's name can hold.
+
 ### Added
 - **`run_tests.sh --shard K/N`** runs share K of N. Suites are dealt by
   their measured seconds (`TIMES`), the longest first, each to the share
