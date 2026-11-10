@@ -115,6 +115,40 @@ jobs:
       - name: Run the test suite
         run: bash tests/run_tests.sh
 
+  stress-filing:
+    # QD-022, temporary: filing one capture at a time, looped, on
+    # ubuntu-latest's own mkdir (provost's store lock is `mkdir .lock`).
+    # Comes out again before the pull request leaves draft.
+    name: stress (provost 2.1.0, filing looped)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install provost 2.1.0
+        run: python -m pip install "provost==2.1.0"
+
+      - name: Which mkdir provost finds
+        run: |
+          command -v mkdir
+          mkdir --version | head -n 1
+          dpkg -S "$(readlink -f "$(command -v mkdir)")" || true
+
+      # provost alone, four captures at once into a fresh store: what this
+      # runner's mkdir does to provost's lock, whatever qd does
+      - name: provost alone, four at once (the control)
+        run: STRESS_RAW=1 STRESS_TABLES=4 bash tests/stress_filing.sh 200 || true
+
+      - name: qd do, four tables a run, one capture at a time
+        run: STRESS_TABLES=4 bash tests/stress_filing.sh 200
+
   version:
     # Every change moves the version in three places (CLAUDE.md); a pull
     # request that moves one and not the others fails here.
