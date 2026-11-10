@@ -5,17 +5,17 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
-## 0.7.3 — 2026-11-10
+## 0.8.1 — 2026-11-10
 
 Every run records who ran it (QD-016).
 
 ### Added
 - **`qd.runs` says who ran each run**: five new columns. Every run (`qd
-  run`, `probe`, `campaign`, `doe`, `do`, `import`) records `operator`
-  (`QD_OPERATOR`, else the login user) and `operator_host` (the machine qd
-  ran on). A fan-out also records `ssh_user` (`--user`, else what `ssh -G`
-  gives each host, comma-separated where hosts differ), `ssh_key` (the
-  fingerprint of each key offered: the `-i` or `IdentityFile` keys in
+  run`, `probe`, `campaign`, `doe`, `do`, `import`, `check`) records
+  `operator` (`QD_OPERATOR`, else the login user) and `operator_host` (the
+  machine qd ran on). A fan-out also records `ssh_user` (`--user`, else what
+  `ssh -G` gives each host, comma-separated where hosts differ), `ssh_key`
+  (the fingerprint of each key offered: the `-i` or `IdentityFile` keys in
   `--ssh`, else the agent's from `ssh-add -l`; never the key) and `sudo`
   (`yes`/`no`). What cannot be found out (no `-G`, no agent, an unreadable
   key, a lookup over 5 s) is blank, never a guess, and never stops the run.
@@ -43,6 +43,28 @@ Every run records who ran it (QD-016).
   one. `tests/test_web.sh` checks the API. The fake ssh answers `ssh -G`
   (`FAKE_SSH_USER`, `FAKE_SSH_USER_<host>`, `FAKE_NO_DASH_G`) and logs it
   apart, so `ssh_calls` still counts connections only.
+
+## 0.8.0 — 2026-11-10
+
+A run against fixed limits, by requirement (QD-010).
+
+### Added
+- **`qd check RUN --against FILE`**: one verdict per requirement --
+  pass, fail or not measured -- from a thresholds file (TSV or CSV with
+  `req`, `column`, `op`, `limit`, and optionally `limit2`, `where`,
+  `agg`, `unit`, `note`). Ops `<`, `<=`, `>`, `>=`, `==`, `!=`, `in`,
+  `between`; `agg` is `each` (every row must pass) or a figure over the
+  rows (median, p99, max, ...). Sizes and times compare on one scale and
+  read in the limit's unit; units that cannot be compared are refused.
+- Blank is never a pass: a missing column, no rows, a blank cell, or an
+  aggregate over only some hosts is not measured, and exits 1 as a
+  failure does. A thresholds file qd cannot read exits 2, naming the
+  check.
+- `--each` gives a row per host per check; `--keep` files the verdicts
+  as a run of kind `check`, which `qd show`, `qd export` and `qd web`
+  read like any other.
+- New module `quarterdeck/check.py`; new suite `tests/test_check.sh`
+  (8 cases, its web server on port 18160); README "Against requirements".
 
 ## 0.7.2 — 2026-11-10
 
