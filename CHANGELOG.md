@@ -5,6 +5,30 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.8.1 — 2026-11-10
+
+Runs go to Splunk and Prometheus as files (QD-013).
+
+### Added
+- **`qd export --format hec`**: newline-delimited Splunk HTTP Event
+  Collector events, one per row, with `time`, `host`, `source` (`qd`),
+  `sourcetype` (`qd:<table>`, or `--sourcetype`), optional `--index`,
+  indexed `fields` (`qd_run`, `qd_name`, `qd_kind` and the row's host
+  attributes and factors) and the row as `event`. The time is the row's
+  own `ts`/`timestamp`/`time` (epoch or ISO 8601), else the run's, and qd
+  says on stderr how many rows borrowed the run's or went without.
+- **`qd export --format openmetrics`** (also `prom`, and `-o x.prom`):
+  one gauge per numeric column, labelled by host, peer, run and the
+  columns named in `--labels`; sizes in bytes and times in seconds, with
+  `_bytes`/`_seconds` on the name; no timestamps, so node_exporter's
+  textfile collector and the Pushgateway take it. Two rows that would
+  make one series are refused (exit 2), naming `--labels`.
+- Both leave a blank cell out (no field, no sample), never 0 or "".
+  qd makes no network call for either: README's new "Into Splunk,
+  Prometheus or a notebook" shows the `curl` and the pandas one-liner.
+- New module `quarterdeck/exporters.py`; new suite `tests/test_export.sh`
+  (7 cases).
+
 ## 0.8.0 — 2026-11-10
 
 A run against fixed limits, by requirement (QD-010).

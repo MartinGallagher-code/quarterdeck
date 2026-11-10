@@ -934,6 +934,59 @@ reckon) passes through unchanged.
 
 ---
 
+## Into Splunk, Prometheus or a notebook
+
+`qd export` writes a file in the other system's own format. qd makes no
+network call and holds no token: send the file from wherever has the
+credentials, or let the other side's file reader pick it up.
+
+```bash
+qd export latest --format hec -o run.json            # Splunk HEC events
+curl -s https://splunk:8088/services/collector \
+     -H "Authorization: Splunk $HEC_TOKEN" --data-binary @run.json
+
+qd export latest --format openmetrics --labels rack \
+     -o /var/lib/node_exporter/textfile/qd.prom      # node_exporter textfile
+curl -s --data-binary @qd.prom http://pushgw:9091/metrics/job/qd   # or a Pushgateway
+```
+
+**`--format hec`** is one event per row, one per line:
+`{"time", "host", "source": "qd", "sourcetype": "qd:<table>", "fields",
+"event"}`. `event` is the row; `fields` (indexed, so a search can filter
+on them without reading the event) are the run's id, name and kind as
+`qd_run`, `qd_name`, `qd_kind`, and the row's settings: host attributes
+such as `rack`, a design's factors. `time` is the row's own (`ts`,
+`timestamp` or `time`, epoch or ISO 8601) where it has one, else the
+run's, and qd says how many borrowed it; a file that is not a run has no
+time to lend, so those events go without and Splunk stamps them on
+arrival. `--sourcetype` and `--index` set those two. Splunk's file monitor
+reads the same file with the `_json` sourcetype.
+
+**`--format openmetrics`** (or `-o x.prom`) is one gauge per numeric
+column, `qd_<column>` (`--prefix`), one sample per row that measured it,
+labelled `host`, `peer` (when there is one), `run`, and the columns named
+in `--labels`. Sizes go over in bytes and times in seconds, and the name
+says so (`qd_mem_bytes`, `qd_lat_seconds`); any other unit is named in the
+`# HELP` line, and `%` adds `_percent`. A column becomes a label only when
+you name it: every distinct value is another series, so a free-text
+column as a label would flood the server. Two rows that would make the
+same series (two disks on one host) are refused, naming `--labels`, rather
+than written as a file Prometheus rejects. There are no timestamps: the
+textfile collector and the Pushgateway both refuse them.
+
+In both, **a blank cell is left out** -- absent from the event, no sample
+in the metric -- never sent as 0 or an empty string.
+
+For a notebook, the CSV is already the format:
+
+```python
+import pandas as pd
+df = pd.read_csv("run.csv")          # qd export latest -o run.csv
+df.groupby("rack")["mbps"].describe()   # blanks read as NaN: not measured
+```
+
+---
+
 ## Conventions
 
 These are binnacle's, for the same reasons:
