@@ -5,6 +5,42 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.8.4 — 2026-11-10
+
+`qd web` served beyond this machine needs a token, can serve https, and is
+read-only there (QD-017).
+
+### Added
+- **A token on every request when `qd web` listens beyond loopback**
+  (`--host` anything but 127.0.0.1, localhost or ::1). With none given, one
+  is made (`secrets`) and printed once, in the link it starts with. Given
+  as `QD_WEB_TOKEN`, or the first line of `--token-file`
+  (`QD_WEB_TOKEN_FILE`), it is never printed; it must be 16 or more
+  printable characters with no spaces, quotes, commas, semicolons or
+  backslashes. It is accepted as `Authorization: Bearer`, as the
+  `qd_web_token` cookie (HttpOnly, SameSite=Strict, Secure under https),
+  or as the link's `?token=`, which sets the cookie and redirects to the
+  same page without it. Every offer is compared with `hmac.compare_digest`,
+  and request logs show `token=-` in its place. A wrong or missing token
+  gets 401, for the API, the page and `/floor/` alike.
+- **Giving a token on loopback requires it there too**, for a login node
+  whose 127.0.0.1 every user shares. No token on loopback is as before.
+- **`--tls-cert FILE` and `--tls-key FILE`** (`QD_WEB_TLS_CERT`,
+  `QD_WEB_TLS_KEY`) serve https with the standard library's `ssl`, TLS 1.2
+  or newer, the handshake in the request's own thread. A bad or missing
+  file is refused with exit 2.
+- **`--allow-writes`.** Beyond loopback `/api/overlay`, the one request
+  that writes anything (the Floor plan overlay, into qd's cache), is
+  refused with 403 unless it is given.
+
+### Changed
+- Listening beyond loopback without TLS prints a warning that the token and
+  the data cross the network in the clear, and says whether writes are
+  allowed.
+- A request path starting `//` is collapsed to one slash before it is
+  routed, as Python 3.12's `http.server` already does, so `//name/` is a
+  path on every Python and never read as a host.
+
 ## 0.8.3 — 2026-11-10
 
 What may be sent to a fleet: an allow-list and a read-only mode (QD-015).

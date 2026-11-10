@@ -930,15 +930,43 @@ print, so the
 browser and the terminal can't disagree about a number. There's no build
 step and no dependency, just three static files and a JSON API served by
 the standard library. It listens on 127.0.0.1 unless you pass `--host`
-(`QD_WEB_HOST`, `QD_WEB_PORT`). It's read-only, except that "Floor plan"
+(`QD_WEB_HOST`, `QD_WEB_PORT`; see *Sharing it on the network* below). It's read-only, except that "Floor plan"
 writes the overlay into qd's cache (never the store, which provost commits
 whole), as `qd floor` does.
 
-Over ssh to a jump host, forward the port:
+Over ssh to a jump host, forward the port. This is still the best way to
+reach it from elsewhere: nothing is exposed, and ssh does the encryption.
 
 ```bash
 ssh -L 8100:127.0.0.1:8100 jumpbox qd web -n
 ```
+
+### Sharing it on the network
+
+Listening anywhere but 127.0.0.1, localhost or ::1, `qd web` needs a token
+on every request, and turns away the Floor plan button's write:
+
+```bash
+qd web --host 0.0.0.0                       # makes a token and prints it once, in the link
+QD_WEB_TOKEN=... qd web --host 0.0.0.0      # or give one (16+ characters)
+qd web --host 0.0.0.0 --token-file ~/.qd-token \
+       --tls-cert cert.pem --tls-key key.pem   # https
+qd web --host 0.0.0.0 --allow-writes        # let Floor plan write into qd's cache
+```
+
+- **The token** is the printed link's `?token=...`. Opening the link stores it
+  in a cookie (HttpOnly, SameSite=Strict, Secure under https) and takes it
+  out of the address bar. A script sends `Authorization: Bearer TOKEN`. A
+  token you give (`QD_WEB_TOKEN`, or `--token-file`/`QD_WEB_TOKEN_FILE`, the
+  file's first line) is never printed, and no token is ever logged.
+- **Giving a token on 127.0.0.1 makes it required there too.** That is for
+  a login node, where 127.0.0.1 is shared by every user on it. With no token,
+  loopback works as it always has.
+- **Without `--tls-cert`** (`QD_WEB_TLS_CERT`, and `--tls-key`/`QD_WEB_TLS_KEY`
+  unless the key is in the same file) the token and the data cross the
+  network in the clear, and `qd web` says so when it starts.
+- **Read-only beyond this machine.** The overlay is the only thing the page
+  writes; `--allow-writes` lets it.
 
 ---
 
