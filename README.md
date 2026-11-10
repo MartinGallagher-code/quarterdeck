@@ -1495,21 +1495,53 @@ The numbers, and how they were measured, are in
 ## Tests
 
 ```bash
-bash tests/run_tests.sh          # every suite, one per core at a time
-bash tests/run_tests.sh run web  # some of them
-bash tests/run_tests.sh -j 1     # one at a time, each suite's output as it comes
+bash tests/run_tests.sh             # every suite, one per core at a time
+bash tests/run_tests.sh run web     # some of them
+bash tests/run_tests.sh -j 1        # one at a time, each suite's output as it comes
+bash tests/run_tests.sh --shard 2/3 # the second of three shares, as CI runs it
+bash tests/run_tests.sh --list      # which suites a run would take; runs none
 ```
 
 The suites run side by side: `-j N` (or `QD_TEST_JOBS=N`) runs N at a
 time, and the default is the machine's core count. Each suite's output is
 held until it ends and then printed whole, in name order, so the log reads
 as it does one at a time; the slowest suites start first, and the run ends
-with its wall time and the three longest. `-j 1`, or naming a single suite,
-is the serial run. Ctrl-C stops every suite still running, and each case
-still clears up after itself. Suites can share a machine because every case
-has a temp dir, a store and XDG directories of its own, and each suite that
-starts a web server has a range of ports of its own. On four cores the
-whole suite takes about six minutes, against fifteen one at a time.
+with its wall time, the three longest, and every suite's seconds. `-j 1`,
+or naming a single suite, is the serial run. Ctrl-C stops every suite still
+running, and each case still clears up after itself. Suites can share a
+machine because every case has a temp dir, a store and XDG directories of
+its own, and each suite that starts a web server has a range of ports of
+its own. On four cores the whole suite takes about seven minutes.
+
+`--shard K/N` runs share K of N, which is how CI spreads one job over N
+runners. The suites are dealt by their measured seconds (`TIMES` in
+`tests/run_tests.sh`), the longest first, each to the share with the
+fewest seconds so far, so every machine deals the same way. The longest
+suites (`PARTS` there) are split into parts, each a share of their cases
+(`QD_TEST_PART=I/P` runs the Ith case and every Pth after it), and each
+part goes to a different share. `tests/check_shards.sh` checks that every
+suite is in exactly one share, whole or as all of its parts, and that CI's
+jobs run every share. A new suite goes into `TIMES`, with its seconds from
+a run's last line (`seconds:`; a part is named there as `doe:2/3:56`, and a
+suite's parts add up to its seconds); `tests/test_runner.sh` fails until it
+is there.
+
+### What CI runs
+
+On every pull request and every push to `main` (`.github/workflows/ci.yml`):
+
+| Job | Runs | Runners |
+|---|---|---|
+| test (python 3.9 to 3.13) | the whole suite, PyPI's newest provost (`batch`), binnacle, and doe from 3.10 | 3 each, `--shard 1/3` to `3/3` |
+| Python 3.6 compatibility | vermin and the compile check, then the whole suite under a real Python 3.6 in a container, provost's bundle | 3 |
+| test (provost 2.1.0) | the whole suite, one capture at a time | 3 |
+| version, web page syntax, shellcheck and the shard check, REUSE, build the wheel | once each | 1 each |
+
+A newer push to a pull request cancels that pull request's run still in
+progress; a push to `main` is never cancelled, so the version check on
+every push to `main` always runs. Every job has a time limit, about three
+times its usual time, so a case that hangs fails its job within minutes,
+not GitHub's six hours.
 
 The tests need no network and no second machine, but a real provost
 (`pip install provost`, or `QD_PROVOST`): every case files into a store of

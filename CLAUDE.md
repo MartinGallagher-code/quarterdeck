@@ -57,7 +57,20 @@ stores read from a git copy -- is `quarterdeck/stores.py`.
 ```bash
 bash tests/check.sh                    # before pushing: everything CI runs that runs here
 bash tests/run_tests.sh [SUITE...]     # the suites alone; QD_TEST_ONLY=TEXT for some cases
+bash tests/run_tests.sh --shard 2/3    # one of CI's three shares of the suites
 ```
+
+CI (`.github/workflows/ci.yml`) runs the whole suite on every pull request
+and every push to `main`, seven ways: Python 3.9 to 3.13, a real 3.6 in a
+container, and PyPI's provost 2.1.0. Each of the seven is split over three
+runners by `run_tests.sh --shard K/3` (QD-024). The deal comes from `TIMES`
+in `tests/run_tests.sh`, every suite's measured seconds: **a new suite goes
+into `TIMES`** (a run's last line, `seconds:`, gives its number), and
+`tests/test_runner.sh` fails until it is there. `tests/check_shards.sh`
+fails CI when a suite is in no share or in two, or a job's matrix leaves a
+share out. A newer push to a pull request cancels that pull request's run
+in progress; a push to `main` always runs to the end. Every job has a
+`timeout-minutes`; give a new one one too.
 
 `tests/check.sh` runs the version check, the 3.6 checks, shellcheck, `node
 --check`, `reuse lint`, the wheel build and the suite on both provost paths,
