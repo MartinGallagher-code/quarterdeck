@@ -46,8 +46,9 @@ stores read from a git copy -- is `quarterdeck/stores.py`.
   branch's, and a push to `main` whose version is not greater than what
   `main` had before it. If `main` moves while a pull request is open,
   rebase and bump again. Publishing is a separate step, and a person's
-  call: a GitHub release tagged `vX.Y.Z`, which `release.yml` uploads to
-  PyPI. A number that is never published is fine; a change with no number
+  call: a GitHub release tagged `vX.Y.Z`, or `release.yml`'s "Run
+  workflow" on `main`; either uploads to PyPI (there is no TestPyPI dry
+  run). A number that is never published is fine; a change with no number
   is not.
 - `--help` stays a reference card; README.md is the manual.
 

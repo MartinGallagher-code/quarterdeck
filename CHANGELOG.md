@@ -5,10 +5,11 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
-## 0.9.1 — 2026-11-10
+## 0.9.2 — 2026-11-10
 
 A run filed one capture at a time no longer reads back a table short
-(QD-022). Started as 0.8.7; renumbered on top of 0.9.0 (QD-009).
+(QD-022). Started as 0.8.7, then 0.9.1; renumbered on top of 0.9.1
+(QD-023).
 
 ### Fixed
 - **Without provost's `batch` (PyPI's provost 2.1.0, or
@@ -52,6 +53,23 @@ A run filed one capture at a time no longer reads back a table short
   run`s side by side. On a machine with that `mkdir`, the two can take the
   lock together and a capture can be lost. README says so where it
   describes a second campaign worker. The fix belongs in provost.
+
+## 0.9.1 — 2026-11-10
+
+`release.yml` publishes to PyPI only (QD-023). Nothing about `qd` itself
+changed. (This pull request first took 0.8.7; 0.9.0 reached `main` while
+it was open, so it is 0.9.1 instead, and 0.8.7 was never on `main`.)
+
+### Changed
+- **No TestPyPI dry run.** The `publish to TestPyPI (dry run)` job, the
+  `testpypi` environment and "Run workflow"'s `target` choice are gone,
+  along with the TestPyPI setup in the workflow's header. PyPI's trusted
+  publisher is the only one this needs.
+- **"Run workflow" uploads to PyPI**, from `main` only (a run on any other
+  ref stops before building), and now runs `tests/check_version.sh` first,
+  as a release always did. It makes no tag and no GitHub release; a
+  published GitHub release tagged `vX.Y.Z` still does both, and still has
+  its tag checked against the version.
 
 ## 0.9.0 — 2026-11-10
 
