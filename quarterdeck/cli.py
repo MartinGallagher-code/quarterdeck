@@ -55,6 +55,7 @@ Full manual: https://github.com/MartinGallagher-code/quarterdeck#readme
 """
 
 import argparse
+import datetime
 import os
 import re
 import shlex
@@ -69,6 +70,7 @@ from .common import (PROG, VERSION_TEXT, QdError, _stdio_safe, die, env,
                      env_float, env_int, plural, warn, write_text)
 from . import diff as diffmod
 from . import filing, fleet, hosts as hostmod, importers, query
+from . import pacing
 from . import render, stats, store as storemod, table as tablemod, tools
 from .store import describe_entry, load_ref, now_iso, shown_id, \
     split_ref, split_store
@@ -530,6 +532,7 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
             "--every)")
     if args.every is not None and args.every <= 0:
         die("--every wants a number of seconds above 0")
+    gate = gate_of(args)        # a bad --rate is refused before any host
     runner = new_runner(args)
     if args.dry_run:
         dry_run_lines(runner, hs, command, push, stdin)
@@ -547,7 +550,7 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
     results, interrupted = fleet.run_passes(
         hs, lambda h, k: runner.run_one(h, command, list(push) or None,
                                         not args.keep_remote, k, stdin),
-        args.jobs, count, args.every or 0)
+        args.jobs, count, args.every or 0, gate=gate)
     if not results:
         die("interrupted before any pass finished; nothing was kept", 130)
     if push and args.keep_remote:
@@ -593,7 +596,8 @@ def fleet_runs_together(args, hs, specs, extra=None):
         _, command, stdin = specs[i]
         return runners[i].run_one(h, command, None, True, k, stdin)
 
-    results, interrupted = fleet.run_passes(tasks, one, args.jobs)
+    results, interrupted = fleet.run_passes(tasks, one, args.jobs,
+                                            gate=gate_of(args))
     if not results:
         die("interrupted before any host answered; nothing was kept", 130)
     each = [[] for _ in specs]
@@ -2372,12 +2376,13 @@ def cmd_campaign(args):
         groups = [(g, members) for g, members in groups if members]
         pool = os.path.abspath(args.pool) if args.pool else \
             camp.default_pool(args.name)
-        camp.define(st, prov, args.name, groups, command, how, pool)
+        pace = campaign_pacing(args)
+        camp.define(st, prov, args.name, groups, command, how, pool, pace)
         lines = ["%s campaign -- %s: %s, %s, %s" % (
             PROG, args.name, plural(len(groups), "part"),
             plural(sum(len(m) for _, m in groups), "host"), how),
             "  pool     %s (muster's: `muster status --pool %s`)"
-            % (pool, pool)]
+            % (pool, pool)] + pacing_lines(pace)
         lines.extend(next_steps([
             ("%s campaign run %s" % (PROG, args.name),
              "every part in turn (--parts N for some)"),
@@ -2390,7 +2395,9 @@ def cmd_campaign(args):
         summ, rows = camp.describe(st, c)
         lines = ["%s campaign -- %s: %s, %s" % (
             PROG, c.name, plural(len(c.parts), "part"), c.split),
-            "  command  %s" % c.command,
+            "  command  %s" % c.command] + pacing_lines(
+                {"max_per": c.max_per, "ramp": c.ramp,
+                 "window": c.window}) + [
             "  PROGRESS   " + camp.progress(c, summ), ""]
         t = tablemod.Table(camp.STATUS_COLUMNS, rows, "parts")
         lines.extend(render.render_table(t, width=width_of(args),
@@ -2438,9 +2445,25 @@ def cmd_campaign(args):
             shown += 1
         return 0
     filing.Provost(st).require("keep the parts")
+    pace = campaign_pacing(args, c)
+    windows = pacing.parse_windows([pace["window"]] if pace["window"]
+                                   else [])
+    args._gate = pacing.Gate(pacing.parse_caps([pace["max_per"]]
+                                               if pace["max_per"] else []),
+                             pacing.parse_ramp(pace["ramp"]))
+    for ln in pacing_lines(pace):
+        out(ln.strip())
     done, worst = 0, 0
     limit = args.parts or 10 ** 9
     while done < limit:
+        now = local_now()
+        if not pacing.in_window(windows, now):
+            nxt = pacing.next_open(windows, now)
+            out("%s campaign %s -- outside its windows (%s): no part "
+                "started; the next opens %s" % (
+                    PROG, c.name, pacing.windows_text(windows),
+                    nxt.strftime("%a %Y-%m-%d %H:%M") if nxt else "never"))
+            break
         part, held = camp.take(c, args.lease)
         if part is None:
             break
@@ -2464,10 +2487,76 @@ def cmd_campaign(args):
     st.reset()
     summ, _ = camp.describe(st, c)
     out("PROGRESS   " + camp.progress(c, summ))
-    if not done:
+    if not done and pacing.in_window(windows, local_now()):
         out("  nothing was left to take: `%s campaign status %s`"
             % (PROG, c.name))
     return worst
+
+
+def gate_of(args):
+    """The pacing a fan-out runs under: a campaign's (caps, ramp), and
+    --rate, which spaces new connections whatever the verb.  Where both
+    space starts, the slower wins.  None: nothing paces it."""
+    gate = getattr(args, "_gate", None)
+    rate = getattr(args, "rate", None)
+    if rate:
+        spacing = pacing.parse_rate(rate)
+        if gate is None:
+            gate = args._gate = pacing.Gate([], spacing)
+        elif not gate.spacing or gate.spacing < spacing:
+            gate.spacing = spacing
+    return gate
+
+
+def local_now():
+    """The wall clock windows are read against, local time.  QD_NOW
+    (YYYY-mm-ddTHH:MM) stands in for it, for the tests."""
+    fake = env("NOW")
+    if fake:
+        try:
+            return datetime.datetime.strptime(fake, "%Y-%m-%dT%H:%M")
+        except ValueError:
+            die("QD_NOW wants YYYY-mm-ddTHH:MM, got %r" % fake)
+    return datetime.datetime.now().replace(second=0, microsecond=0)
+
+
+def campaign_pacing(args, c=None):
+    """The pacing a campaign runs with, as text: the flags given, else
+    what `campaign new` kept.  Every value is parsed here, so a bad one
+    is refused before anything starts."""
+    pace = {}
+    for key, flag in (("max_per", args.max_per), ("ramp", args.ramp),
+                      ("window", args.window)):
+        if isinstance(flag, list):
+            flag = ";".join(flag) if key == "window" else ",".join(flag)
+        pace[key] = flag or (getattr(c, key, "") if c is not None else "")
+    pacing.parse_caps([pace["max_per"]] if pace["max_per"] else [])
+    pacing.parse_ramp(pace["ramp"])
+    pacing.parse_windows([pace["window"]] if pace["window"] else [])
+    return pace
+
+
+def pacing_lines(pace):
+    lines = []
+    if pace.get("max_per"):
+        lines.append("  at most  %s running at once" % ", ".join(
+            "%d per %s" % (n, a) for a, n in
+            pacing.parse_caps([pace["max_per"]])))
+    if pace.get("ramp"):
+        lines.append("  ramp     %s (a host start every %ss)" % (
+            pace["ramp"], stats.fmt_num(pacing.parse_ramp(pace["ramp"]))))
+    if pace.get("window"):
+        ws = pacing.parse_windows([pace["window"]])
+        now = local_now()
+        if pacing.in_window(ws, now):
+            when = "open now, until %s" % pacing.window_closes(
+                ws, now).strftime("%a %H:%M")
+        else:
+            nxt = pacing.next_open(ws, now)
+            when = "closed; the next opens %s" % (
+                nxt.strftime("%a %Y-%m-%d %H:%M") if nxt else "never")
+        lines.append("  windows  %s  (%s)" % (pacing.windows_text(ws), when))
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -2860,6 +2949,9 @@ def add_ssh(sp):
                    help="scp transport (QD_SCP)")
     g.add_argument("--sudo", action="store_true",
                    help="run the command under sudo -n")
+    g.add_argument("--rate", default=env("RATE"), metavar="N/s",
+                   help="no more than N new connections a second, evenly "
+                   "spaced: for a bastion's MaxStartups (QD_RATE)")
     g.add_argument("--remote-dir", default=env("REMOTE_DIR", "/var/tmp"),
                    help="pushed files go in a directory of the run's own "
                    "in here, removed afterwards (QD_REMOTE_DIR, /var/tmp)")
@@ -3222,6 +3314,14 @@ def build_parser():
     sp.add_argument("--lease", default="2h",
                     help="run: how long a part is held before it comes back "
                     "(2h)")
+    sp.add_argument("--max-per", action="append", metavar="ATTR=N",
+                    help="no more than N hosts sharing ATTR's value at once, "
+                    "e.g. pdu=4 (repeatable; new keeps it, run may override)")
+    sp.add_argument("--ramp", metavar="RATE",
+                    help="host starts no faster than RATE: 6/min, 1/s, 120/h")
+    sp.add_argument("--window", action="append", metavar="SPEC",
+                    help="start parts only inside these hours: \"Mon-Fri "
+                    "18:00-06:00\" (repeatable, local time)")
     add_format(sp)
     sp.set_defaults(fn=cmd_campaign, command=[])
 

@@ -369,6 +369,17 @@ The mutation guard is agree's: `rm -rf`, `mkfs`, `reboot`, `systemctl
 stop` and the rest are refused without `--yes`. It's a typo guard, not
 security.
 
+**qd deletes only what it made.** A run that pushes makes a directory of
+its own, `qd.<run id>`, in `--remote-dir`, and writes `.qd-owned` into it
+with that id. Afterwards it removes that directory, and `--remote-dir`
+only if this run made it and it is empty. The checks run on the host,
+under the same `sudo -n` as the delete: the path must end in exactly this
+run's `qd.<run id>`, hold no `..`, be a directory and not a symlink, and
+hold a `.qd-owned` with this run's id. Otherwise nothing is deleted, and
+the host's `error` says `qd: refusing to remove` and why.
+`--keep-remote` leaves the directory, mark and all.
+`tests/test_cleanup.sh` holds qd to this.
+
 ### Every knob has a flag and a variable
 
 | Flag | Variable | Default |
@@ -380,6 +391,7 @@ security.
 | `--max-output` | `QD_MAX_OUTPUT` | 4 MiB per host; past it the host is killed and reported |
 | `--ssh`, `--scp` | `QD_SSH`, `QD_SCP` | `ssh`, `scp` |
 | `--remote-dir` | `QD_REMOTE_DIR` | `/var/tmp` |
+| `--rate` | `QD_RATE` | none: new connections as fast as `--jobs` allows; `10/s` for a bastion's `MaxStartups` |
 | `--store` | `QD_STORE` | a name from `qd store ls` or a directory; else the active store (see Named stores) |
 | | `QD_PROVOST` | `provost` on `PATH` |
 | | `QD_PROVOST_BATCH=0` | file one capture at a time even where provost has `batch` |
@@ -484,6 +496,40 @@ same one, and a part whose worker died comes back when its lease runs out.
 provost's: a part is a run named after the campaign, its campaign and part
 on every row. The definition is filed too (`qd.campaigns`), and the pool
 can live anywhere every worker can read (`--pool`).
+
+### Pacing: power domains, a ramp, maintenance windows
+
+A burn-in that loads every node on one PDU at once can trip its breaker.
+`campaign new` keeps three limits with the campaign, so every `campaign
+run` -- resumed, or carried on from another machine -- paces the same:
+
+```bash
+qd campaign new burnin -s hosts.txt --by rack --max-per pdu=4 \
+    --ramp 6/min --window "Mon-Fri 18:00-06:00" --window "Sat,Sun 00:00-24:00" \
+    -- ./burnin.sh --minutes 30
+qd campaign status burnin   # at most 4 per pdu; ramp 6/min; windows ... (closed; the next opens Mon 18:00)
+```
+
+- **`--max-per ATTR=N`** (repeatable, or `pdu=4,rack=8`): no more than N
+  hosts sharing a value of ATTR run at once. ATTR is any host attribute
+  in the host list (`node07 pdu=p3 rack=r2`), the same ones `--by` reads.
+  Hosts without it share one count rather than going unlimited. Other
+  values go past a full one, so a cap holds a PDU back without holding
+  the fleet back.
+- **`--ramp RATE`** (`6/min`, `1/s`, `120/h`): host starts are spaced
+  evenly, so the draw rises in steps. The spacing carries on from one
+  part to the next.
+- **`--window SPEC`** (repeatable, `;` between several): `[DAYS]
+  HH:MM-HH:MM` in local time, days as `Mon-Fri` or `Sat,Sun`, a span past
+  midnight belonging to the day it starts (`Fri 18:00-06:00` runs into
+  Saturday morning), no days for every day. `campaign run` starts a part
+  only inside a window; outside one it starts nothing, says when the next
+  opens, and exits 0. A part already running finishes.
+- Flags given to `campaign run` override the kept ones for that run.
+
+The caps and the ramp hold within one worker. Two terminals running one
+campaign each keep their own count; muster still gives them different
+parts.
 
 ---
 
@@ -876,6 +922,26 @@ These are binnacle's, for the same reasons:
   that's the table behind it.
 - **Standard library only; Python 3.6 floor;** reads decode `utf-8-sig`
   and a C locale can't lose a report.
+
+---
+
+## At scale
+
+A thousand hosts fan out in seconds at the default `--jobs 32`. qd's
+memory (about 25 MB) and threads (`--jobs` + 1) do not grow with the
+fleet. Filing the answers is what takes the time, about 0.16 s each in
+provost. Two limits matter more than raw size:
+
+- **Open files:** about 5 per host in flight. qd raises its soft
+  `ulimit -n` towards the hard one before a fan-out. If that is still
+  short, it runs fewer at once and says so, rather than letting hosts
+  that could not get a pipe read as unreachable. macOS's default of 256
+  fits about `--jobs 50`.
+- **A bastion:** sshd drops connections past its `MaxStartups`, so
+  through one jump host use `--rate 10/s` (`QD_RATE`).
+
+The numbers, and how they were measured, are in
+[docs/scale.md](docs/scale.md) (`tests/scale.sh` reruns them).
 
 ---
 
