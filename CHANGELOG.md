@@ -14,8 +14,8 @@ window (QD-011).
 Its pull request first took 0.9.0, then 0.10.0, but each reached `main`
 first from another: 0.9.0 is QD-009's peer groups and baselines, 0.9.1
 QD-023's `release.yml` change, and 0.10.0 QD-021's `qd report`. So this
-is 0.11.0. Everything up to 0.10.0 still keeps `ts` to the whole
-second.
+is 0.11.0. Every version before it, QD-022's 0.10.1 included, still
+keeps `ts` to the whole second.
 
 ### Added
 - **`qd join RUN TELEMETRY`.** Each row of the run gets the window it was
@@ -83,6 +83,55 @@ second.
 - No live query of Splunk, CloudVision or Prometheus: that would need
   credentials and a network, which qd has never held. Export a file and
   join that.
+
+## 0.10.1 — 2026-11-10
+
+A run filed one capture at a time no longer reads back a table short
+(QD-022). Started as 0.8.7, then 0.9.1 and 0.9.2; renumbered on top
+of 0.10.0 (QD-021).
+
+### Fixed
+- **Without provost's `batch` (PyPI's provost 2.1.0, or
+  `QD_PROVOST_BATCH=0`), qd files a run's captures one after another**,
+  where it filed the answers four at once. provost's store lock is
+  `mkdir .lock`, which locks only if `mkdir` fails on a directory another
+  process has just made. uutils coreutils' `mkdir` before 0.11.0 reports
+  success instead. That is `/usr/bin/mkdir` on Ubuntu 25.10 and 26.04, and
+  so on GitHub's `ubuntu-latest`. On such a machine two provost processes
+  started together could both hold the lock: two captures took one id, or
+  one died on the other's `git` index lock or lock file. The run then read
+  back a table short (`has no single table 'iperf_results' (tables:
+  cpu_summary)`). That was CI's intermittent provost 2.1.0 failure on
+  #21 and #22.
+- The price: on that path a run's filing is no longer parallel. One run of
+  24 tables on an idle four-core machine took 35 s, against 10 s four at
+  once. `provost batch` (provost 2.2.0 and later) is untouched: one
+  process, which parses in parallel inside it.
+- `QD_FILE_JOBS=N` files N at once on that path again. It is safe only
+  where `mkdir --version` is not uutils' before 0.11.0. With `batch` it is
+  still `batch -j N`.
+- The web case *references are never paths* checked that a refusal held no
+  `42`, the secret's value. The refusal names its temp directory, and one
+  named `qd-test.Bz42H2` failed it. The secret is now a value no temp path
+  can hold.
+
+### Added
+- A `do` case, *one capture at a time: one provost at a time*. A
+  stand-in provost takes a marker with noclobber (not `mkdir`) and notes
+  any provost started while it is held. It fails on qd as it was.
+- `tests/stress_filing.sh`, not one of the suites. It files multi-table
+  `qd do` runs on the one-at-a-time path in a loop, rounds side by side,
+  and checks every table reads back. `STRESS_MKDIR=racy` puts in front of
+  `mkdir` a stand-in that loses the race as uutils' did, so it shows on
+  any machine. `STRESS_FILE_JOBS=4` is qd as it was, and fails.
+  `STRESS_RAW=1` files captures with provost alone.
+
+### Not fixed here
+- Two writers into one store at once still depend on provost's lock, with
+  any provost: a second terminal working the same campaign, or two `qd
+  run`s side by side. On a machine with that `mkdir`, the two can take the
+  lock together and a capture can be lost. README says so where it
+  describes a second campaign worker. The fix belongs in provost.
 
 ## 0.10.0 — 2026-11-10
 
