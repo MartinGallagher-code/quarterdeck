@@ -5,7 +5,7 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
-## 0.7.1 — 2026-11-09
+## 0.7.2 — 2026-11-10
 
 qd at a thousand hosts (QD-019).
 
@@ -24,7 +24,7 @@ qd at a thousand hosts (QD-019).
   that did not answer. qd now raises its soft limit towards the hard one,
   and if that is not enough runs fewer hosts at once and says so.
 
-## 0.7.0 — 2026-11-09
+## 0.7.1 — 2026-11-10
 
 Campaigns paced for power (QD-020).
 
@@ -43,6 +43,53 @@ Campaigns paced for power (QD-020).
 - New module `quarterdeck/pacing.py`: the scheduler is a pure function of
   what is running and the time, so it is tested with a fake clock. New
   suite `tests/test_pacing.sh` (6 cases).
+
+## 0.7.0 — 2026-11-09
+
+qd deletes only what it made on a host, and a suite holds it to that
+(QD-014).
+
+### Changed
+- **Every directory qd makes on a host is marked.** `--push` and
+  `--script` write `.qd-owned`, holding the run's id, into the run's
+  `qd.<id>` directory as they make it. A later pass of the same run
+  pushes into it again only while that mark is still its own; a file
+  named `.qd-owned` cannot be pushed.
+- **Cleanup checks on the host before it deletes**, under the same
+  `sudo -n` as the delete: the path must end in exactly this run's
+  `qd.<id>`, hold no `..`, be a directory and not a symlink, and hold a
+  plain `.qd-owned` with this run's id. Anything else is refused and
+  reported in the host's `error` (`qd: could not remove ...: qd: refusing
+  to remove ...`), and nothing is deleted. Before, cleanup ran `rm -rf` on
+  the computed path on trust. A missing directory is nothing to remove,
+  as before.
+
+### Added
+- `tests/test_cleanup.sh`: the invariant as a suite. It makes a run's
+  directory through the fake ssh, then breaks it the ways a bug could (an
+  empty path, `/`, `~`, `.`, `..`, `--remote-dir` itself, a `..` in the
+  path, a symlinked directory, a missing mark, another run's id, a mark
+  that is a link, a file in its place, another run's `qd.*`), under
+  `--sudo` too, and checks each is refused with every canary left. A
+  stand-in `rm` refuses any delete outside the case's temp dir, so no case
+  can reach a real path. A mutation case takes the id check out of a copy
+  of `fleet.py` and shows the suite then fails.
+
+### Fixed
+- CI's test matrix runs on `ubuntu-24.04`: `ubuntu-latest` moved to 26.04,
+  where setup-python has no Python 3.9, so the 3.9 job failed before it
+  ran anything.
+
+### Reviewed
+- Every other delete in qd is local and was checked: the temp
+  directories of `qd do`, `doe`, `split`, `campaign` and filing
+  (`tempfile.mkdtemp`, removed in `finally`); the id-claims cache (`rmdir`
+  of empty entries only); `qd store rm --delete` (only a provost store or
+  an empty directory, under the store's lock); a remote store's copy (in
+  qd's own `remotes` directory, under a name `NAME_RE` allows, no `..`);
+  the store lock (removed only while it carries this process's owner
+  record); the export's temp file. `qd rm` deletes through provost. None
+  needed a change.
 
 ## 0.6.4 — 2026-11-05
 

@@ -83,7 +83,7 @@ class Campaign(object):
         self.pool = rows[0].get("pool", "")
         self.created = rows[0].get("created", "")
         # its pacing (pacing.py), as given to `campaign new`; a campaign
-        # defined before 0.7.0 has none
+        # defined before 0.7.1 has none
         self.max_per = rows[0].get("max_per", "")
         self.ramp = rows[0].get("ramp", "")
         self.window = rows[0].get("window", "")
