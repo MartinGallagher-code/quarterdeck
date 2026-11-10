@@ -352,21 +352,72 @@ def fan_out(hosts, fn, jobs, label=""):
     return results
 
 
-def run_passes(hosts, fn, jobs, count=1, every=0.0, sleep=time.sleep):
+# Open files a host in flight holds in qd: its ssh's stdout and stderr
+# pipes, a stdin file, the selector, and one for luck; and what qd keeps
+# open besides (QD-019, measured by tests/scale.sh).
+FDS_PER_HOST = 5
+FDS_RESERVED = 40
+
+
+def fit_jobs(jobs, limits=None):
+    """(jobs, note): as many hosts at once as the open-file limit allows.
+    The soft limit is raised towards the hard one when it is short; if
+    even that is not enough, fewer hosts run at once and the note says
+    why.  Running out mid-fan-out is worse than slower: every ssh that
+    cannot get a pipe reads as a host that did not answer.  `limits`
+    stands in for the resource module, for the tests."""
+    try:
+        res = limits
+        if res is None:
+            import resource as res
+    except ImportError:             # not POSIX: nothing to ask
+        return jobs, ""
+    need = FDS_RESERVED + FDS_PER_HOST * jobs
+    soft, hard = res.getrlimit(res.RLIMIT_NOFILE)
+    if soft == res.RLIM_INFINITY or soft >= need:
+        return jobs, ""
+    want = need if hard == res.RLIM_INFINITY else min(hard, need)
+    if want > soft:
+        try:
+            res.setrlimit(res.RLIMIT_NOFILE, (want, hard))
+            soft = want
+        except (ValueError, OSError):
+            pass
+    if soft >= need:
+        return jobs, ""
+    fit = max(1, (soft - FDS_RESERVED) // FDS_PER_HOST)
+    return fit, ("%d hosts at once need about %d open files and the limit "
+                 "is %d (ulimit -n), so %d run at once instead; raise "
+                 "`ulimit -n` for more" % (jobs, need, soft, fit))
+
+
+def run_passes(hosts, fn, jobs, count=1, every=0.0, sleep=time.sleep,
+               gate=None):
     """`count` passes over the fleet, one starting every `every` seconds.
 
     A pass that runs longer than the interval is followed straight away by
     the next rather than overlapping it.  Ctrl-C between or during passes
-    keeps every pass that finished.  -> (results, interrupted)
+    keeps every pass that finished.  `gate` (pacing.Gate) caps hosts
+    per attribute value and spaces their starts.  -> (results, interrupted)
     """
     results = []
     interrupted = False
+    jobs, note = fit_jobs(min(jobs, max(1, len(hosts))))
+    if note:
+        sys.stderr.write("qd: %s\n" % note)
     try:
         for k in range(1, count + 1):
             t0 = time.monotonic()
             label = "pass %d/%d: " % (k, count) if count > 1 else ""
-            results.extend(fan_out(hosts, lambda h, k=k: fn(h, k), jobs,
-                                   label))
+            if gate is not None and gate.active():
+                from .pacing import gated_fan_out
+                results.extend(gated_fan_out(
+                    hosts, lambda h, k=k: fn(h, k), jobs, gate,
+                    label=label, progress=progress))
+                progress_done()
+            else:
+                results.extend(fan_out(hosts, lambda h, k=k: fn(h, k), jobs,
+                                       label))
             if k < count and every:
                 left = every - (time.monotonic() - t0)
                 if left > 0:

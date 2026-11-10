@@ -35,7 +35,7 @@ from . import filing, store as storemod, tools
 
 CAMPAIGNS = "qd.campaigns"
 COLUMNS = ("campaign", "part", "host", "attrs", "command", "split", "pool",
-           "created")
+           "created", "max_per", "ramp", "window")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -82,6 +82,11 @@ class Campaign(object):
         self.split = rows[0].get("split", "")
         self.pool = rows[0].get("pool", "")
         self.created = rows[0].get("created", "")
+        # its pacing (pacing.py), as given to `campaign new`; a campaign
+        # defined before 0.7.1 has none
+        self.max_per = rows[0].get("max_per", "")
+        self.ramp = rows[0].get("ramp", "")
+        self.window = rows[0].get("window", "")
         from .hosts import parse_host_token
         seen = {}
         for r in rows:
@@ -122,7 +127,10 @@ def load(st, name):
     return c
 
 
-def define(st, prov, name, groups, command, split_how, pool):
+def define(st, prov, name, groups, command, split_how, pool, pacing=None):
+    """pacing: {"max_per", "ramp", "window"} as text, kept on every row so
+    a campaign carried on elsewhere, or resumed, paces the same."""
+    pacing = pacing or {}
     if not NAME_RE.match(name):
         die("a campaign name is letters, digits, '.', '_' and '-'; "
             "got %r" % name)
@@ -134,7 +142,9 @@ def define(st, prov, name, groups, command, split_how, pool):
         for h in hs:
             rows.append([name, part, h.token(plain=True),
                          storemod.join_attrs(h.attrs), command,
-                         split_how, pool, created])
+                         split_how, pool, created,
+                         pacing.get("max_per", ""), pacing.get("ramp", ""),
+                         pacing.get("window", "")])
     # the pool first -- one item per part, muster's to hand out -- so a
     # campaign is only defined once muster has taken it: a definition with
     # no pool (muster not installed, the pool already there) would hold the

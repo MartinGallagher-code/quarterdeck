@@ -5,6 +5,45 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.7.2 — 2026-11-10
+
+qd at a thousand hosts (QD-019).
+
+### Added
+- **`--rate N/s`** (`QD_RATE`) on every verb that fans out: new
+  connections spaced evenly, for a bastion's sshd `MaxStartups`. With a
+  campaign's `--ramp`, the slower of the two holds.
+- `tests/scale.sh` (not one of the suites): times the fan-out and the
+  filing against N fake hosts, and samples qd's peak memory, threads and
+  open files. `docs/scale.md` has the numbers.
+
+### Fixed
+- **A fan-out no longer outruns the open-file limit.** About 5 files per
+  host in flight: under `ulimit -n 64`, 32 at once reported 81 of 100
+  hosts unreachable, every ssh that could not get a pipe read as a host
+  that did not answer. qd now raises its soft limit towards the hard one,
+  and if that is not enough runs fewer hosts at once and says so.
+
+## 0.7.1 — 2026-11-10
+
+Campaigns paced for power (QD-020).
+
+### Added
+- **`qd campaign new|run --max-per ATTR=N`**: no more than N hosts sharing
+  a host attribute's value (a PDU, a rack) run at once; other values go
+  past a full one.
+- **`--ramp RATE`** (`6/min`, `1/s`, `120/h`): host starts spaced evenly.
+- **`--window "Mon-Fri 18:00-06:00"`** (repeatable): parts start only
+  inside a window, local time; outside one, `campaign run` starts nothing
+  and says when the next opens. `campaign status` shows the limits and
+  whether a window is open, until when, or when the next opens.
+- All three are kept on the campaign (three new columns at the end of
+  `qd.campaigns`, blank for campaigns defined before), so a resumed or
+  carried-on campaign paces the same; `campaign run`'s flags override.
+- New module `quarterdeck/pacing.py`: the scheduler is a pure function of
+  what is running and the time, so it is tested with a fake clock. New
+  suite `tests/test_pacing.sh` (6 cases).
+
 ## 0.7.0 — 2026-11-09
 
 qd deletes only what it made on a host, and a suite holds it to that
