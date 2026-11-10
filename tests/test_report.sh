@@ -136,6 +136,7 @@ t_the_html_runs_nothing() {
     seed
     # what a summary shows of a dataset (the commonest note) and of a
     # thresholds file (its notes), each hostile
+    # shellcheck disable=SC2016  # the backticks are text, not a command
     printf 'req\tcolumn\top\tlimit\tnote\n%s\n%s\n' \
         'R1	mbps	>=	1	x"><img src=x onerror=alert(2)>' \
         'R2	rtt	>=	1	a|b & `c` *d* [e](f)' > t.tsv
@@ -170,6 +171,7 @@ PYEOF
     # the Markdown shows the same text and lets none of it be markup
     md="$(cat rep/summary.md)"
     assert_contains "$md" '\<script\>alert(1)\</script\>'
+    # shellcheck disable=SC2016  # escaped backticks, as text
     assert_contains "$md" 'a\|b \& \`c\` \*d\* \[e\](f)'
     if grep -Eq '(^|[^\\])<' rep/summary.md; then fail "a raw < in the Markdown"; fi
 }
