@@ -15,8 +15,8 @@ and the commit.  A run files
 as one `provost batch` where provost has it: one commit, the answers
 parsed in parallel, and --context-columns, so `provost show NAME` says
 which host said what without qd.  A provost without batch (2.1.0, on
-PyPI) files them one capture at a time, a few in parallel, and qd puts
-the host back from each capture's prologue just the same.
+PyPI) files them one capture at a time, one after another (QD-022), and
+qd puts the host back from each capture's prologue just the same.
 """
 
 import csv
@@ -107,8 +107,8 @@ class Batch(object):
     """The inputs of one filing, written to a scratch directory, in the
     order their captures are to take ids.  qd's own tables are added with
     own=True, after what they describe: filed one at a time, the answers
-    go first, a few in parallel, and qd's tables after them in order, so
-    a run's answers take consecutive ids and its qd.runs row comes last."""
+    go first and qd's tables after them, all in order, so a run's answers
+    take consecutive ids and its qd.runs row comes last."""
 
     def __init__(self):
         self.dir = tempfile.mkdtemp(prefix="qd-file-")
@@ -259,9 +259,15 @@ class Provost(object):
                         for _, p in batch.inputs[k:k + size]]
                 problems.extend(errs)
             return problems
-        # One capture at a time: the answers a few in parallel (provost
-        # parses outside its lock), then qd's own tables in order, the
-        # run's row last.
+        # One capture at a time, one after another: the answers, then
+        # qd's own tables in order, the run's row last.  Not two provost
+        # processes at once unless QD_FILE_JOBS asks (QD-022): provost's
+        # store lock is `mkdir .lock`, and where mkdir says it made a
+        # directory another process made first -- uutils coreutils' before
+        # 0.11.0, /usr/bin/mkdir on Ubuntu 25.10 and 26.04 -- two started
+        # together both hold it, and one capture overwrites or kills the
+        # other: the run reads back a table short.  `provost batch` is one
+        # process, and parses in parallel inside it.
         cut = len(batch.inputs) - max(1, batch.own)
         head, tail = batch.inputs[:cut], batch.inputs[cut:]
         problems = []
@@ -271,12 +277,16 @@ class Provost(object):
             rc, _, err = self.call(["--sync", "-q", "--name", name, path])
             return (path, rc, complaints(err))
 
-        with ThreadPoolExecutor(max_workers=jobs or 4) as pool:
-            for path, rc, errs in pool.map(one, head):
-                if rc != 0:
-                    problems.append("%s: %s" % (
-                        os.path.basename(path),
-                        errs[-1] if errs else "exit %d" % rc))
+        if jobs and jobs > 1:
+            with ThreadPoolExecutor(max_workers=jobs) as pool:
+                answers = list(pool.map(one, head))
+        else:
+            answers = [one(item) for item in head]
+        for path, rc, errs in answers:
+            if rc != 0:
+                problems.append("%s: %s" % (
+                    os.path.basename(path),
+                    errs[-1] if errs else "exit %d" % rc))
         for item in tail:
             _, rc, errs = one(item)
             if rc != 0:

@@ -290,6 +290,42 @@ EOF2
     assert_contains "$(qd show latest --format csv)" "mx_pps,alpha,1000"
 }
 
+# Without provost's batch, a run's captures go one provost after another:
+# two at once can both take provost's `mkdir` lock where mkdir is uutils'
+# before 0.11.0 (Ubuntu 25.10, 26.04, CI's ubuntu-latest), and a table is
+# lost (QD-022).  The stand-in takes a marker with noclobber (O_EXCL, not
+# mkdir), holds it a moment, and notes any provost started meanwhile.
+# QD_FILE_JOBS=N still asks for N at once.
+t_one_capture_at_a_time_is_one_provost_at_a_time() {
+    cat > "$FAKE_BIN/provost" <<EOF
+#!/usr/bin/env bash
+if ( set -C; : > "$TEST_TMPDIR/inflight" ) 2> /dev/null; then
+    sleep 0.3
+    $PROVOST_CMD "\$@"
+    rc=\$?
+    rm -f "$TEST_TMPDIR/inflight"
+    exit \$rc
+fi
+echo "\$*" >> "$TEST_TMPDIR/overlap"
+exec $PROVOST_CMD "\$@"
+EOF
+    chmod +x "$FAKE_BIN/provost"
+    local k imports=()
+    for k in 1 2 3 4; do
+        printf 'host\tv\na\t%d\n' "$k" > "t$k.tsv"
+        imports+=(--import "t$k.tsv")
+    done
+    QD_PROVOST="$FAKE_BIN/provost" QD_PROVOST_BATCH=0 \
+        qd "do" "${imports[@]}" -- true > /dev/null 2>&1
+    assert_no_file overlap
+    for k in 1 2 3 4; do
+        assert_contains "$(qd show "latest:t$k" --format csv)" "a,$k"
+    done
+    QD_FILE_JOBS=4 QD_PROVOST="$FAKE_BIN/provost" QD_PROVOST_BATCH=0 \
+        qd "do" "${imports[@]}" -- true > /dev/null 2>&1 || true
+    assert_file_exists overlap
+}
+
 run_test "QD_MX: ~ expanded, a bare name replaced"      t_qd_tool_variable_is_expanded_and_only_replaces_a_bare_name
 run_test "mx run: reports/ and mx export read back"     t_mx_run_reads_reports_and_exports
 run_test "mx export to stdout is read"                  t_mx_export_to_stdout_is_read
@@ -305,4 +341,5 @@ run_test "stdout table and --import"                    t_stdout_table_and_expli
 run_test "plain text output is filed for provost"       t_plain_text_output_is_filed_for_provost_to_read
 run_test "a missing tool says how to get it"            t_missing_tool_says_how_to_get_it
 run_test "QD_MX names the tool"                         t_qd_tool_variable_names_the_tool
+run_test "one capture at a time: one provost at a time" t_one_capture_at_a_time_is_one_provost_at_a_time
 finish

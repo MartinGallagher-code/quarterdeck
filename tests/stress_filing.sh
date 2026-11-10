@@ -10,6 +10,7 @@
 #   bash tests/stress_filing.sh [ROUNDS]             default 20
 #   STRESS_TABLES=4 STRESS_SIDE=8 bash tests/stress_filing.sh 50
 #   STRESS_MKDIR=racy bash tests/stress_filing.sh    mkdir as uutils' was
+#   STRESS_MKDIR=racy STRESS_FILE_JOBS=4 bash ...    qd as it was: fails
 #   STRESS_RAW=1 bash tests/stress_filing.sh         provost alone, no qd
 #
 # A round is a fresh store and two `qd do` runs into it, each importing
@@ -27,9 +28,11 @@
 # capture id for two captures, or a git index.lock between them, and a
 # table goes missing.  STRESS_MKDIR=racy puts first on PATH a mkdir that
 # loses the race the same way (more often: its window is a fork wide), so
-# it shows on any machine.  STRESS_RAW=1 leaves qd out and files
-# STRESS_TABLES captures with provost at once, to show what this machine's
-# mkdir does to provost's lock.
+# it shows on any machine.  qd files one capture after another since
+# 0.8.7; STRESS_FILE_JOBS=N is QD_FILE_JOBS=N in each round, N at once as
+# qd filed four before, so the case can be seen to fail.  STRESS_RAW=1
+# leaves qd out and files STRESS_TABLES captures with provost at once, to
+# show what this machine's mkdir does to provost's lock.
 #
 # Exit status: 0 when every round read back whole, 1 when one did not, 2
 # on bad usage or with no provost.
@@ -40,11 +43,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/test_helper.bash"
 ROUNDS="${1:-20}"
 TABLES="${STRESS_TABLES:-3}"
 SIDE="${STRESS_SIDE:-4}"
-for v in "$ROUNDS" "$TABLES" "$SIDE"; do
+FILE_JOBS="${STRESS_FILE_JOBS:-}"
+for v in "$ROUNDS" "$TABLES" "$SIDE" ${FILE_JOBS:+"$FILE_JOBS"}; do
     case "$v" in
         "" | *[!0-9]* | 0*)
-            echo "ROUNDS, STRESS_TABLES and STRESS_SIDE are whole numbers," \
-                "1 or more: $v" >&2
+            echo "ROUNDS, STRESS_TABLES, STRESS_SIDE and STRESS_FILE_JOBS" \
+                "are whole numbers, 1 or more: $v" >&2
             exit 2 ;;
     esac
 done
@@ -89,6 +93,7 @@ qd_round() {
     local r="$1" pass k
     local -a imports
     setup_env || return 1
+    [ -z "$FILE_JOBS" ] || export QD_FILE_JOBS="$FILE_JOBS"
     for pass in 1 2; do
         imports=()
         for k in $(seq 1 "$TABLES"); do
@@ -145,7 +150,7 @@ raw_round() {
 }
 
 fn=qd_round
-what="two qd do runs of $TABLES tables each"
+what="two qd do runs of $TABLES tables each, ${FILE_JOBS:-1} filed at once"
 if [ "${STRESS_RAW:-0}" = 1 ]; then
     fn=raw_round
     what="$TABLES provost captures at once"

@@ -111,8 +111,8 @@ back), opening with a `#%` line that says which run and which host it is.
 Where provost has `batch`, a whole run is one commit, the answers parsed in
 parallel, and `--context-columns` puts the host (and its rack, and the
 run) on every row, so `provost show NAME` says who said what without qd.
-An older provost files one capture at a time and qd puts the host back
-from each capture's prologue just the same.
+An older provost files one capture at a time, one after another, and qd
+puts the host back from each capture's prologue just the same.
 
 Besides the answers, a run files two tables of qd's own:
 
@@ -472,6 +472,7 @@ the account's own ssh and sudo rights on the hosts.
 | `--store` | `QD_STORE` | a name from `qd store ls` or a directory; else the active store (see Named stores) |
 | | `QD_PROVOST` | `provost` on `PATH` |
 | | `QD_PROVOST_BATCH=0` | file one capture at a time even where provost has `batch` |
+| | `QD_FILE_JOBS` | one capture at a time: one provost after another. N files N at once, but only where `mkdir --version` is not uutils coreutils' before 0.11.0 (Ubuntu 25.10 and 26.04): there two can share provost's lock and lose a capture. With `batch`: its `-j` |
 | | `QD_FILE_CHUNK` | 200 inputs per `provost batch`, each a commit, so its lock is never held for a whole big fleet |
 
 Exit status is 0 when every host answered, 1 when one didn't, and 2 for a
@@ -607,6 +608,13 @@ qd campaign status burnin   # at most 4 per pdu; ramp 6/min; windows ... (closed
 The caps and the ramp hold within one worker. Two terminals running one
 campaign each keep their own count; muster still gives them different
 parts.
+
+Two workers filing into one store at the same moment rely on provost's
+store lock, and that lock is `mkdir`. Where `mkdir --version` says uutils
+coreutils before 0.11.0 (the default on Ubuntu 25.10 and 26.04), two
+provost processes can both take it, and a part's answers can be lost. On
+such a machine, run one worker per store, or switch the machine to GNU's
+`mkdir` (Ubuntu's `coreutils-from-gnu`).
 
 ---
 
@@ -1216,6 +1224,19 @@ QD_TEST_ONLY=import bash tests/run_tests.sh store   # only its cases whose name 
 
 doehelper wants Python 3.10 or newer; on an older one the doe suite uses its
 stand-in, as CI's 3.9 and 3.6 jobs do.
+
+`tests/stress_filing.sh` is not one of the suites: it loops, for a race
+that shows only now and then. It files `qd do` runs of several tables one
+capture at a time, several rounds side by side, and checks that every
+table reads back. Its header lists the knobs. `STRESS_MKDIR=racy` gives
+provost a `mkdir` that loses the race as uutils coreutils' did before
+0.11.0, so the race shows on any machine:
+
+```bash
+bash tests/stress_filing.sh 50                       # this machine's mkdir
+STRESS_MKDIR=racy bash tests/stress_filing.sh 50     # passes: one after another
+STRESS_MKDIR=racy STRESS_FILE_JOBS=4 bash tests/stress_filing.sh 50   # fails: four at once
+```
 
 The fake hosts are directories on the machine running the tests, so a probe
 case runs that machine's real commands. On macOS three probe cases fail for

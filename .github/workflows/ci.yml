@@ -96,8 +96,14 @@ jobs:
     # time, strips quotes inside TSV cells, and drops nested JSON keys where
     # there is no jq.  The jobs above take PyPI's newest provost, so this
     # one keeps the oldest qd supports under the whole suite.
-    name: test (provost 2.1.0, one capture at a time)
+    name: test (provost 2.1.0, one capture at a time) ${{ matrix.attempt }}
     runs-on: ubuntu-latest
+    # QD-022, temporary: the whole job ten times over, to see it pass ten
+    # in a row; back to one before the pull request leaves draft
+    strategy:
+      fail-fast: false
+      matrix:
+        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
     steps:
       - name: Check out repository
