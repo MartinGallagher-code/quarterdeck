@@ -6,11 +6,29 @@ on:
   pull_request:
     branches: [main]
 
+# A newer push to a pull request's branch cancels that pull request's run
+# still in progress: only its newest commit's result is read.  A push to
+# main is never cancelled, nor held behind another: each has a group of
+# its own (its run id), so every push to main runs to the end, the version
+# job's push check with it (shared_tools BN-002).  QD-024.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# The suite is the long pole of every job that runs it, so each such job
+# runs a third of it on each of three runners: `run_tests.sh --shard K/3`
+# deals the suites out by their measured seconds, every suite to exactly
+# one share, and the longest in parts, each part on a different runner
+# (tests/check_shards.sh, in the shellcheck job, fails CI if a suite is in
+# none or in two, or a matrix leaves a share out).  Every job has a
+# timeout of about three times its usual time.  QD-024.
+
 jobs:
   test:
     # ubuntu-latest became 26.04 in November 2026, and setup-python has no
     # 3.9 for it; 24.04 still has every version in the matrix (QD-014)
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
 
     strategy:
       fail-fast: false
@@ -19,8 +37,9 @@ jobs:
         # is 3.6, which setup-python can no longer install, so the bottom of
         # the range runs in a container in the python-floor job below.
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        shard: [1, 2, 3]
 
-    name: test (python ${{ matrix.python-version }})
+    name: test (python ${{ matrix.python-version }}, ${{ matrix.shard }}/3)
 
     steps:
       - name: Check out repository
@@ -47,15 +66,21 @@ jobs:
         if: matrix.python-version != '3.9'
         run: python -m pip install doehelper
 
-      # One suite per core at a time, the slowest first, each suite's
-      # output printed whole when it ends; the log's last lines give the
-      # wall time and the longest suites.
+      # This runner's share of the suites, one per core at a time, the
+      # slowest first, each suite's output printed whole when it ends; the
+      # log's last lines give the wall time and every suite's seconds.
       - name: Run the test suite
-        run: bash tests/run_tests.sh
+        run: bash tests/run_tests.sh --shard ${{ matrix.shard }}/3
 
   python-floor:
-    name: Python 3.6 compatibility
+    name: Python 3.6 compatibility (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
 
     steps:
       - name: Check out repository
@@ -68,8 +93,10 @@ jobs:
 
       # Catches stdlib APIs newer than the floor, which a syntax-only compile
       # check cannot see. The machine the fleet is driven from is as often a
-      # RHEL 8 jump host, which ships 3.6, as anything newer.
+      # RHEL 8 jump host, which ships 3.6, as anything newer.  The scan is
+      # the same on every share, so the first one runs it.
       - name: Scan for post-3.6 syntax and stdlib APIs
+        if: matrix.shard == 1
         run: |
           python -m pip install --upgrade vermin
           bash tests/check_python_compat.sh
@@ -89,15 +116,21 @@ jobs:
           docker run --rm -v "$PWD:/w" -w /w \
             -e QD_PROVOST="bash /w/.pv/x/provost_data/_bundle/provost" \
             python:3.6 \
-            bash -euxc 'pip install -q binnacle && bash tests/check_python_compat.sh && bash tests/run_tests.sh'
+            bash -euxc 'pip install -q binnacle && bash tests/check_python_compat.sh && bash tests/run_tests.sh --shard ${{ matrix.shard }}/3'
 
   provost-2-1:
     # PyPI's provost 2.1.0 has no `batch`: it files a run one capture at a
     # time, strips quotes inside TSV cells, and drops nested JSON keys where
     # there is no jq.  The jobs above take PyPI's newest provost, so this
     # one keeps the oldest qd supports under the whole suite.
-    name: test (provost 2.1.0, one capture at a time)
+    name: test (provost 2.1.0, one capture at a time, ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
 
     steps:
       - name: Check out repository
@@ -113,7 +146,7 @@ jobs:
 
       # The longest job, one capture at a time: suites side by side, as above.
       - name: Run the test suite
-        run: bash tests/run_tests.sh
+        run: bash tests/run_tests.sh --shard ${{ matrix.shard }}/3
 
   version:
     # Every change moves the version in three places (CLAUDE.md; shared_tools
@@ -154,6 +187,7 @@ jobs:
   web:
     name: web page syntax
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Check out repository
@@ -168,8 +202,9 @@ jobs:
         run: node --check quarterdeck/web/app.js
 
   shellcheck:
-    name: shellcheck
+    name: shellcheck, and every suite in one share
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Check out repository
@@ -177,15 +212,24 @@ jobs:
 
       # SC1091 only says shellcheck cannot open the sourced helper from its
       # own working directory; following it (-x) makes every test function
-      # look unreachable, because run_test calls them by name.
+      # look unreachable, because run_test calls them by name.  The runner
+      # image has shellcheck; apt only where it does not.
       - name: Run shellcheck over the test harness
         run: |
-          sudo apt-get update && sudo apt-get install -y shellcheck
+          command -v shellcheck > /dev/null ||
+            { sudo apt-get update && sudo apt-get install -y shellcheck; }
+          shellcheck --version | head -n 2
           shellcheck -e SC1091 tests/*.sh tests/test_helper.bash
+
+      # Every suite is dealt to exactly one share of each sharded job, and
+      # every job's matrix runs every share.
+      - name: Every suite runs in exactly one share
+        run: bash tests/check_shards.sh
 
   reuse:
     name: REUSE compliance
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Check out repository
@@ -199,6 +243,7 @@ jobs:
   build:
     name: build the wheel
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Check out repository
