@@ -5,6 +5,31 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.8.5 — 2026-11-10
+
+Ready for PyPI (QD-007). Nothing `qd` does has changed.
+
+### Added
+- **`.github/workflows/release.yml`**: publishing a GitHub release tagged
+  `vX.Y.Z` builds the sdist and wheel, checks the tag against the version
+  in all three places, runs `twine check --strict`, installs the wheel in
+  a fresh venv on Python 3.12 and on 3.6 (the floor), and uploads to PyPI
+  through Trusted Publishing with attestations -- no token anywhere.
+  "Run workflow" uploads to TestPyPI instead, for the dry run before the
+  first release. The one-time PyPI setup is in the workflow's header.
+- Extras: `quarterdeck[provost]`, `[binnacle]` and `[all]` bring the
+  tools qd drives (provost only on Python 3.8+, which it needs). qd still
+  imports none of them.
+- CI's wheel job also installs the wheel on Python 3.6, and runs
+  `twine check --strict`.
+
+### Changed
+- README's install section leads with `pip install 'quarterdeck[all]'`.
+- The licence stays in the `{ text = ... }` form with the GPLv3+
+  classifier: the PEP 639 string needs setuptools 77, which needs Python
+  3.9, and the package advertises 3.6. PyPI shows the licence from
+  either.
+
 ## 0.8.4 — 2026-11-10
 
 `qd web` served beyond this machine needs a token, can serve https, and is

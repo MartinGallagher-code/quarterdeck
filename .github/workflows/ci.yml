@@ -190,7 +190,7 @@ jobs:
         run: |
           python -m pip install --upgrade build twine
           python -m build
-          python -m twine check dist/*
+          python -m twine check --strict dist/*
 
       # The page ships as package data; a wheel without it starts a server
       # with nothing to serve, so prove it is there and answers.
@@ -208,3 +208,10 @@ jobs:
           printf 'host,v\na,1\nb,2\n' > t.csv
           qd import t.csv > /dev/null
           qd stats latest v
+
+      # The floor: what PyPI will serve must install and start on 3.6, in a
+      # venv of its own, though it is built on a newer Python (QD-007).
+      - name: Install the wheel on Python 3.6
+        run: |
+          docker run --rm -v "$PWD/dist:/dist:ro" python:3.6 \
+            bash -euxc 'python -m venv /v && /v/bin/pip install -q /dist/*.whl && /v/bin/qd --version && /v/bin/qd --help > /dev/null'
