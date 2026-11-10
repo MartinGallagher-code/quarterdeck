@@ -22,6 +22,8 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
        qd join RUN TELEMETRY [--window +-30]   beside Splunk/CloudVision/
                                                Prometheus samples, by host
                                                and time
+       qd report RUN|campaign:NAME --out DIR   an evidence package: data,
+                                               manifest, hashes, summary
        qd export RUN [--format overlay]        CSV, JSON, the viewer's TSV,
                                                Splunk HEC, OpenMetrics
        qd web                                  the store in a browser
@@ -60,7 +62,7 @@ design_of_experiments (pip install doehelper) its designs.
 Exit status
   0   done, and every host answered
   1   a finding: a host that did not answer, a diff or a compare that
-      differs
+      differs, a check that failed (qd report: any finding it records)
   2   usage error, or something could not be read or written
 
 Full manual: https://github.com/MartinGallagher-code/quarterdeck#readme
@@ -380,7 +382,7 @@ def host_row(rid, r):
         ":%d" % h.port if h.port else "")
     # ts to the millisecond: with duration_s it is the host's own window,
     # which `qd join` lines telemetry up against (a whole second, before
-    # 0.10.0, left the window up to a second short)
+    # 0.11.0, left the window up to a second short)
     return [rid, h.name, addr if (h.addr != h.name or h.port) else "",
             str(r.pass_no), "%.3f" % r.started, r.outcome, str(r.rc),
             "%.2f" % r.duration, str(len(r.stdout.encode("utf-8"))),
@@ -1561,11 +1563,8 @@ def within_text(method, args, k):
 
 
 def outlier_cells(r):
-    key, v, med, rel, score, side = r
-    return [key, stats.fmt_num(v), "" if rel is None else
-            stats.fmt_num(rel) + "%",
-            ("%+.1f" % score) if abs(score) != float("inf") else
-            ("+inf" if score > 0 else "-inf"), side]
+    """One row as printed: stats.outlier_cells, which qd report shares."""
+    return stats.outlier_cells([r])[0]
 
 
 def report_peer_outliers(args, t, s, col, per, method, k, pg):
@@ -1855,6 +1854,62 @@ def cmd_join(args):
         warn("no row had any telemetry in its window: see the notes")
     emit(args, s, lines)
     return 0 if j.rows_with else 1
+
+
+# ---------------------------------------------------------------------------
+# report: an evidence package
+# ---------------------------------------------------------------------------
+
+def cmd_report(args):
+    from . import report as reportmod
+    rep, where, zpath = reportmod.make(
+        args, lambda ref: ref_store(args, ref),
+        getattr(args, "_argv", None) or sys.argv[1:])
+    s = rep.subject
+    sums = os.path.join(where, "SHA256SUMS")
+    lines = ["%s report -- %s %s: %s, %s in %s" % (
+        PROG, s.kind, s.name, plural(len(rep.pkg.paths), "file"),
+        human_bytes(rep.pkg.size()), storemod.tilde(where))]
+    if s.kind != "run":
+        lines.append("  parts     %d run, %d not yet  (%s)" % (
+            len(s.latest), len(s.not_run), plural(len(s.runs), "run")))
+    lines.append("  summary   %s  (and summary.md)"
+                 % storemod.tilde(os.path.join(where, "summary.html")))
+    if zpath:
+        lines.append("  zip       %s" % storemod.tilde(zpath))
+    head = rep.manifest["store"].get("head")
+    if head:
+        lines.append("  store     %s at %s" % (rep.st.shown(), head))
+    lines.append("  sums      sha256 of SHA256SUMS: %s  (record it with the "
+                 "report: it pins every file)" % reportmod.sha256_file(sums))
+    if rep.findings:
+        lines.append("")
+        lines.append("  FINDINGS")
+        for f in rep.findings[:12]:
+            lines.append("    %s" % f)
+        if len(rep.findings) > 12:
+            lines.append("    ... %d more in the summary"
+                         % (len(rep.findings) - 12))
+    if rep.left_out:
+        lines.append("")
+        lines.append("  LEFT OUT")
+        for x in rep.left_out:
+            lines.append("    %-20s %s" % (x["section"], x["why"]))
+    lines.extend(next_steps([
+        ("cd %s && sha256sum -c SHA256SUMS" % shlex.quote(where),
+         "every file as it was written"),
+        ("open %s" % shlex.quote(os.path.join(where, "summary.html")),
+         "the summary: static, no scripts, safe to attach")]))
+    sys.stdout.write(render.page(lines))
+    return 1 if rep.findings else 0
+
+
+def human_bytes(n):
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return ("%d %s" % (n, unit)) if unit == "bytes" else \
+                "%.1f %s" % (n, unit)
+        n /= 1024.0
 
 
 # ---------------------------------------------------------------------------
@@ -3588,6 +3643,8 @@ HINTS = [
     ("Is a small slide real, or noise?",
      "qd baseline set gold NAME --last 5; qd compare NAME --last 5 "
      "--baseline gold"),
+    ("Evidence for a test report",
+     "qd report latest --out evidence/ --check limits.tsv --zip"),
     ("Centre and spread, per rack", "qd stats latest COLUMN --by rack"),
     ("What changed since last time?", "qd diff latest"),
     ("One host's answer, exactly", "provost source cNNNN   (qd log latest names them)"),
@@ -3986,6 +4043,31 @@ def build_parser():
     add_query(sp, sort=False)
     add_format(sp)
     sp.set_defaults(fn=cmd_check)
+
+    sp = verb("report", "an evidence package for a run or a campaign: "
+              "data, manifest, hashes, summary")
+    sp.add_argument("ref", nargs="?", metavar="RUN|campaign:NAME",
+                    help="a run (latest), or campaign:NAME for every part "
+                    "of a campaign or a design")
+    sp.add_argument("-o", "--out", metavar="DIR",
+                    help="write the package here: a new or empty directory "
+                    "(default qd-report-RUN)")
+    sp.add_argument("--check", metavar="FILE",
+                    help="check each run against these thresholds, as qd "
+                    "check --against does (default: the verdicts qd check "
+                    "--keep filed, if any)")
+    sp.add_argument("--baseline", metavar="RUN",
+                    help="compare every numeric column's median with this "
+                    "run's, as qd compare does")
+    sp.add_argument("--drift", type=float, default=env_float("DRIFT", 5.0),
+                    metavar="PCT", help="with --baseline: a median moving "
+                    "more than PCT %% is a finding (QD_DRIFT, 5)")
+    sp.add_argument("--z", type=float, default=env_float("Z", 3.5),
+                    help="outliers: robust z-score past which a value is "
+                    "one (QD_Z, 3.5)")
+    sp.add_argument("--zip", action="store_true",
+                    help="also write DIR.zip")
+    sp.set_defaults(fn=cmd_report)
 
     sp = verb("pivot", "long to wide: rows by columns")
     sp.add_argument("ref", metavar="RUN")
@@ -4431,6 +4513,7 @@ def main(argv=None):
         return 0
     if tail is not None:
         args.command = tail
+    args._argv = list(argv)     # as typed: what a report says made it
     if getattr(args, "count", "x") is None:
         args.count = 0 if args.every else 1
     try:

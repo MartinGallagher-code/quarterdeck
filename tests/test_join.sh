@@ -220,7 +220,7 @@ EOF
 }
 
 t_runs_filed_before_ms_get_a_second_more() {
-    # a qd.hosts row from before 0.10.0: ts a whole second, so the start
+    # a qd.hosts row from before 0.11.0: ts a whole second, so the start
     # may have been cut by up to a second, and the end with it
     "$PY" - "$QD_DIR" <<'EOF'
 import sys
@@ -238,7 +238,7 @@ t = Table(["host", "v"], [["a", "1"], ["b", "2"]])
 hosts, wins, how, notes, addrs = row_windows(t, E(), margin=5)
 assert wins == [(995.0, 1008.0), (995.25, 1007.25)], wins
 assert addrs == {"10.0.0.2": "b"}, addrs
-assert any("before 0.10.0" in n for n in notes), notes
+assert any("before 0.11.0" in n for n in notes), notes
 EOF
 }
 

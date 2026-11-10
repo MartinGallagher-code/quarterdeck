@@ -39,7 +39,8 @@ for a fleet of Linux boxes:
    (who agrees and who doesn't), histograms, robust outliers, group-bys,
    pivots, trends, diffs between two runs and comparisons of many. You can
    read them as text, as CSV/JSON, in a full-screen terminal explorer, in
-   a browser, or painted on the floor plan.
+   a browser, painted on the floor plan, or as an evidence package for a
+   test report (`qd report`).
 
 ```bash
 pip install 'quarterdeck[all]'           # qd, with provost (the store) and binnacle (the instruments)
@@ -784,6 +785,83 @@ any other dataset.
 
 ---
 
+## For a test report: `qd report`
+
+The other commands answer one question each. `qd report` puts their
+answers for a run, or a whole campaign, into one directory an evaluator
+can read, check and attach without qd:
+
+```bash
+qd report latest --out evidence/                      # one run
+qd report latest --out evidence/ --check limits.tsv --baseline accepted --zip
+qd report campaign:burnin --out burnin-evidence/      # every part of a campaign
+```
+
+```text
+evidence/
+  summary.html, summary.md       what to read first: findings, then each section
+  manifest.json                  the run records, versions, store head, what was left out
+  SHA256SUMS                     every other file:  cd evidence && sha256sum -c SHA256SUMS
+  data/RUN/data.csv, data.json   each table, as qd export writes it
+  data/RUN/data.stats.csv, .json qd stats on it
+  data/RUN/outliers.csv, .json   qd outliers on every numeric column
+  data/RUN/check.csv, .json      qd check's verdicts
+  data/RUN/captures/c0001.txt    every host's answer, exactly as provost keeps it
+  data/baseline.csv, .json       medians against --baseline
+  inputs/limits.tsv              the --check file, as given
+  verify.txt                     provost verify on the report's captures
+```
+
+- **Every figure is the engine's.** The summaries show what `qd stats`,
+  `qd outliers`, `qd check` and `qd compare` print for the same run,
+  computed by the same functions, and each section ends with the exact
+  command that prints it again (with `--store`, so it works from
+  anywhere). `manifest.json` lists every one of those commands.
+- **The summary**, in order: findings; the run (its `qd.runs` record,
+  with who ran it); hosts asked, ok and not answering, with why; the
+  figures of every column; the checks; drift against the baseline; the
+  outliers; the captures' `#%` keys, the run manifest provost reads
+  (PV-020), and the ones `provost annotate` added later; `provost verify`'s
+  verdict and the store's head commit; the files; how the report was made.
+- **A campaign** (`campaign:NAME`, or a design's name) adds its parts and
+  their states (`qd campaign status`), the hosts over every part's last
+  run, the parts' medians side by side (`qd compare --group`) and a
+  requirement-by-part table of checks, then each part's last run as above.
+  Earlier runs of a retried part are in `data/` too; a part not run yet
+  is a finding.
+- **A section with nothing to say is left out, and named** under *Not in
+  this report* with why: no `--check` given and no verdicts kept by `qd
+  check --keep` (which are used when there are); no `--baseline`; a
+  provost without `verify` (provost after 2.3.0 has it); captures with no
+  `#%` keys of their own. Sections fill in as those arrive.
+- **`summary.html` runs nothing.** It is static: no script, no request
+  for anything outside the package, every string from a dataset or a
+  thresholds file escaped, and a Content-Security-Policy that would refuse
+  a script if one got in. `summary.md` escapes the same text so no
+  Markdown renderer reads it as markup or HTML.
+- **What the hashes prove.** `SHA256SUMS` shows the package is as it was
+  written; qd prints the sha256 of `SHA256SUMS` itself, which is the one
+  line to record in the test report. Each copied capture is also checked
+  against the sha256 provost recorded for it, and `provost verify` checks
+  the store; neither proves the store's history was never rewritten, which
+  is why its head commit is recorded too. Signing the package waits for
+  provost's signing key (PV-027).
+- **Where it goes.** `--out DIR` must be new or empty (default
+  `qd-report-RUN`), never inside the store, which provost commits whole.
+  The package is written beside it and moved into place whole, so a
+  report that fails leaves nothing behind. `--zip` also writes `DIR.zip`.
+- `--drift PCT` (`QD_DRIFT`, 5) is how far a median may move from the
+  baseline's before it is a finding; `--z` (`QD_Z`, 3.5) is outliers'.
+
+The exit status is 1 when the report records a finding (a host that did
+not answer, a check that failed or was not measured, drift, a verify
+finding, a part not run), as the command that found it would have, and
+0 when it records none. Either way the package is written. A thresholds
+file qd cannot read, an `--out` that is taken, or a run that is not there
+is exit 2, before anything is written.
+
+---
+
 ## Designed experiments: `qd doe`
 
 ```bash
@@ -1030,7 +1108,7 @@ missed.
 
 An import, a `ds:NAME` dataset or a file says nothing of when it was
 measured (an import keeps when it was imported), so those need `--time`.
-`ts` is kept to the millisecond from 0.10.0. Runs filed before kept the
+`ts` is kept to the millisecond from 0.11.0. Runs filed before kept the
 whole second, so their windows run a second longer to cover what was cut
 off, and the notes say so. A sample counts when its time is at or after
 the start and at or before the end: both edges are in.
@@ -1400,7 +1478,7 @@ The numbers, and how they were measured, are in
 | | |
 |---|---|
 | 0 | done, and every host answered |
-| 1 | a finding: a host that did not answer, a diff or compare that differs, a check that failed or was not measured, nothing to bin, a join that found no telemetry in any window |
+| 1 | a finding: a host that did not answer, a diff or compare that differs, a check that failed or was not measured, nothing to bin, a join that found no telemetry in any window, a report that records any of these |
 | 2 | a usage error, or something could not be read or written |
 | other | `qd do` passes on the tool's own |
 
