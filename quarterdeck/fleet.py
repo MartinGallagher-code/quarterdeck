@@ -7,26 +7,78 @@ transport, the bounded capture and the failure classes are agree's, so
 `unreachable` means the same thing in a quarterdeck dataset as in an agree
 group.  What differs is what is kept: agree compares the answers, this
 keeps them -- raw, per host, in host-list order -- so they can be parsed
-into columns and read back later.
+into columns and read back later.  Stopping a command on the host when
+qd gives up on it (QD-026) is this copy's only: binnacle's BN-004 is to
+take it into agree.
 """
 
 import os
+import re
 import secrets
 import selectors
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
             "-o", "StrictHostKeyChecking=accept-new"]
 
+# --reuse's control sockets.  A socket's path must fit sun_path: 108
+# bytes on Linux, 104 on macOS and the BSDs (the smaller is the limit
+# here).  A master binds at ControlPath plus "." and 16 random characters
+# and renames it after, and %C is 40, so the directory gets what is left.
+SUN_PATH = 104
+CONTROL_TAIL = len("/") + 40 + len(".") + 16 + 1    # and the NUL
+CONTROL_PERSIST = 60
+
 # The file in every directory qd makes on a host, holding the run's id.
 SENTINEL = ".qd-owned"
 
 OK, FAILED, TIMEOUT, UNREACHABLE, PUSH_FAILED = (
     "ok", "failed", "timeout", "unreachable", "push-failed")
+
+# Stopping a command on the host (QD-026).  qd's ssh asks for no terminal,
+# so when qd kills its ssh -- past --timeout or --max-output -- sshd does
+# not hang the command up: it goes on running on the host (pdsh, pssh and
+# parallel-ssh say the same of theirs).  So every command goes out after
+# one line to stderr, MARK_SH, naming the shell sshd started for it and
+# that shell's process group, and _exec takes the line off again.  sshd
+# starts that shell in a session of its own, so the group holds the
+# command and everything it started; Runner.stop sends it TERM, then KILL,
+# with a second ssh.  The line is written by `sh -c`, so the login shell
+# may be any shell, and only builtins run in it: nothing else is started.
+# Its group is read from /proc where there is one; a shell that does not
+# lead its own group (an sshd that does not start a session) is never
+# signalled, since its group is someone else's.
+MARK_SH = ("p=$PPID; g=$p; s=; { read -r s < /proc/$p/stat; } 2>/dev/null "
+           "&& { s=${s##*) }; set -- $s; g=$3; }; echo %s $p $g >&2")
+
+# Most of a minute: the 8 s to connect, and a few seconds for TERM to
+# work, then KILL.
+STOP_TIMEOUT = 30
+
+# The stop, on the host: TERM to the group, then KILL if any of it is
+# still there 2 s later.  A group that is gone is stopped; one whose
+# members are not this user's to signal (a command that ran sudo itself)
+# is still running, and kill says "Operation not permitted" of it, which
+# LC_ALL=C keeps in English.  Exit 0 when nothing of it is left, 4 when
+# some of it is.  Never 0 or 1 as the group: `kill -- -1` is every process.
+STOP_SH = (
+    "LC_ALL=C; export LC_ALL; p=%d; [ \"$p\" -gt 1 ] || exit 3; "
+    "alive() { e=$(kill -s 0 -- -$p 2>&1) && return 0; "
+    "case $e in *ermi*) return 0 ;; esac; return 1; }; "
+    "if sleep 0.1 2>/dev/null; then d=0.1 n=20; else d=1 n=2; fi; "
+    "wait_gone() { i=0; while alive; do [ $i -lt $n ] || return 1; "
+    "sleep $d; i=$((i + 1)); done; }; "
+    "alive || exit 0; "
+    "kill -s TERM -- -$p 2>/dev/null; wait_gone && exit 0; "
+    "kill -s KILL -- -$p 2>/dev/null; wait_gone && exit 0; "
+    "echo 'qd: still running after TERM and KILL' >&2; exit 4")
 
 
 class TimedOut(int):
@@ -35,9 +87,14 @@ class TimedOut(int):
     that host answered."""
 
 
+class Flooded(int):
+    """Past --max-output, 125, told apart from a command that exited 125
+    itself, as TimedOut is."""
+
+
 class Result(object):
     __slots__ = ("host", "outcome", "rc", "stdout", "stderr", "duration",
-                 "started", "pass_no")
+                 "started", "pass_no", "left_running")
 
     def __init__(self, host, pass_no=1):
         self.host = host
@@ -48,6 +105,9 @@ class Result(object):
         self.duration = 0.0
         self.started = time.time()
         self.pass_no = pass_no
+        # qd gave up on the command and could not confirm it stopped on
+        # the host: it may still be running there
+        self.left_running = False
 
     def error(self):
         """The first line of what went wrong, for a column."""
@@ -59,12 +119,137 @@ class Result(object):
         return "exit %d" % self.rc
 
 
+def control_dir(bases=None):
+    """A new directory for --reuse's sockets, private to this user (mkdtemp
+    makes it 0700), in the first of `bases` short enough for a socket path:
+    TMPDIR, then /tmp (macOS's TMPDIR, /var/folders/..., is too long).
+    -> the path, or None when none is short enough or writable."""
+    if bases is None:
+        bases = [tempfile.gettempdir(), "/tmp"]
+    seen = set()
+    for base in bases:
+        if not base or base in seen or not os.path.isdir(base):
+            continue
+        seen.add(base)
+        # mkdtemp's name is the prefix and 8 characters
+        if len(base.rstrip("/")) + len("/qd-ssh-12345678") + CONTROL_TAIL \
+                > SUN_PATH:
+            continue
+        try:
+            return tempfile.mkdtemp(prefix="qd-ssh-", dir=base)
+        except OSError:
+            continue
+    return None
+
+
+class Reuse(object):
+    """--reuse: one ssh connection to each host for the whole qd command,
+    shared by every ssh and scp to it -- a push's four or five, every
+    pass, every run of a `qd probe A B`.  OpenSSH's ControlMaster does it: the first call to
+    a host opens a master, the rest ride on it.  The sockets live in a
+    private directory of this command's own, named by %C (a hash of the
+    host, port and user), and close() shuts every master and removes the
+    directory when the command ends, however it ends."""
+
+    def __init__(self, persist=CONTROL_PERSIST, bases=None):
+        # how long an idle master waits for the next call: a pass every S
+        # seconds keeps it for the next pass
+        self.persist = max(1, int(persist))
+        self._bases = bases
+        self.dir = None
+        # reentrant: close() runs from a signal handler too, on the main
+        # thread, which may hold it at that moment
+        self._lock = threading.RLock()
+        self._hosts = {}        # (ssh argv, target, port): None
+        self._closed = False
+
+    def directory(self):
+        """The socket directory, made the first time it is asked for."""
+        with self._lock:
+            if self.dir is None:
+                self.dir = control_dir(self._bases)
+                if self.dir is None:
+                    raise OSError(
+                        "no directory short enough for ssh's control "
+                        "sockets (%d bytes at most): point TMPDIR at a short "
+                        "one, such as /tmp" % SUN_PATH)
+            return self.dir
+
+    def options(self):
+        return ["-o", "ControlMaster=auto",
+                "-o", "ControlPath=%s/%%C" % self.directory(),
+                "-o", "ControlPersist=%d" % self.persist]
+
+    def used(self, argv, target, port):
+        """A host this command connected to: its master is closed after."""
+        with self._lock:
+            self._hosts[(tuple(argv), target, port)] = None
+
+    def close(self, jobs=32, timeout=10):
+        """Every master closed (`ssh -O exit`, which contacts no host: it
+        talks to the local socket), then the directory removed.  Never
+        raises; safe to call twice."""
+        with self._lock:
+            if self._closed or self.dir is None:
+                self._closed = True
+                return
+            self._closed = True
+            hosts = list(self._hosts)
+        try:
+            masters = bool(os.listdir(self.dir))
+        except OSError:
+            masters = False
+
+        def stop(key):
+            argv, target, port = key
+            cmd = list(argv) + (["-p", str(port)] if port else []) + \
+                ["-O", "exit", target]
+            try:
+                subprocess.run(cmd, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=timeout)
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+        if masters and hosts:
+            with ThreadPoolExecutor(
+                    max_workers=max(1, min(jobs, len(hosts)))) as pool:
+                list(pool.map(stop, hosts))
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def close_on_signals(self):
+        """A TERM or HUP (a timeout, a cancelled job, a closed terminal)
+        still ends qd at once, as it always has, but closes the masters
+        first: left alone they idle on for ControlPersist seconds.  A
+        signal already ignored (nohup) stays ignored.  Only the main
+        thread can set a handler; elsewhere this does nothing."""
+        import signal
+
+        def handler(signum, frame):
+            self.close()
+            os._exit(128 + signum)
+
+        for name in ("SIGTERM", "SIGHUP"):
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                if signal.getsignal(sig) == signal.SIG_DFL:
+                    signal.signal(sig, handler)
+            except (ValueError, OSError):
+                pass
+
+
 class Runner(object):
     def __init__(self, ssh="ssh", scp="scp", user=None, timeout=60,
                  max_output=4 * 1024 * 1024, remote_dir="/var/tmp",
-                 sudo=False):
+                 sudo=False, ssh_config=None, reuse=None):
         self.ssh = shlex.split(ssh)
         self.scp = shlex.split(scp)
+        # --ssh-config: ssh and scp alike read this file, not ~/.ssh/config
+        self.ssh_config = ssh_config
+        # a Reuse, shared by every Runner of one command, or None
+        self.reuse = reuse
         self.user = user
         self.timeout = timeout
         self.max_output = max_output
@@ -82,6 +267,11 @@ class Runner(object):
         # --remote-dir too (so that is removed again, if it is empty)
         self._made = {}
         self.sudo = sudo
+        # the line every command sends first (MARK_SH): this run's own, so
+        # nothing a host prints can be taken for it
+        self.mark = "qd.%s.pgid" % self.run_id
+        self._mark_re = re.compile(
+            b"(?m)^" + re.escape(self.mark.encode()) + b" ([0-9]+) ([0-9]+)\n")
 
     def target(self, host):
         return "%s@%s" % (self.user, host.addr) if self.user else host.addr
@@ -90,29 +280,62 @@ class Runner(object):
         addr = "[%s]" % host.addr if ":" in host.addr else host.addr
         return "%s@%s" % (self.user, addr) if self.user else addr
 
+    def config_options(self):
+        """-F FILE with --ssh-config: what ssh -G is given as well."""
+        return ["-F", self.ssh_config] if self.ssh_config else []
+
+    def ssh_options(self):
+        """What every ssh and scp qd starts is given before the host: the
+        config file, qd's own options, and --reuse's."""
+        opts = self.config_options() + SSH_OPTS
+        if self.reuse is not None:
+            opts = opts + self.reuse.options()
+        return opts
+
     def ssh_argv(self, host, command):
-        argv = list(self.ssh) + SSH_OPTS
+        argv = list(self.ssh) + self.ssh_options()
         if host.port:
             argv += ["-p", str(host.port)]
         return argv + [self.target(host), command]
+
+    def _note_master(self, host):
+        """With --reuse, a host this run connects to, so its master is
+        closed when the command ends."""
+        if self.reuse is not None:
+            self.reuse.used(list(self.ssh) + self.ssh_options(),
+                            self.target(host), host.port)
 
     def wrap(self, command):
         if self.sudo:
             return "sudo -n sh -c %s" % shlex.quote(command)
         return command
 
-    def command_for(self, command, pushed=False):
-        """What runs on a host, as --dry-run prints it: beside the pushed
-        files when there are any (so `--push x -- tool x` finds x), under
-        `sudo -n` with --sudo."""
+    def command_for(self, command, pushed=False, marked=True):
+        """What runs on a host: beside the pushed files when there are any
+        (so `--push x -- tool x` finds x), under `sudo -n` with --sudo,
+        and after the line naming its process group (MARK_SH), which
+        --dry-run leaves out (`marked`) so the command can be read."""
         if pushed:
             command = "cd %s && %s" % (shlex.quote(self.work_dir), command)
-        return self.wrap(command)
+        if not marked:
+            return self.wrap(command)
+        return "sh -c %s; %s" % (shlex.quote(MARK_SH % self.mark),
+                                 self.wrap(command))
 
     def _exec(self, argv, timeout, stdin=None):
         """Bounded capture: one host in a log storm must not sink the run.
         `stdin` is a local file fed to the command (a script for
         `python3 -`), else it reads nothing."""
+        return self._capture(argv, timeout, stdin)[:3]
+
+    def _capture(self, argv, timeout, stdin=None, marked=False):
+        """_exec, and for a command sent by command_for (`marked`), the
+        process group the host said it runs in, with that line taken off
+        its stderr: -> (rc, stdout, stderr, group).  The group is None
+        when the line never came, and 0 when the shell does not lead a
+        group of its own.  Past the deadline rc is TimedOut, past
+        --max-output Flooded; either way ssh is killed here, and the
+        command is not."""
         limit = int(self.max_output)
         src = None
         try:
@@ -122,7 +345,7 @@ class Runner(object):
                                  stdin=src or subprocess.DEVNULL)
         except OSError as exc:
             # ssh (or scp) itself would not start: no host was reached
-            return 255, "", "cannot run %s: %s" % (argv[0], exc)
+            return 255, "", "cannot run %s: %s" % (argv[0], exc), None
         finally:
             if src:
                 src.close()
@@ -130,51 +353,107 @@ class Runner(object):
         sizes = {p.stdout: 0, p.stderr: 0}
         deadline = time.monotonic() + timeout
         flooded = False
+        # stderr is held here, uncounted, until the line naming the group
+        # has come and been taken off (or 64 KiB came first, or it ended):
+        # what is left counts against --max-output exactly as before
+        head = [b""] if marked else None
+        group = [None]
+
+        def take(f, data):
+            room = limit - sizes[f]
+            if room > 0:
+                chunks[f].append(data[:room])
+            sizes[f] += len(data)
+            return sizes[f] > limit
+
+        def take_head(eof):
+            buf = head[0]
+            m = self._mark_re.search(buf)
+            if m:
+                pid, pgid = int(m.group(1)), int(m.group(2))
+                # 0: the line came, but its shell leads no group of its own
+                group[0] = pgid if pid == pgid > 1 else 0
+                buf = buf[:m.start()] + buf[m.end():]
+            elif not eof and len(buf) < 65536:
+                return False
+            head[0] = None
+            return take(p.stderr, buf)
+
         sel = selectors.DefaultSelector()
         sel.register(p.stdout, selectors.EVENT_READ)
         sel.register(p.stderr, selectors.EVENT_READ)
         open_count = 2
+        timed_out = False
         while open_count:
             left = deadline - time.monotonic()
             if left <= 0:
-                sel.close()
-                p.kill()
-                p.wait()
-                for f in (p.stdout, p.stderr):
-                    f.close()
-                return TimedOut(124), "", "timed out after %ss" % timeout
+                timed_out = True
+                break
             for key, _ in sel.select(left):
                 f = key.fileobj
                 chunk = os.read(f.fileno(), 65536)
                 if not chunk:
                     sel.unregister(f)
                     open_count -= 1
+                    if f is p.stderr and head and head[0] is not None:
+                        flooded = take_head(True) or flooded
                     continue
-                room = limit - sizes[f]
-                if room > 0:
-                    chunks[f].append(chunk[:room])
-                sizes[f] += len(chunk)
-                if sizes[f] > limit:
-                    flooded = True
+                if f is p.stderr and head and head[0] is not None:
+                    head[0] += chunk
+                    flooded = take_head(False) or flooded
+                    continue
+                flooded = take(f, chunk) or flooded
             if flooded:
-                p.kill()
                 break
         sel.close()
-        try:
-            rc = p.wait(timeout=max(1.0, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired:
+        if not timed_out and not flooded:
+            try:
+                rc = p.wait(timeout=max(1.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                # both streams ended but ssh did not: the command closed
+                # them and ran on, past the deadline
+                timed_out = True
+        if timed_out or flooded:
             p.kill()
-            rc = p.wait()
+            p.wait()
         for f in (p.stdout, p.stderr):
             f.close()
 
         def text(f):
             return b"".join(chunks[f]).decode("utf-8-sig", "replace")
 
+        if timed_out and not flooded:
+            return (TimedOut(124), "", "timed out after %ss" % timeout,
+                    group[0])
         if flooded:
-            return 125, "", ("output exceeded --max-output (%d bytes); "
-                             "host killed" % limit)
-        return rc, text(p.stdout), text(p.stderr)
+            return (Flooded(125), "", "output exceeded --max-output (%d "
+                    "bytes)" % limit, group[0])
+        return rc, text(p.stdout), text(p.stderr), group[0]
+
+    def stop(self, host, group):
+        """Stop a command qd gave up on, on the host: TERM to its process
+        group, then KILL (STOP_SH), by a second ssh, under the same sudo
+        as the command.  -> '' when nothing of it is left there, else why
+        qd cannot say so."""
+        if group is None:
+            return ("it never said it had started there, so qd could not "
+                    "stop it if it did")
+        if not group:
+            return ("its shell there leads no process group of its own, so "
+                    "qd would not signal it")
+        script = STOP_SH % group
+        cmd = self.wrap(script) if self.sudo else "sh -c %s" % shlex.quote(
+            script)
+        rc, _, err = self._exec(self.ssh_argv(host, cmd), STOP_TIMEOUT)
+        if rc == 0:
+            return ""
+        last = (err or "").strip().splitlines()
+        why = last[-1].strip() if last else "exit %d" % rc
+        if why.startswith("qd: "):
+            why = why[4:]
+        if isinstance(rc, TimedOut):
+            why = "the stop itself timed out"
+        return "qd could not stop it (%s)" % why
 
     def push(self, host, files):
         for f in files:
@@ -203,7 +482,7 @@ class Runner(object):
             return rc, err
         if host.name not in self._made:
             self._made[host.name] = "qd-made-parent" in out
-        argv = list(self.scp) + SSH_OPTS
+        argv = list(self.scp) + self.ssh_options()
         if host.port:
             argv += ["-P", str(host.port)]
         argv += ["-q"] + list(files) + ["%s:%s/" % (self.scp_target(host),
@@ -241,6 +520,7 @@ class Runner(object):
                 stdin=None):
         r = Result(host, pass_no)
         t0 = time.monotonic()
+        self._note_master(host)
         if push:
             rc, err = self.push(host, push)
             if rc != 0:
@@ -254,10 +534,24 @@ class Runner(object):
                         r.stderr = (err or "").rstrip("\n") + "\n" + left
                 r.duration = time.monotonic() - t0
                 return r
-        rc, out, err = self._exec(
+        rc, out, err, group = self._capture(
             self.ssh_argv(host, self.command_for(command, bool(push))),
-            self.timeout, stdin)
+            self.timeout, stdin, marked=True)
         r.rc, r.stdout, r.stderr = rc, out, err
+        if isinstance(rc, (TimedOut, Flooded)):
+            # qd has given up on it, and killed its ssh; the command is
+            # stopped on the host too, or the row says it may not be
+            why = self.stop(host, group)
+            if why:
+                r.left_running = True
+                r.stderr = "%s, and may still be running on the host: %s" % (
+                    err, why)
+                if push and cleanup:
+                    r.stderr += ("\nqd: left %s there, since the command "
+                                 "in it may still be running" % self.work_dir)
+                    cleanup = False
+            else:
+                r.stderr = "%s; qd stopped it on the host" % err
         if push and cleanup:
             left = self.cleanup(host)
             if left:

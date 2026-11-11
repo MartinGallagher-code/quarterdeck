@@ -28,7 +28,7 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
                                                Splunk HEC, OpenMetrics
        qd web                                  the store in a browser
        qd floor RUN --layout floor.dc          paint it on the floor plan
-       qd hosts | doctor | hints | help
+       qd hosts | doctor [HOST] | hints | help
 
 Examples:
   qd run --servers hosts.txt -- uname -r
@@ -382,7 +382,7 @@ def host_row(rid, r):
         ":%d" % h.port if h.port else "")
     # ts to the millisecond: with duration_s it is the host's own window,
     # which `qd join` lines telemetry up against (a whole second, before
-    # 0.11.0, left the window up to a second short)
+    # 0.12.0, left the window up to a second short)
     return [rid, h.name, addr if (h.addr != h.name or h.port) else "",
             str(r.pass_no), "%.3f" % r.started, r.outcome, str(r.rc),
             "%.2f" % r.duration, str(len(r.stdout.encode("utf-8"))),
@@ -481,10 +481,59 @@ class Job(object):
         self.rc = 0 if all(r.outcome == fleet.OK for r in self.last) else 1
 
 
+def ssh_config_of(args):
+    """--ssh-config (QD_SSH_CONFIG) as a path ssh reads from any directory,
+    or None."""
+    cfg = getattr(args, "ssh_config", None)
+    if not cfg:
+        return None
+    return os.path.abspath(os.path.expanduser(cfg))
+
+
+def reuse_of(args):
+    """--reuse (QD_SSH_REUSE=1): one fleet.Reuse for the whole command, so
+    a campaign's parts and a probe's runs share each host's connection.
+    main() closes it when the command ends.  -> a Reuse, or None."""
+    if not (getattr(args, "reuse", False) or
+            policymod._truthy(env("SSH_REUSE"))):
+        return None
+    r = getattr(args, "_reuse", None)
+    if r is None:
+        # a master idles this long for the next call; a pass every S
+        # seconds keeps it to the next pass
+        every = getattr(args, "every", None) or 0
+        persist = max(fleet.CONTROL_PERSIST, int(every + 0.999) + 30)
+        r = args._reuse = fleet.Reuse(persist)
+        r.close_on_signals()
+    return r
+
+
 def new_runner(args):
     return fleet.Runner(ssh=args.ssh, scp=args.scp, user=args.user,
                         timeout=args.timeout, max_output=args.max_output,
-                        remote_dir=args.remote_dir, sudo=args.sudo)
+                        remote_dir=args.remote_dir, sudo=args.sudo,
+                        ssh_config=ssh_config_of(args),
+                        reuse=reuse_of(args))
+
+
+def check_ssh_config(path):
+    if path and not os.path.isfile(path):
+        die("cannot read --ssh-config %s: no such file (QD_SSH_CONFIG) -- "
+            "no host was contacted" % path)
+    if path and not os.access(path, os.R_OK):
+        die("cannot read --ssh-config %s: permission denied "
+            "(QD_SSH_CONFIG) -- no host was contacted" % path)
+
+
+def check_ssh_setup(runner):
+    """--ssh-config is there to read, and --reuse has its directory: both
+    refused before any host is contacted, --dry-run's lines included."""
+    check_ssh_config(runner.ssh_config)
+    if runner.reuse is not None:
+        try:
+            runner.reuse.directory()
+        except OSError as exc:
+            die("--reuse: %s -- no host was contacted" % exc)
 
 
 def check_transport(runner, pushing):
@@ -492,12 +541,13 @@ def check_transport(runner, pushing):
         if why and not shutil.which(tool[0]):
             die("cannot run %s: not found (--ssh/--scp, QD_SSH/QD_SCP) -- "
                 "no host was contacted" % tool[0])
+    check_ssh_setup(runner)
 
 
 def dry_run_lines(runner, hs, command, push=(), stdin=None):
     for h in hs:
         out(" ".join(shlex.quote(a) for a in runner.ssh_argv(
-            h, runner.command_for(command, bool(push)))) +
+            h, runner.command_for(command, bool(push), marked=False))) +
             (" < %s" % shlex.quote(stdin) if stdin else ""))
 
 
@@ -531,6 +581,7 @@ def add_own_tables(b, rid, label, command, created, took, hs, results,
     fields = dict(extra or {})
     notes = [n for n in (("interrupted after %s" % plural(
         passes, "pass", "passes")) if interrupted else None,
+        left_running_note(results),
         fields.pop("policy", None), fields.pop("notes", None)) if n]
     b.add_own(storemod.RUNS, filing.own_tsv(storemod.RUN_COLUMNS, [run_row(
         rid, fields.pop("kind", "run"), label, command, created,
@@ -541,6 +592,21 @@ def add_own_tables(b, rid, label, command, created, took, hs, results,
         push_failed=counts.get(fleet.PUSH_FAILED, 0), passes=passes,
         every=every, captures=ncap,
         notes="; ".join(notes) or None, **fields)]))
+
+
+def left_running_note(results):
+    """The hosts where qd gave up on the command and could not stop it
+    there (QD-026), as a run's note and its summary say them; or None."""
+    names = []
+    for r in results:
+        if r.left_running and r.host.name not in names:
+            names.append(r.host.name)
+    if not names:
+        return None
+    shown = ", ".join(names[:8]) + (
+        " and %d more" % (len(names) - 8) if len(names) > 8 else "")
+    return "may still be running on %s, where qd could not stop it: %s" % (
+        plural(len(names), "host"), shown)
 
 
 def say_filing(ncap):
@@ -574,6 +640,7 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
         extra["policy"] = pol.notes()
     runner = new_runner(args)
     if args.dry_run:
+        check_ssh_setup(runner)
         dry_run_lines(runner, hs, command, push, stdin)
         return None
     check_transport(runner, bool(push))
@@ -720,6 +787,9 @@ def report_run(args, command, hs, job, title=None):
     if interrupted:
         lines.append("  interrupted: kept the %s that finished"
                      % plural(passes, "pass", "passes"))
+    stray = left_running_note(job.results)
+    if stray:
+        lines.append("  NOT STOPPED  the command %s" % stray)
     if entry is not None:
         caps = sorted(entry.captures(), key=storemod.cnum)
         lines.append("  stored   %s in %s  (%s%s)" % (
@@ -3596,6 +3666,9 @@ def cmd_doctor(args):
             "parallel" if prov.has_batch() else
             "one capture at a time (this provost has no batch; a newer "
             "one files a run as one commit)"))
+    ssh_ok = True
+    if args.host:
+        ssh_ok = doctor_ssh(args, lines)
     hints = sorted(set(tools.install_hint(m) for m in missing
                        if tools.install_hint(m)))
     if "ssh" in missing:
@@ -3603,7 +3676,110 @@ def cmd_doctor(args):
     if hints:
         lines.extend(next_steps([("", h) for h in hints]))
     sys.stdout.write(render.page(lines))
-    return 1 if "ssh" in missing or "scp" in missing else 0
+    return 1 if "ssh" in missing or "scp" in missing or not ssh_ok else 0
+
+
+# What `qd doctor HOST` shows of ssh -G, in this order: how the host is
+# reached, the keys, Kerberos, connection sharing, and whether a prompt
+# can be answered.  A key ssh does not print is shown as -.
+DOCTOR_SSH_KEYS = [
+    "user", "hostname", "port", "proxyjump", "proxycommand",
+    "certificatefile", "identityfile", "gssapiauthentication",
+    "gssapidelegatecredentials", "controlmaster", "controlpath",
+    "controlpersist", "batchmode", "stricthostkeychecking"]
+
+
+def doctor_hop(runner, spec):
+    """The bastion's own settings, for `qd doctor HOST`: ssh reaches it
+    with a second ssh that reads the config file and none of qd's -o
+    options, so BatchMode and a host key check that will not ask have to
+    be in the config, under the bastion's Host.  -> rows"""
+    name, pairs, why = whoran.hop_settings(runner, spec)
+    if pairs is None:
+        return [("  bastion", "%s: ssh -G could not say: %s" % (name, why))]
+    got = dict(pairs)
+    batch = got.get("batchmode", "-")
+    check = got.get("stricthostkeychecking", "-")
+    rows = [("  bastion", "%s, as %s, port %s: its own settings, from the "
+             "config alone (qd's -o options do not reach the hop)" % (
+                 name, got.get("user", "-"), got.get("port", "-")))]
+    rows.append(("  its batchmode", batch + (
+        "" if batch == "yes" else ": the hop can stop at a password or "
+        "host-key prompt; put BatchMode yes under its Host")))
+    rows.append(("  its stricthostkeychecking", check + (
+        ": an unknown bastion key fails every host; have it in known_hosts"
+        if check in ("yes", "true", "ask") else "")))
+    return rows
+
+
+def doctor_ssh(args, lines):
+    """`qd doctor HOST`: what qd's ssh resolves for HOST -- through which
+    bastion, as whom, with which certificate, by Kerberos or not, over a
+    master already open or not -- and the checks that need no connection.
+    -> False when ssh -G could not say."""
+    h = hostmod.parse_host_token(args.host)
+    cfg = ssh_config_of(args)
+    check_ssh_config(cfg)
+    runner = fleet.Runner(ssh=args.ssh, user=args.user, ssh_config=cfg)
+    lines.append("")
+    lines.append("  ssh       %s, as qd's ssh resolves it (ssh -G%s; no host "
+                 "is contacted)" % (args.host, " -F " + cfg if cfg else ""))
+    pairs, why = whoran.ssh_settings(runner, h)
+    if pairs is None:
+        lines.append("            ssh -G failed: %s" % why)
+        return False
+    got = {}
+    for k, v in pairs:
+        got.setdefault(k, []).append(v)
+    rows = []
+    for k in DOCTOR_SSH_KEYS:
+        vs = got.get(k) or []
+        if k == "proxycommand" and (not vs or vs == ["none"]):
+            continue
+        if k == "identityfile":
+            # ssh names its defaults whether they are there or not, and
+            # offers only those that are
+            here = [v for v in vs if os.path.exists(os.path.expanduser(v))]
+            if vs and not here:
+                rows.append((k, "- (none of the %d ssh would offer is here)"
+                             % len(vs)))
+            else:
+                rows.extend((k, v) for v in here)
+            continue
+        if k == "certificatefile":
+            for v in vs:
+                if not os.path.exists(os.path.expanduser(v)):
+                    say = "not here, so no certificate is offered"
+                else:
+                    valid = whoran.certificate_validity(v)
+                    say = ("valid " + valid) if valid else \
+                        "cannot be read as a certificate (ssh-keygen -L)"
+                rows.append((k, "%s: %s" % (v, say)))
+            if not vs:
+                rows.append((k, "-"))
+            continue
+        val = vs[0] if vs else "-"
+        if k == "proxyjump" and vs and vs[0] != "none":
+            rows.append((k, val + "  (through this bastion)"))
+            rows.extend(doctor_hop(runner, vs[0]))
+            continue
+        if k == "gssapiauthentication" and val == "yes":
+            t = whoran.kerberos_ticket()
+            val += {True: ": a Kerberos ticket is held (klist -s)",
+                    False: ": no Kerberos ticket held (klist -s): kinit "
+                    "first", None: ": klist is not here to say whether a "
+                    "ticket is held"}[t]
+        if k == "controlpath" and vs and vs[0] != "none":
+            val += (": a master is open" if whoran.master_running(runner, h)
+                    else ": no master is open")
+        if k == "batchmode" and val == "yes":
+            val += (": no password or one-time code can be typed; an "
+                    "interactive login fails the host")
+        rows.append((k, val))
+    width = max(len(k) for k, _ in rows)
+    for k, v in rows:
+        lines.append("            %-*s  %s" % (width, k, v))
+    return True
 
 
 HINTS = [
@@ -3762,15 +3938,22 @@ def add_ssh(sp):
                    help="hosts contacted at once (QD_JOBS, 32)")
     g.add_argument("--timeout", type=seconds,
                    default=env_float("TIMEOUT", 60.0),
-                   help="per-host command timeout, seconds (QD_TIMEOUT, 60)")
+                   help="per-host command timeout, seconds; past it the "
+                   "command is stopped on the host (QD_TIMEOUT, 60)")
     g.add_argument("--max-output", type=positive, metavar="BYTES",
                    default=env_int("MAX_OUTPUT", 4 * 1024 * 1024),
-                   help="per-host output cap; past it the host is killed and "
-                   "reported (QD_MAX_OUTPUT, 4 MiB)")
+                   help="per-host output cap; past it the command is "
+                   "stopped on the host and reported (QD_MAX_OUTPUT, 4 MiB)")
     g.add_argument("--ssh", default=env("SSH", "ssh"), metavar="CMD",
                    help="ssh transport (QD_SSH)")
     g.add_argument("--scp", default=env("SCP", "scp"), metavar="CMD",
                    help="scp transport (QD_SCP)")
+    g.add_argument("--ssh-config", default=env("SSH_CONFIG"), metavar="FILE",
+                   help="ssh and scp read FILE (ssh -F), not ~/.ssh/config "
+                   "(QD_SSH_CONFIG)")
+    g.add_argument("--reuse", action="store_true",
+                   help="one ssh connection per host for the whole command "
+                   "(ControlMaster), closed at the end (QD_SSH_REUSE=1)")
     g.add_argument("--sudo", action="store_true",
                    help="run the command under sudo -n")
     g.add_argument("--rate", default=env("RATE"), metavar="N/s",
@@ -3804,7 +3987,8 @@ def add_report(g, preview=20):
 def add_safety(sp):
     g = sp.add_argument_group("safety")
     g.add_argument("--dry-run", action="store_true",
-                   help="print the ssh command per host and stop")
+                   help="print the ssh command per host and stop (less "
+                   "the line ahead of it that lets qd stop it)")
     g.add_argument("--limit", type=positive, metavar="N",
                    help="refuse to run wider than N hosts without --yes")
     g.add_argument("--yes", action="store_true",
@@ -4441,7 +4625,20 @@ def build_parser():
                     "overlay into qd's cache (refused otherwise)")
     sp.set_defaults(fn=cmd_web)
 
-    sp = verb("doctor", "which of the toolchain this machine can drive")
+    sp = verb("doctor", "which of the toolchain this machine can drive; "
+              "with HOST, what ssh resolves for it")
+    sp.add_argument("host", nargs="?", metavar="HOST",
+                    help="show what qd's ssh resolves for HOST (ssh -G): "
+                    "user, bastion, certificate, Kerberos, master; contacts "
+                    "nothing")
+    g = sp.add_argument_group("ssh")
+    g.add_argument("-u", "--user", default=env("SSH_USER"),
+                   help="ssh user (QD_SSH_USER; default: your ssh config)")
+    g.add_argument("--ssh", default=env("SSH", "ssh"), metavar="CMD",
+                   help="ssh transport (QD_SSH)")
+    g.add_argument("--ssh-config", default=env("SSH_CONFIG"), metavar="FILE",
+                   help="ssh reads FILE (ssh -F), not ~/.ssh/config "
+                   "(QD_SSH_CONFIG)")
     sp.set_defaults(fn=cmd_doctor)
     sp = verb("hints", "what you want to know -> the command")
     sp.set_defaults(fn=cmd_hints)
@@ -4530,6 +4727,10 @@ def main(argv=None):
     except KeyboardInterrupt:
         sys.stderr.write("\n")
         return 130
+    finally:
+        # --reuse's masters, however the command ended
+        if getattr(args, "_reuse", None) is not None:
+            args._reuse.close(getattr(args, "jobs", 32) or 32)
 
 
 if __name__ == "__main__":

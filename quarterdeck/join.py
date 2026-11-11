@@ -15,7 +15,7 @@ The windows, the first that applies:
                      around it), or a start and an end
   a fan-out          each host's own, from qd.hosts: when qd started it
                      (ts) and how long it took (duration_s), per pass.
-                     ts is to the millisecond from 0.11.0; a run filed
+                     ts is to the millisecond from 0.12.0; a run filed
                      before kept the whole second, and its windows run a
                      second longer to cover what was cut off
   qd do              the run's own start and finish, for every row
@@ -312,7 +312,7 @@ def row_windows(table, entry, time_cols=None, margin=0.0, host_col=None):
                 dur = float(h.get("duration_s") or 0)
             except ValueError:
                 continue
-            # a whole second (before 0.11.0): the start was cut, not rounded
+            # a whole second (before 0.12.0): the start was cut, not rounded
             cut = "." not in (h.get("ts") or "")
             whole += cut
             per[(h.get("host", ""), h.get("pass") or "1")] = (
@@ -326,7 +326,7 @@ def row_windows(table, entry, time_cols=None, margin=0.0, host_col=None):
         how = "each host's own, from qd.hosts: when qd started it and how " \
               "long it took"
         if whole:
-            notes.append("%s filed before 0.11.0 keep their start to the "
+            notes.append("%s filed before 0.12.0 keep their start to the "
                          "second: those windows run a second longer, to "
                          "cover what was cut off"
                          % plural(whole, "host window"))

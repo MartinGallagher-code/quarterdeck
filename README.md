@@ -60,8 +60,10 @@ pip install ./quarterdeck                # or put qd (and quarterdeck) on PATH
 qd itself is Python 3.6+, standard library only. It needs provost to keep
 anything (`--no-store` runs without it); binnacle gives it its probes'
 instruments and campaigns' muster, and `doe` its designs, each found on
-`PATH` or where `QD_<TOOL>` points. Nothing is installed on the fleet and
-nothing is left running there. All it needs is key-based ssh, which the
+`PATH` or where `QD_<TOOL>` points. Nothing is installed on the fleet, and
+a command qd gives up on (past `--timeout` or `--max-output`) is stopped
+there, not only its ssh; where qd cannot confirm that, it says so (see
+*When a host takes too long*). All it needs is key-based ssh, which the
 rest of the toolchain needs anyway.
 
 ---
@@ -373,6 +375,30 @@ agree's sense of each), `rc`, `duration_s`, `error` (the first line of what
 went wrong) and `capture` (provost's id for the answer), then what provost
 read.
 
+### When a host takes too long
+
+A host whose command runs past `--timeout`, or sends more than
+`--max-output`, is given up on: its row is `timeout` (or `failed`, rc
+125, past the cap), and the command is **stopped on the host**. Killing
+the local ssh is not enough: ssh asks for no terminal, so the host's sshd
+does not hang the command up, and it would go on loading the host after
+qd reported it finished (pdsh, pssh and parallel-ssh document the same of
+theirs). So every command goes out after one line written to stderr,
+which qd takes off again: the process group sshd started the command in.
+When qd gives up, a second ssh sends that group TERM, then KILL 2 s later,
+under `sudo -n` with `--sudo`; children it started go with it (not a
+daemon that left for a session of its own). `--script` and `--push`
+files are removed only after that.
+
+The row's `error` says which: `timed out after 60s; qd stopped it on the
+host`, or `..., and may still be running on the host: qd could not stop
+it (why)` when the host could not be reached again, a part of the command
+ran as another user, or the host never said where it ran. Such a host is
+named on the run's summary (`NOT STOPPED`, `--quiet` too) and in its note
+(`qd log RUN`), and its `--script`/`--push` directory is left there with
+the command. A command that finishes in time comes back exactly as
+before.
+
 ### Over time
 
 ```bash
@@ -391,7 +417,7 @@ Ctrl-C, and every pass that finished is kept.
 | `--script FILE -- ARGS` | push FILE, run it with ARGS, remove it again |
 | `--push FILE` | copy a file over first (repeatable); the command runs beside it, in a directory of the run's own in `--remote-dir` |
 | `--sudo` | run under `sudo -n` |
-| `--dry-run` | print the ssh command per host; contact nothing |
+| `--dry-run` | print the ssh command per host, less the line ahead of it that lets qd stop it (see *When a host takes too long*); contact nothing |
 | `--first N` | the first N hosts only, the canary before the fleet |
 | `--limit N` | refuse to run wider than N hosts without `--yes` |
 | `--no-store` | print the answers, keep nothing |
@@ -455,6 +481,123 @@ hosts already hold, or a quoting trick gets past any list of patterns.
 It stops the mistakes and the out-of-scope commands; the real control is
 the account's own ssh and sudo rights on the hosts.
 
+### Bastions, certificates, Kerberos and MFA
+
+qd runs the system's OpenSSH (`ssh`, `scp`) with three options of its
+own: `BatchMode=yes`, `ConnectTimeout=8` and
+`StrictHostKeyChecking=accept-new`. Everything else comes from your ssh
+config, so whatever it can do, qd does: a bastion, certificates, Kerberos,
+a connection held open. Two flags help, and `qd doctor HOST` shows what
+ssh will do for a host before anything runs.
+
+| | |
+|---|---|
+| `--ssh-config FILE` (`QD_SSH_CONFIG`) | ssh and scp read FILE (`ssh -F`) instead of `~/.ssh/config`: a test event's own config, and yours untouched. `qd doctor`, the `ssh_user` a run records and a remote store's git read it too |
+| `--reuse` (`QD_SSH_REUSE=1`) | one ssh login per host for the whole command (below) |
+| `qd doctor HOST` | what qd's ssh resolves for HOST (`ssh -G`, which reads the config and contacts nothing): user, port, the bastion and the bastion's own settings, the certificate and the dates it is valid, the identity files that exist, Kerberos and whether a ticket is held, a master and whether it is open, BatchMode. `--ssh-config`, `--user` and `--ssh` as for `qd run` |
+
+**`BatchMode=yes` means nothing can be typed.** No password, passphrase,
+one-time code or "are you sure?" about a host key: anything that would
+ask fails that host instead, reported unreachable with ssh's reason. That
+is what you want across five hundred hosts, and it means every setup below
+logs in without a prompt: a key in an agent, a certificate, a Kerberos
+ticket, or a master already open.
+
+**A bastion (ProxyJump).**
+
+```
+Host bastion
+    HostName bastion.example.mil
+    User ops
+    BatchMode yes
+    StrictHostKeyChecking yes      # its key already in known_hosts
+Host node-* 10.20.*
+    ProxyJump bastion
+    User ops
+```
+
+```bash
+qd doctor node-01 --ssh-config event.cfg
+qd run --ssh-config event.cfg -s hosts.txt --rate 10/s --reuse -- uname -r
+```
+
+ssh reaches the bastion with a second ssh, which reads the config file
+and **none of qd's `-o` options**. So the bastion's own `Host` block needs
+`BatchMode yes`, or that hop can stop at a prompt on your terminal in the
+middle of a run. Its host key must be known already, or that block must
+say `StrictHostKeyChecking accept-new`: qd's `accept-new` does not reach
+it. `qd doctor` shows the bastion's own settings and says when one would
+stop a run. `--rate` keeps qd inside the bastion's `MaxStartups` (see At
+scale), and `--reuse` makes one hop per host instead of one per call.
+
+**SSH certificates.** ssh offers `KEY-cert.pub` beside `KEY` by itself;
+name one kept elsewhere with `CertificateFile`:
+
+```
+Host node-*
+    IdentityFile ~/.ssh/id_ed25519
+    CertificateFile ~/.ssh/id_ed25519-cert.pub
+```
+
+`qd doctor HOST` shows the certificate ssh will offer and its `Valid:`
+dates (`ssh-keygen -L`). A certificate past its date is the usual reason a
+whole fleet starts refusing at once.
+
+**Kerberos (GSSAPI).** With a ticket (`kinit`) and
+
+```
+Host *.example.mil
+    GSSAPIAuthentication yes
+    GSSAPIDelegateCredentials no
+```
+
+ssh logs in with the ticket, and nothing is asked. Get the ticket before
+the run, and one that outlasts it: qd cannot renew it. `qd doctor HOST`
+says whether GSSAPI is on for the host and whether `klist -s` finds a
+ticket.
+
+**MFA (a one-time code, a card PIN).** A login that asks for a code
+cannot happen under BatchMode. Open a master to each host, or only to the
+bastion where only the bastion asks, by hand, once; every call qd makes
+then rides on it:
+
+```
+Host bastion node-*
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%C
+    ControlPersist 8h
+```
+
+```bash
+ssh -fN bastion                    # type the code once
+qd doctor node-01                  # controlpath ...: a master is open
+qd run -s hosts.txt -- uptime      # no prompt: the hop rides the master
+```
+
+Leave `--reuse` off for this: it opens masters of its own, in a directory
+of its own, and would not find yours.
+
+**Connection reuse: `--reuse`.** Every call qd makes to a host is a new
+ssh login: a push run makes four or five (make the run's directory, copy,
+`chmod`, run, clean up), and `--every 10 --count 30` thirty. `--reuse`
+makes one per host for the whole command (`ControlMaster`). On a real
+sshd, a push run on one host went from five logins to one
+(`tests/test_ssh.sh`).
+
+- The sockets go in a new directory of this command's own,
+  `qd-ssh-XXXXXXXX`, mode 0700, in `TMPDIR`, or in `/tmp` where `TMPDIR`
+  is too long for a socket's path, as macOS's is (104 bytes on macOS, 108
+  on Linux, and ssh's own name for a socket takes 58 of them). Each
+  socket is `%C`, a hash of the host, port and user.
+- A master idles 60 s for the next call (`ControlPersist`), or, with
+  `--every`, until the next pass.
+- When qd ends (done, failed, Ctrl-C, `kill`, a closed terminal) it
+  closes every master with `ssh -O exit`, which talks to the socket and
+  not the host, and removes the directory. A `kill -9` leaves the masters
+  to close themselves after `ControlPersist`.
+- `--dry-run` shows the options it adds, and `qd probe A B` shares
+  one set of masters between its runs.
+
 ### Every knob has a flag and a variable
 
 | Flag | Variable | Default |
@@ -462,9 +605,11 @@ the account's own ssh and sudo rights on the hosts.
 | `--servers` | `QD_SERVERS` | `hosts.txt` or `servers.txt` |
 | `--user` | `QD_SSH_USER` | your ssh config |
 | `--jobs` | `QD_JOBS` | 32 hosts at once |
-| `--timeout` | `QD_TIMEOUT` | 60 s per host |
-| `--max-output` | `QD_MAX_OUTPUT` | 4 MiB per host; past it the host is killed and reported |
+| `--timeout` | `QD_TIMEOUT` | 60 s per host; past it the command is stopped on the host and reported |
+| `--max-output` | `QD_MAX_OUTPUT` | 4 MiB per host; past it the command is stopped on the host and reported |
 | `--ssh`, `--scp` | `QD_SSH`, `QD_SCP` | `ssh`, `scp` |
+| `--ssh-config` | `QD_SSH_CONFIG` | none: ssh's own, `~/.ssh/config` |
+| `--reuse` | `QD_SSH_REUSE=1` | off: a login per call |
 | `--remote-dir` | `QD_REMOTE_DIR` | `/var/tmp` |
 | `--rate` | `QD_RATE` | none: new connections as fast as `--jobs` allows; `10/s` for a bastion's `MaxStartups` |
 | `--allow` | `QD_ALLOW` | none: every command may run |
@@ -931,8 +1076,9 @@ said and left alone, not filed as this run's. `--import PATH` reads more
 files afterwards, whatever they hold; `--no-import` reads nothing
 back. A tool is found on `PATH`, as an installed module, or wherever
 `QD_<TOOL>` points (`QD_MX="python3 ~/src/matrix_orchestrator/mx"`).
-`qd doctor` says which tools this machine can drive. The exit status is
-the tool's.
+`qd doctor` says which tools this machine can drive (and `qd doctor
+HOST` how ssh reaches a host: see Bastions, certificates, Kerberos and
+MFA). The exit status is the tool's.
 
 Each table read back is filed in provost as a capture of its own, as
 TSV, its notes and display metadata kept with it.
@@ -1116,7 +1262,7 @@ missed.
 
 An import, a `ds:NAME` dataset or a file says nothing of when it was
 measured (an import keeps when it was imported), so those need `--time`.
-`ts` is kept to the millisecond from 0.11.0. Runs filed before kept the
+`ts` is kept to the millisecond from 0.12.0. Runs filed before kept the
 whole second, so their windows run a second longer to cover what was cut
 off, and the notes say so. A sample counts when its time is at or after
 the start and at or before the end: both edges are in.
@@ -1535,6 +1681,7 @@ On every pull request and every push to `main` (`.github/workflows/ci.yml`):
 | test (python 3.9 to 3.13) | the whole suite, PyPI's newest provost (`batch`), binnacle, and doe from 3.10 | 3 each, `--shard 1/3` to `3/3` |
 | Python 3.6 compatibility | vermin and the compile check, then the whole suite under a real Python 3.6 in a container, provost's bundle | 3 |
 | test (provost 2.1.0) | the whole suite, one capture at a time | 3 |
+| ssh (a real sshd on loopback) | `test_ssh.sh` with openssh-server installed and `QD_TEST_SSHD=require`: a bastion, `--reuse`, a master opened first, a certificate | 1 |
 | version, web page syntax, shellcheck and the shard check, REUSE, build the wheel | once each | 1 each |
 
 A newer push to a pull request cancels that pull request's run still in
@@ -1553,6 +1700,16 @@ where they write it; muster and the probes' binnacle scripts are the real
 ones where binnacle is installed, and doe too where it is. The explorer is
 driven by a script of keys (`QD_TEST_KEYS`, as binnacle's `rig` does it)
 and the web suite talks to a real server on loopback.
+
+`tests/test_ssh.sh` records every argv the fake ssh and scp are given,
+and then, where `sshd` is installed, starts a real one of its own on
+loopback, as the user running it, to log in through: a ProxyJump through
+it as a bastion, `--reuse`'s one login per host, a master opened
+beforehand carrying a run once the key is withdrawn (the MFA setup), and
+a certificate login. Where there is no sshd those cases are skipped and
+named; `QD_TEST_SSHD=require`, as in CI's ssh job, fails them instead.
+Kerberos is not tested: it needs a KDC. `qd doctor`'s reading of `klist`
+is, with stand-ins.
 
 ---
 
@@ -1594,6 +1751,12 @@ QD_TEST_ONLY=import bash tests/run_tests.sh store   # only its cases whose name 
 
 doehelper wants Python 3.10 or newer; on an older one the doe suite uses its
 stand-in, as CI's 3.9 and 3.6 jobs do.
+
+`tests/check_real_sshd.sh` is not one of the suites either, nor in CI: it
+starts a throwaway sshd on 127.0.0.1 as you (`openssh-server`; it skips
+without one) and checks against real OpenSSH what the fake ssh cannot
+prove, that a command past `--timeout` or `--max-output` is stopped on
+the host (see *When a host takes too long*).
 
 `tests/stress_filing.sh` is not one of the suites: it loops, for a race
 that shows only now and then. It files `qd do` runs of several tables one

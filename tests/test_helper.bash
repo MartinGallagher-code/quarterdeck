@@ -11,6 +11,8 @@
 #   fail MSG                fail a case with a reason no assert_ covers
 #   qd ARGS...              the CLI under test, run from a clone
 #   install_fake_ssh        an ssh+scp pair that run "remote" commands locally
+#                           (FAKE_SSH_DETACH=1: apart from the client, as
+#                           OpenSSH runs them)
 #   fake_host NAME          a sandbox root for one fake host
 #   fake_host_unreachable NAME
 #   pv ARGS...              provost itself, on the case's store
@@ -65,15 +67,20 @@ setup_env() {
     export FAKE_BIN="$TEST_TMPDIR/bin"
     export FAKE_ROOT="$TEST_TMPDIR/hosts"
     export FAKE_SSH_LOG="$TEST_TMPDIR/ssh.log"
+    # every ssh and scp the fakes are started with, options and all
+    export FAKE_SSH_ARGV="$TEST_TMPDIR/ssh.argv"
+    export FAKE_PY="$PY"
+    unset FAKE_SSH_DETACH
     mkdir -p "$FAKE_BIN" "$FAKE_ROOT"
     : > "$FAKE_SSH_LOG"
+    : > "$FAKE_SSH_ARGV"
     # A stray variable from the caller's shell must never change a result.
     unset QD_STORE QD_SERVERS QD_JOBS QD_TIMEOUT QD_SSH QD_SCP QD_SSH_USER
     unset QD_REMOTE_DIR QD_MAX_OUTPUT QD_Z QD_ASCII QD_MANIFEST QD_CACHE
     unset QD_MX QD_IPERF_ORCHESTRATOR QD_AGREE QD_DCVIZ QD_WEB_HOST
     unset QD_WEB_PORT QD_TEST_KEYS QD_TEST_SCREEN QD_FILE_JOBS QD_RATE
     unset QD_WEB_TOKEN QD_WEB_TOKEN_FILE QD_WEB_TLS_CERT QD_WEB_TLS_KEY QD_TEST_CA
-    unset QD_ALLOW QD_READ_ONLY QD_TEST_PART
+    unset QD_ALLOW QD_READ_ONLY QD_TEST_PART QD_SSH_CONFIG QD_SSH_REUSE
     unset PROVOST_WORKSPACE PROVOST_HOME PROVOST_CONTEXT_COLUMNS PROVOST_QUIET
     unset QD_OPERATOR PROVOST_OPERATOR
     # Every case files into a store of its own; QD_PROVOST_BATCH=0 from
@@ -96,16 +103,18 @@ setup_env() {
 }
 
 teardown_env() {
-    local pid
-    if [ -f "$TEST_TMPDIR/web.pid" ]; then
-        pid="$(cat "$TEST_TMPDIR/web.pid")"
+    local pid pidfile
+    # a case's web server, and a case's sshd (test_ssh.sh)
+    for pidfile in "$TEST_TMPDIR/web.pid" "$TEST_TMPDIR/sshd.pid"; do
+        [ -f "$pidfile" ] || continue
+        pid="$(cat "$pidfile")"
         kill "$pid" 2>/dev/null || true
         # gone before its directory is
         for _ in 1 2 3 4 5 6 7 8 9 10; do
             kill -0 "$pid" 2>/dev/null || break
             sleep 0.1
         done
-    fi
+    done
     cd / || true
     # a second go for anything the case started that outlived it
     if [ -n "$TEST_TMPDIR" ]; then
@@ -250,17 +259,37 @@ assert_dir_exists() {
 install_fake_ssh() {
     cat > "$FAKE_BIN/ssh" <<'SHIM'
 #!/bin/bash
-args=(); host=""; config=""
+printf 'ssh %s\n' "$*" >> "$FAKE_SSH_ARGV"
+args=(); host=""; config=""; ctl=""; cpath=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    -o) shift 2;;
-    -p) shift 2;;
-    -i) shift 2;;
+    -o) case "$2" in ControlPath=*) cpath="${2#ControlPath=}";; esac
+        shift 2;;
+    -p|-i|-F|-l) shift 2;;
+    -O) ctl="$2"; shift 2;;
     -G) config=1; shift;;
     *) if [ -z "$host" ]; then host="$1"; else args+=("$1"); fi; shift;;
   esac
 done
 host="${host#*@}"
+# ssh -O: a master's control command, which talks to the local socket and
+# no host.  --reuse's masters are played by a file per host beside
+# ControlPath; FAKE_MASTER_OPEN says a config's own master is open.
+if [ -n "$ctl" ]; then
+  printf 'ssh-O %s %s\n' "$ctl" "$host" >> "$FAKE_SSH_LOG"
+  m="${cpath%/*}/fake-master-$host"
+  case "$ctl" in
+    exit) [ -n "$cpath" ] && [ -e "$m" ] && { rm -f "$m"; exit 0; }
+          exit 255;;
+    check) { [ -n "$cpath" ] && [ -e "$m" ]; } || [ -n "${FAKE_MASTER_OPEN:-}" ] && exit 0
+           exit 255;;
+  esac
+  exit 255
+fi
+if [ -n "$cpath" ] && [ -z "$config" ] && [ -d "${cpath%/*}" ] && \
+    [ ! -f "$FAKE_ROOT/$host/.unreachable" ] && [ -d "$FAKE_ROOT/$host" ]; then
+  : > "${cpath%/*}/fake-master-$host"
+fi
 # ssh -G: the config ssh would use, read locally and logged apart, so it
 # is not counted as a connection.  FAKE_SSH_USER_<host> (dots and dashes
 # as _) gives a host a user of its own, FAKE_NO_DASH_G an ssh without -G.
@@ -269,6 +298,8 @@ if [ -n "$config" ]; then
   [ -n "${FAKE_NO_DASH_G:-}" ] && { echo "ssh: illegal option -- G" >&2; exit 255; }
   v="FAKE_SSH_USER_${host//[.-]/_}"
   printf 'user %s\nhostname %s\nport 22\n' "${!v:-${FAKE_SSH_USER:-$(id -un)}}" "$host"
+  # FAKE_SSH_G: more of the config, as ssh -G would print it
+  [ -n "${FAKE_SSH_G:-}" ] && printf '%s\n' "$FAKE_SSH_G"
   exit 0
 fi
 printf 'ssh %s %s\n' "$host" "${args[*]}" >> "$FAKE_SSH_LOG"
@@ -279,14 +310,26 @@ fi
 [ -d "$FAKE_ROOT/$host" ] || { echo "ssh: Could not resolve hostname $host" >&2; exit 255; }
 cd "$FAKE_ROOT/$host" || exit 255
 export FAKE_HOST="$host"
+# FAKE_SSH_DETACH=1: as OpenSSH does, the "remote" command runs in a
+# session of its own, apart from this client, so killing the client
+# leaves it running (QD-026).  Otherwise it is this process.
+if [ -n "${FAKE_SSH_DETACH:-}" ]; then
+  exec 3<&0
+  "${FAKE_PY:-python3}" -c 'import os, sys
+os.setsid()
+os.execvp("bash", ["bash", "-c", sys.argv[1]])' "${args[*]}" <&3 3<&- &
+  wait $!
+  exit $?
+fi
 exec bash -c "${args[*]}"
 SHIM
     cat > "$FAKE_BIN/scp" <<'SHIM'
 #!/bin/bash
+printf 'scp %s\n' "$*" >> "$FAKE_SSH_ARGV"
 args=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    -o) shift 2;; -P) shift 2;; -q) shift;;
+    -o) shift 2;; -P) shift 2;; -F) shift 2;; -q) shift;;
     *) args+=("$1"); shift;;
   esac
 done

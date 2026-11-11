@@ -78,7 +78,9 @@ skipping (and naming) what is not installed. README's "Working on
 quarterdeck" is the setup.
 
 No network: a fake ssh/scp, stand-in tools, `QD_TEST_KEYS` for the
-explorer, and a real server on loopback for the web API -- but a real
+explorer, and a real server on loopback for the web API (and, in
+`tests/test_ssh.sh`, a real sshd on loopback where one is installed;
+CI's ssh job requires it) -- but a real
 provost (`QD_PROVOST` or `provost` on PATH; CI installs PyPI's newest, and
 2.1.0 in one job), and the real binnacle and doe where installed. Run them
 on both of provost's paths before pushing: with a provost that has `batch`,
