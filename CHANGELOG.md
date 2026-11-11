@@ -5,6 +5,39 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.17.0 — 2026-11-11
+
+`qd changes` finds where in a series of runs each host's level moved, so a
+slow slide shows before any limit is crossed (QD-030).
+
+### Added
+- **`qd changes RUN... | --last N | --group NAME -c COL [--peers NAME]`**:
+  each host's (or peer group's) value per run, reduced as `compare`
+  reduces one, then **e-divisive means with a permutation test**
+  (Matteson and James 2014; MongoDB's `signal-processing-algorithms`
+  2.1.6, ported to the standard library in `quarterdeck/changes.py`;
+  `--p 0.05`, `--permutations 100`, a fixed seed, so the answer repeats).
+  It reports each change between stable stretches by the run ids either
+  side, in percent and in MADs; each stretch's median, MAD and count
+  (`--format csv`, `json`); asv's best-to-latest gap with the steps that
+  explain it, so small steps that add up are reported; a run that jumps
+  and comes straight back as an outlier, not a step; the runs a host was
+  not measured in, left out of its series; and "too few runs" under five.
+  `--min-change PCT` (1, `QD_MIN_CHANGE`) is the floor for a step;
+  `--higher-is-better` / `--lower-is-better` call a step a regression or
+  an improvement. Exit status 1 on a change (with a direction, a
+  regression) or a slide.
+
+### Tests
+- `tests/test_changes.sh`, a new suite: the statistic against the values
+  `signal-processing-algorithms`' own tests assert, and against every
+  ordered pair written out; a known step found at its run over 40 seeds;
+  no step, a false-positive rate near p over 300 seeds, with which seeds
+  pinned (the same on every Python); a single outlier never a change; a
+  slide of steps under the floor; blanks; a 100-run series under a
+  second; and runs in a store: a step at run 7, a host measured in three
+  runs, an outlier, a missed run, a peer group, CSV, JSON, the floor.
+
 ## 0.16.0 — 2026-11-11
 
 `qd check` writes its verdicts as JUnit XML, and `qd report` adds them to
