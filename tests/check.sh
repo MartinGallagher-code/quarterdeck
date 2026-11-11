@@ -9,12 +9,12 @@
 #   --quick   leave out the two slow ones: the test suites and the wheel
 #
 # What it runs, in order: the version check, the Python 3.6 compile check,
-# vermin, shellcheck, node --check on the page, reuse lint, a wheel build
-# with twine check, and the whole suite on both of provost's paths (with
-# `batch`, then QD_PROVOST_BATCH=0), one suite per core at a time
-# (QD_TEST_JOBS=N for N, 1 for the serial run).  A check whose tool is not
-# installed is skipped and said so, never failed; the summary at the end
-# names every one.
+# vermin, shellcheck, that every suite is in exactly one of CI's shares,
+# node --check on the page, reuse lint, a wheel build with twine check, and
+# the whole suite on both of provost's paths (with `batch`, then
+# QD_PROVOST_BATCH=0), one suite per core at a time (QD_TEST_JOBS=N for N,
+# 1 for the serial run).  A check whose tool is not installed is skipped
+# and said so, never failed; the summary at the end names every one.
 # Exit status: 0 when nothing failed, 1 when something did, 2 on bad usage.
 #
 # Left to CI: the suite under a real Python 3.6, under each of 3.9-3.13,
@@ -71,6 +71,8 @@ if have shellcheck; then
 else
     skip "shellcheck" "install shellcheck, or pip install shellcheck-py"
 fi
+
+step "every suite in exactly one share" bash tests/check_shards.sh
 
 if have node; then
     step "web page syntax" node --check quarterdeck/web/app.js
