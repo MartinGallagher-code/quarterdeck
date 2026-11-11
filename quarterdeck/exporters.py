@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Martin J. Gallagher
-"""Writers for other systems' ingest formats: Splunk HEC events and
-Prometheus/OpenMetrics text.
+"""Writers for other systems' ingest formats: Splunk HEC events,
+Prometheus/OpenMetrics text, and JUnit XML of qd check's verdicts.
 
 Both write a file and nothing else -- qd makes no network call and holds
 no token.  Send the file with curl or let the other side's file reader
@@ -253,4 +253,193 @@ def to_openmetrics(table, entry=None, prefix="qd_", labels=None):
         out.append("# TYPE %s gauge" % name)
         out.extend(samples)
     out.append("# EOF")
+    return "\n".join(out) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# JUnit XML: qd check's verdicts, for CI servers and test dashboards
+# ---------------------------------------------------------------------------
+
+# What XML 1.0 allows in a document; everything else (NUL, the C0
+# controls but tab and the newlines, lone surrogates, U+FFFE/FFFF) is
+# dropped, since a parser refuses the whole file for one of them.
+_XML_BAD = re.compile(u"[^\u0009\u000a\u000d\u0020-\ud7ff"
+                      u"\ue000-\ufffd\U00010000-\U0010ffff]")
+
+
+def xml_text(s):
+    """A string as XML character data: escaped, and with what XML 1.0
+    cannot hold dropped."""
+    from xml.sax.saxutils import escape
+    return escape(_XML_BAD.sub("", s or ""))
+
+
+def xml_attr(s):
+    """A string as a quoted XML attribute value (tabs and newlines kept
+    as character references, so a parser does not fold them)."""
+    from xml.sax.saxutils import quoteattr
+    return quoteattr(_XML_BAD.sub("", s or ""), {
+        "\n": "&#10;", "\r": "&#13;", "\t": "&#9;"})
+
+
+def _sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 16), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def junit_suite(entry, fallback, inputs=()):
+    """(name, timestamp, properties) of a check's testsuite: the run's id
+    and start, its operator and store, and the sha256 of each input file
+    (`inputs` is [(label, path)]).  A dataset read from a file is named
+    by `fallback` and has no start."""
+    import os
+    from .store import operator_shown, shown_id
+    props = []
+    if entry is not None:
+        name = shown_id(entry)
+        stamp = entry.meta.get("created") or ""
+        who = operator_shown(entry.meta)
+        if who:
+            props.append(("operator", who))
+        st = getattr(entry, "store", None)
+        if st is not None and hasattr(st, "shown"):
+            props.append(("store", st.shown()))
+    else:
+        name, stamp = fallback, ""
+    for label, path in inputs:
+        if path and os.path.isfile(path):
+            props.append((label, os.path.basename(path)))
+            props.append((label + ".sha256", _sha256(path)))
+    return name, stamp, props
+
+
+def _testcase_name(r, ix, each, crowded):
+    col, lim = r[ix["column"]], r[ix["limit"]]
+    if each:
+        host = r[ix["row"]]
+        if not host:
+            return "%s %s" % (col, lim)
+        return "%s, %s %s" % (host, col, lim) if crowded else host
+    name = "%s %s" % (col, lim)
+    agg = r[ix["agg"]] if "agg" in ix else ""
+    if agg and agg != "each":
+        name = "%s of %s" % (agg, name)
+    where = r[ix["where"]] if "where" in ix else ""
+    if where:
+        name += " where " + where
+    return name
+
+
+def junit_counts(table):
+    """(tests, failures, errors, skipped) of a verdict table, as JUnit
+    counts them: a fail and an unexpected pass are failures, not measured
+    (and a verdict qd check does not give) an error, waived skipped."""
+    from . import check as checkmod
+    vs = table.values("verdict") if table.has("verdict") else []
+    return (len(vs),
+            sum(1 for v in vs if v in (checkmod.FAIL, checkmod.UNEXPECTED)),
+            sum(1 for v in vs if v == checkmod.UNMEASURED or
+                v not in checkmod.VERDICTS),
+            sum(1 for v in vs if v == checkmod.WAIVED))
+
+
+def to_junit(table, name, timestamp="", properties=()):
+    """JUnit XML of a verdict table, qd check's (one testcase per check)
+    or qd check --each's (one per host per check): classname the req.
+
+    pass        a testcase and nothing in it
+    fail        <failure>, the value observed and the limit
+    unexpected  <failure>: a waiver expected a failure, and it passed
+    not measured  <error>: never a pass, and CI must not count it as one
+    waived      <skipped>, with the justification and the expiry
+    """
+    from . import check as checkmod
+    cols = [c.lower() for c in table.columns]
+    ix = dict((c, i) for i, c in enumerate(cols))
+    for need in ("req", "column", "limit", "verdict"):
+        if need not in ix:
+            die("not a qd check verdict table: no %s column" % need)
+    each = "row" in ix
+
+    def cell(r, c):
+        return r[ix[c]] if c in ix else ""
+
+    shapes = {}
+    for r in table.rows:
+        shapes.setdefault(r[ix["req"]], set()).add(
+            (r[ix["column"]], r[ix["limit"]]))
+    tests, failures, errors, skipped = junit_counts(table)
+    head = 'tests="%d" failures="%d" errors="%d" skipped="%d"' % (
+        tests, failures, errors, skipped)
+    out = ['<?xml version="1.0" encoding="UTF-8"?>',
+           '<testsuites name="qd check" %s>' % head,
+           '  <testsuite name=%s %s%s>' % (
+               xml_attr(name), head,
+               (" timestamp=" + xml_attr(timestamp)) if timestamp else "")]
+    if properties:
+        out.append("    <properties>")
+        for k, v in properties:
+            out.append("      <property name=%s value=%s/>" % (
+                xml_attr(k), xml_attr(v)))
+        out.append("    </properties>")
+    for r in table.rows:
+        req, verdict = r[ix["req"]], r[ix["verdict"]]
+        tc = "    <testcase classname=%s name=%s" % (
+            xml_attr(req), xml_attr(_testcase_name(
+                r, ix, each, len(shapes.get(req, ())) > 1)))
+        unit = cell(r, "unit")
+        obs = cell(r, "observed")
+        seen = (obs + (" " + unit if unit and obs else "")) if obs else             "nothing"
+        want = r[ix["limit"]] + (" " + unit if unit else "")
+        note = cell(r, "note")
+        why = cell(r, "justification")
+        until = cell(r, "expires")
+        by = cell(r, "granted_by")
+        inner = []
+        sev = cell(r, "severity")
+        if sev:
+            inner += ["      <properties>",
+                      "        <property name=\"severity\" value=%s/>"
+                      % xml_attr(sev),
+                      "      </properties>"]
+        if verdict == checkmod.FAIL:
+            inner.append("      <failure type=\"fail\" message=%s>%s"
+                         "</failure>" % (xml_attr(
+                             "observed %s; want %s" % (seen, want)),
+                             xml_text(note)))
+        elif verdict == checkmod.UNEXPECTED:
+            inner.append("      <failure type=\"unexpected pass\" "
+                         "message=%s>%s</failure>" % (xml_attr(
+                             "unexpected pass: a waiver expected this to "
+                             "fail (%s); observed %s; want %s" % (
+                                 why or "no justification", seen, want)),
+                             xml_text(note)))
+        elif verdict == checkmod.UNMEASURED:
+            inner.append("      <error type=\"not measured\" message=%s>%s"
+                         "</error>" % (xml_attr(
+                             "not measured: " + (note or "blank")),
+                             xml_text(note)))
+        elif verdict == checkmod.WAIVED:
+            bits = [x for x in (("expires " + until) if until else "",
+                                ("granted by " + by) if by else "") if x]
+            inner.append("      <skipped message=%s/>" % xml_attr(
+                "waived: %s%s; observed %s; want %s" % (
+                    why or "no justification",
+                    (" (%s)" % "; ".join(bits)) if bits else "",
+                    seen, want)))
+        elif verdict != checkmod.PASS:
+            inner.append("      <error type=\"unknown\" message=%s/>"
+                         % xml_attr("verdict %r is none qd check gives"
+                                    % verdict))
+        if inner:
+            out.append(tc + ">")
+            out.extend(inner)
+            out.append("    </testcase>")
+        else:
+            out.append(tc + "/>")
+    out += ["  </testsuite>", "</testsuites>"]
     return "\n".join(out) + "\n"

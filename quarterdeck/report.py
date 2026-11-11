@@ -12,6 +12,8 @@ writes a directory an evaluator can read, check and attach without qd:
     data/RUN/outliers.csv, .json           `qd outliers` on every numeric column
     data/RUN/check.csv, .json              `qd check` against --check, or the
                                            verdicts `qd check --keep` filed
+    data/RUN/check.junit.xml               the same verdicts as JUnit XML
+                                           (`qd check --format junit`)
     data/RUN/captures/cNNNN.txt            every answer as provost keeps it
                                            (`provost source cNNNN`)
     data/baseline.csv, .json               medians against --baseline
@@ -58,7 +60,8 @@ import time
 import zipfile
 
 from . import VERSION
-from . import check as checkmod, compare as comparemod, filing, stats
+from . import check as checkmod, compare as comparemod, exporters, filing
+from . import stats
 from . import store as storemod, table as tablemod, whoran
 from .common import PROG, QdError, die, env, plural, read_text
 from .store import shown_id
@@ -901,6 +904,15 @@ def counts_text(n, vt=None):
 def write_check(rep, e, vt, n, kept):
     d = rep.runs[e.id]["dir"]
     files = rep.pkg.table(d + "/check", vt)
+    # the same verdicts as JUnit XML, for a CI server or a test dashboard
+    inputs = [] if kept is not None else [
+        ("thresholds", getattr(rep.args, "check", None)),
+        ("waivers", getattr(rep.args, "waivers", None))]
+    name, stamp, props = exporters.junit_suite(e, shown_id(e), inputs)
+    if kept is not None:
+        props.append(("verdicts", "kept: %s" % kept.id))
+    files.append(rep.pkg.write(d + "/check.junit.xml",
+                               exporters.to_junit(vt, name, stamp, props)))
     rep.runs[e.id]["check"] = {
         "files": files, "pass": n[checkmod.PASS], "fail": n[checkmod.FAIL],
         "not_measured": n[checkmod.UNMEASURED],

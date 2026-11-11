@@ -35,6 +35,41 @@ for r in csv.DictReader(open(sys.argv[1])):
 ' v.csv "$1"
 }
 
+# the JUnit XML file $1, parsed by Python's own XML reader: the counts of
+# <testsuites> and <testsuite>, then a line per testcase
+junit() {
+    "$PY" - "$1" <<'PYEOF'
+import sys
+import xml.etree.ElementTree as ET
+root = ET.parse(sys.argv[1]).getroot()
+suite = root.find("testsuite")
+for el in (root, suite):
+    print("%s tests=%s failures=%s errors=%s skipped=%s" % (
+        el.tag, el.get("tests"), el.get("failures"), el.get("errors"),
+        el.get("skipped")))
+for tc in suite.findall("testcase"):
+    out = "pass"
+    msg = ""
+    for kind in ("failure", "error", "skipped"):
+        el = tc.find(kind)
+        if el is not None:
+            out, msg = kind, el.get("message") or ""
+    print("%s|%s|%s|%s" % (tc.get("classname"), tc.get("name"), out, msg))
+PYEOF
+}
+
+# the counts JUnit should give, from the verdict column of a csv: tests,
+# failures (fail, unexpected pass), errors (not measured), skipped (waived)
+csv_counts() {
+    "$PY" - "$1" <<'PYEOF'
+import csv, sys
+vs = [r["verdict"] for r in csv.DictReader(open(sys.argv[1]))]
+print("tests=%d failures=%d errors=%d skipped=%d" % (
+    len(vs), sum(v in ("fail", "unexpected pass") for v in vs),
+    vs.count("not measured"), vs.count("waived")))
+PYEOF
+}
+
 t_pass_fail_and_exit_status() {
     data
     limits t.tsv 'R1|mbps|>=|900||status=ok||' 'R2|temp|between|20|45|rack=r1|max|'
@@ -454,6 +489,97 @@ t_on_a_run() {
     assert_contains "$(qd check latest --against t.tsv --format csv 2>/dev/null || true)" "1 of 3 failed: n2; 1 not measured"
 }
 
+t_junit_one_case_per_outcome() {
+    data
+    limits t.tsv 'R1|mbps|>=|900||host=a||' 'R2|mbps|>=|900||host=b||' \
+        'R3|mbps|>=|900||host=c||' 'R4|temp|<=|45||host=c||' 'R5|temp|<=|60||rack=r1||'
+    waivers w.tsv 'R4|c runs hot|2999-12-31|||QA' 'R5|known slow rack|||fail|'
+    qd_rc check d.csv --against t.tsv --waivers w.tsv --format junit -o v.xml
+    assert_status "$QD_RC" 1
+    qd_rc check d.csv --against t.tsv --waivers w.tsv --format csv -o v.csv
+    got="$(junit v.xml)"
+    want="$(csv_counts v.csv)"
+    assert_eq "$want" "tests=5 failures=2 errors=1 skipped=1"
+    assert_contains "$got" "testsuites $want"
+    assert_contains "$got" "testsuite $want"
+    # pass, fail, not measured, waived, unexpected pass: one testcase each
+    assert_contains "$got" "R1|mbps >= 900 where host=a|pass|"
+    assert_contains "$got" "R2|mbps >= 900 where host=b|failure|observed 880; want >= 900"
+    assert_contains "$got" "R3|mbps >= 900 where host=c|error|not measured: "
+    assert_contains "$got" "R4|temp <= 45 where host=c|skipped|waived: c runs hot (expires 2999-12-31; granted by QA); observed 50; want <= 45"
+    assert_contains "$got" "R5|temp <= 60 where rack=r1|failure|unexpected pass: "
+    # the suite names what it was: the dataset, and the files' hashes
+    assert_contains "$(cat v.xml)" '<testsuite name="d.csv"'
+    assert_contains "$(cat v.xml)" "\"thresholds.sha256\" value=\"$("$PY" -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' t.tsv)\""
+    assert_contains "$(cat v.xml)" '"waivers.sha256"'
+    # without waivers, as the text summary counts it
+    qd_rc check d.csv --against t.tsv > out
+    qd_rc check d.csv --against t.tsv --format junit -o x.xml
+    assert_contains "$(cat out)" "2 pass, 2 fail, 1 not measured"
+    assert_contains "$(junit x.xml)" "testsuite tests=5 failures=2 errors=1 skipped=0"
+    # a severity rides on its testcase
+    printf 'req\tcolumn\top\tlimit\tseverity\nS1\tmbps\t>=\t900\tlow\n' > s.tsv
+    qd_rc check d.csv --against s.tsv --format junit -o s.xml
+    assert_contains "$(cat s.xml)" '<property name="severity" value="low"/>'
+}
+
+t_junit_each_host() {
+    data
+    limits t.tsv 'R1|mbps|>=|900||status=ok||' 'R2|temp|<=|45||||' 'R2|mbps|>=|100||||'
+    qd_rc check d.csv --against t.tsv --each --format junit -o e.xml
+    assert_status "$QD_RC" 1
+    qd_rc check d.csv --against t.tsv --each --format csv -o e.csv
+    got="$(junit e.xml)"
+    # 3 hosts for R1, 4 each for R2's two checks: a testcase per host per check
+    assert_eq "$(csv_counts e.csv)" "tests=11 failures=2 errors=4 skipped=0"
+    assert_contains "$got" "testsuite $(csv_counts e.csv)"
+    assert_contains "$got" "R1|a|pass|"
+    assert_contains "$got" "R1|b|failure|observed 880; want >= 900"
+    assert_contains "$got" "R1|c|error|not measured: blank"
+    # a req with two checks names the column beside the host
+    assert_contains "$got" "R2|c, temp <= 45|failure|observed 50; want <= 45"
+    assert_contains "$got" "R2|d, mbps >= 100|error|not measured: blank"
+}
+
+t_junit_hostile_strings() {
+    # <, &, ]]>, a control character and non-ASCII, in the data, the
+    # thresholds and the waivers; the file still parses, and says them
+    printf 'host,m<&]]>\n%s,10\n%s,1\n' "h<1>&]]>" "$(printf 'h\001\303\251\360\237\232\200')" > h.csv
+    printf 'req\tcolumn\top\tlimit\tnote\n%s\tm<&]]>\t>=\t5\t%s\n' \
+        "R<&]]>é" "$(printf 'n\002<"&\047')" > h.tsv
+    printf 'req\tjustification\twhere\n%s\t%s\thost=nobody\n' "R<&]]>é" \
+        "$(printf 'why <b>&amp; ]]> \001é')" > hw.tsv
+    qd_rc check h.csv --against h.tsv --format junit -o h.xml
+    assert_status "$QD_RC" 1
+    got="$(junit h.xml)"
+    assert_contains "$got" "R<&]]>é|m<&]]> >= 5|failure|observed 1; want >= 5"
+    assert_not_contains "$(cat h.xml)" "]]>"
+    if LC_ALL=C grep -q "$(printf '[\001-\010]')" h.xml; then fail "a control character in the XML"; fi
+    qd_rc check h.csv --against h.tsv --each --format junit -o he.xml
+    got="$(junit he.xml)"
+    assert_contains "$got" "R<&]]>é|h<1>&]]>|pass|"
+    assert_contains "$got" "$(printf 'R<&]]>é|h\303\251\360\237\232\200|failure|')"
+    qd_rc check h.csv --against h.tsv --waivers hw.tsv --format junit -o hw.xml
+    assert_contains "$(junit hw.xml)" "testsuite tests=1 failures=1"
+}
+
+t_junit_real_reader() {
+    # provost reads JUnit XML (PV-030, provost 2.5.0): a row per testcase
+    local v
+    v="$(pv --version 2>/dev/null | head -1 | awk '{print $2}')"
+    if [ "$("$PY" -c 'import sys; print(tuple(int(x) for x in sys.argv[1].split(".")[:2]) >= (2, 5))' "${v:-0.0}" 2>/dev/null)" != True ]; then
+        echo "  (provost ${v:-?} reads no JUnit XML; 2.5.0 does)"
+        return 0
+    fi
+    data
+    limits t.tsv 'R1|mbps|>=|900||host=a||' 'R2|mbps|>=|900||host=b||' 'R3|mbps|>=|900||host=c||'
+    qd_rc check d.csv --against t.tsv --format junit -o v.xml
+    pv -q --name junit < v.xml
+    out="$(pv show junit)"
+    assert_contains "$out" "classname"
+    assert_eq "$(pv show junit | tail -n +2 | grep -c 'R[123]')" "3"
+}
+
 run_test "pass, fail and the exit status"       t_pass_fail_and_exit_status
 run_test "blank is never a pass"                t_blank_is_never_a_pass
 run_test "every op"                             t_every_op
@@ -469,4 +595,8 @@ run_test "a bad waivers file is exit 2"         t_bad_waivers_are_exit_2
 run_test "severity and --fail-level"            t_severity_and_fail_level
 run_test "within: a tolerance around a value"   t_within
 run_test "kept verdicts carry the waivers"      t_kept_waivers
+run_test "junit: one testcase per outcome"   t_junit_one_case_per_outcome
+run_test "junit: --each, per host per check" t_junit_each_host
+run_test "junit: hostile strings parse"      t_junit_hostile_strings
+run_test "junit: provost reads it back"      t_junit_real_reader
 finish

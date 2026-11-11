@@ -5,6 +5,37 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.16.0 — 2026-11-11
+
+`qd check` writes its verdicts as JUnit XML, and `qd report` adds them to
+the package (QD-029).
+
+### Added
+- **`qd check --format junit`**: one `<testsuite>` per run (named by the
+  run's id, timestamped with its start, with the operator, the store and
+  the thresholds and waivers files' sha256 as properties) and one
+  `<testcase>` per check, `classname` the `req`, `name` the column and
+  its limit; with `--each`, one per host per check. A fail is a
+  `<failure>` with the value observed and the limit; an unexpected pass is
+  a `<failure>` too; **not measured is an `<error>`**, never a pass; a
+  waived check is `<skipped message="waived: justification (expires
+  ...)">`. The suite's `tests`, `failures`, `errors` and `skipped` are the
+  head line's counts. Every string is escaped and the characters XML 1.0
+  refuses are dropped. Standard library only.
+- **`qd report`** writes `data/RUN/check.junit.xml` beside `check.csv`
+  and `check.json` whenever there are checks (against `--check`, or the
+  verdicts `qd check --keep` filed), listed in `manifest.json` and in
+  `SHA256SUMS`.
+
+### Tests
+- `tests/test_check.sh`: the XML parsed with Python's `xml.etree` and its
+  counts compared with `--format csv`'s; a testcase per outcome; `--each`;
+  `<`, `&`, `]]>`, control characters and non-ASCII in the data, the
+  thresholds and the waivers; and provost (2.5.0 and later) reading the
+  file back as a row per testcase.
+- `tests/test_report.sh`: `check.junit.xml` is `qd check --format junit`'s,
+  in the manifest, and passes `sha256sum -c`.
+
 ## 0.15.0 — 2026-11-11
 
 Waivers with a justification and an expiry, severity with a fail level,

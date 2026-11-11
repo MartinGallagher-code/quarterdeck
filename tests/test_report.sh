@@ -195,6 +195,25 @@ t_checks_baseline_verify_and_operator() {
     assert_contains "$(cat rep/summary.md)" "## Checks"
     assert_contains "$(cat rep/summary.md)" "0 pass, 1 fail, 1 not measured"
     assert_eq "$(mf rep 'm["runs"][-1]["check"]["fail"]')" "1"
+    # QD-029: the same verdicts as JUnit XML, qd check --format junit's,
+    # listed in the manifest and in SHA256SUMS
+    assert_eq "$(cat "rep/data/$run/check.junit.xml")" \
+        "$(qd check "$run" --against t.tsv --format junit 2>/dev/null || true)"
+    assert_contains "$(mf rep 'm["runs"][-1]["check"]["files"]')" "data/$run/check.junit.xml"
+    assert_contains "$(cat rep/SHA256SUMS)" "  data/$run/check.junit.xml"
+    "$PY" - "rep/data/$run/check.junit.xml" "$run" <<'PYEOF' || fail "check.junit.xml"
+import sys
+import xml.etree.ElementTree as ET
+s = ET.parse(sys.argv[1]).getroot().find("testsuite")
+props = dict((p.get("name"), p.get("value")) for p in s.iter("property"))
+assert s.get("name") == sys.argv[2], s.get("name")
+assert (s.get("tests"), s.get("failures"), s.get("errors"),
+        s.get("skipped")) == ("2", "1", "1", "0"), s.attrib
+assert s.get("timestamp"), s.attrib
+assert props["operator"].startswith("Jane Doe@"), props
+assert props["thresholds"] == "t.tsv" and len(props["thresholds.sha256"]) == 64
+assert "store" in props, props
+PYEOF
     # the baseline: medians side by side, mbps moved past 5%, rtt did not
     assert_contains "$(cat rep/summary.md)" "## Against the baseline"
     assert_contains "$(cat rep/data/baseline.csv)" "mbps,942.5,742.5,run -21.2%"
@@ -258,6 +277,10 @@ t_kept_verdicts_without_check() {
     assert_contains "$md" "qd check --keep filed for this run"
     assert_contains "$(mf rep 'm["runs"][0]["check"]["from"]')" "kept: "
     assert_contains "$(cat "rep/data/$RUN/check.csv")" "R1,mbps,each,status=ok,100,>= 900"
+    # the kept verdicts as JUnit XML too, saying where they came from
+    assert_contains "$(cat "rep/data/$RUN/check.junit.xml")" '<property name="verdicts" value="kept: '
+    assert_contains "$(cat "rep/data/$RUN/check.junit.xml")" 'tests="1" failures="1" errors="0" skipped="0"'
+    sums_check rep
 }
 
 t_an_import_has_its_tables() {
