@@ -43,8 +43,10 @@ import sys
 import xml.etree.ElementTree as ET
 root = ET.parse(sys.argv[1]).getroot()
 suite = root.find("testsuite")
+def say(text):   # UTF-8 whatever the locale (Python 3.6 under LANG=C)
+    sys.stdout.buffer.write((text + "\n").encode("utf-8"))
 for el in (root, suite):
-    print("%s tests=%s failures=%s errors=%s skipped=%s" % (
+    say("%s tests=%s failures=%s errors=%s skipped=%s" % (
         el.tag, el.get("tests"), el.get("failures"), el.get("errors"),
         el.get("skipped")))
 for tc in suite.findall("testcase"):
@@ -54,7 +56,7 @@ for tc in suite.findall("testcase"):
         el = tc.find(kind)
         if el is not None:
             out, msg = kind, el.get("message") or ""
-    print("%s|%s|%s|%s" % (tc.get("classname"), tc.get("name"), out, msg))
+    say("%s|%s|%s|%s" % (tc.get("classname"), tc.get("name"), out, msg))
 PYEOF
 }
 
