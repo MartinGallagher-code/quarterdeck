@@ -50,10 +50,13 @@ RUN_COLUMNS = ("run", "kind", "name", "command", "created", "finished",
                "unreachable", "push_failed", "passes", "every", "rc",
                "captures", "tool", "ran", "version", "cwd", "qd", "notes",
                "group", "part", "factors", "operator", "operator_host",
-               "ssh_user", "ssh_key", "sudo", "via", "sched_job")
+               "ssh_user", "ssh_key", "sudo", "via", "sched_job",
+               "not_run", "rerun_of")
 HOST_COLUMNS = ("run", "host", "addr", "pass", "ts", "status", "rc",
-                "duration_s", "bytes", "error", "attrs", "stderr")
-OUTCOMES = ("ok", "failed", "timeout", "unreachable", "push-failed")
+                "duration_s", "bytes", "error", "attrs", "stderr",
+                "attempt")
+OUTCOMES = ("ok", "failed", "timeout", "unreachable", "push-failed",
+            "not-run")
 
 # Free text is escaped in qd's own tables: a tab or a newline would end the
 # cell, and provost's TSV reader dropped double quotes until the release
@@ -651,6 +654,11 @@ class Store(object):
         if not isinstance(entry, Run):
             return None
         entries = self.entries()
+        # a rerun (QD-027) is compared with the run it reran
+        for rid in (entry.meta.get("rerun_of") or "").split(","):
+            for e in entries:
+                if rid and e.id == rid:
+                    return e
         # a campaign's parts run one command under one name: the part is
         # what tells them apart, so rack-r2 is compared with rack-r2.  A
         # probe is its name: how qd asks it (the command) changes between
@@ -665,6 +673,12 @@ class Store(object):
             if key(e) == key(entry):
                 return e
         return None
+
+
+def host_key(d):
+    """(host, pass, attempt) of a qd.hosts row or a capture's prologue:
+    which answer is which host's, try by try."""
+    return (d.get("host", ""), d.get("pass") or "1", d.get("attempt") or "1")
 
 
 def _pick(tables, name, eid):
@@ -764,11 +778,8 @@ class Run(object):
             per = {}
             for cid in caps:
                 ctx = self.store.context(cid)
-                per[(ctx.get("host", ""), ctx.get("pass") or "1")] = \
-                    self._shown_rows(cid)
-            rows = sum(max(1, per.get((h.get("host", ""),
-                                       h.get("pass") or "1"), 0))
-                       for h in hosts)
+                per[host_key(ctx)] = self._shown_rows(cid)
+            rows = sum(max(1, per.get(host_key(h), 0)) for h in hosts)
             names = sorted(set(n for cid in caps for n in
                                self.store.meta(cid).get("dataset", "")
                                .split(",") if n))
@@ -832,8 +843,11 @@ class Run(object):
         shown = [("attr_" + a) if a in fnames else a for a in attrs]
         show_addr = any(h.get("addr") for h in hosts)
         multi = int(self.meta.get("passes") or 1) > 1
+        # --retries (QD-027): a host tried more than once has a row a try
+        tries = any((h.get("attempt") or "1") != "1" for h in hosts)
         cols = ["host"] + (["addr"] if show_addr else []) + shown + \
-            fnames + (["pass", "ts"] if multi else [])
+            fnames + (["pass", "ts"] if multi else []) + \
+            (["attempt"] if tries else [])
         fvals = dict(factors)
 
         def cells(h):
@@ -842,7 +856,9 @@ class Run(object):
                                           if show_addr else []) + \
                 [ad.get(a, "") for a in attrs] + \
                 [fvals.get(f, "") for f in fnames] + (
-                    [h.get("pass") or "1", h.get("ts", "")] if multi else [])
+                    [h.get("pass") or "1", h.get("ts", "")]
+                    if multi else []) + (
+                    [h.get("attempt") or "1"] if tries else [])
         return cols, cells
 
     def _hosts(self):
@@ -852,7 +868,7 @@ class Run(object):
         tail = ["status", "rc", "duration_s", "bytes", "error", "stderr",
                 "capture"]
         rows = [cells(h) + [h.get(c, "") for c in tail[:-1]] +
-                [caps.get((h.get("host", ""), h.get("pass") or "1"), "")]
+                [caps.get(host_key(h), "")]
                 for h in hosts]
         return Table(cols + tail, rows, "hosts", self.store.root)
 
@@ -860,7 +876,7 @@ class Run(object):
         out = {}
         for cid in self.captures():
             ctx = self.store.context(cid)
-            out[(ctx.get("host", ""), ctx.get("pass") or "1")] = cid
+            out[host_key(ctx)] = cid
         return out
 
     def _data(self):
@@ -872,7 +888,7 @@ class Run(object):
         caps = self._by_host()
         parts, datasets, many = [], [], False
         for h in hosts:
-            cid = caps.get((h.get("host", ""), h.get("pass") or "1"), "")
+            cid = caps.get(host_key(h), "")
             recs = []
             if cid:
                 drop = context_columns(self.store.meta(cid))
@@ -967,7 +983,11 @@ class Run(object):
         """[(label, text)]: the answer a row came from, and its stderr."""
         out = []
         if not capture and host is not None:
-            capture = self._by_host().get((host, pas or "1"), "")
+            # the last try that left an answer (QD-027: --retries)
+            got = sorted((int(k[2]) if k[2].isdigit() else 0, cid)
+                         for k, cid in self._by_host().items()
+                         if k[:2] == (host, pas or "1"))
+            capture = got[-1][1] if got else ""
         if capture:
             text = self.store.output(capture)
             if text is not None:
@@ -1148,6 +1168,9 @@ def describe_entry(e):
         parts = ["%d hosts" % h.get("total", 0)] + [
             "%d %s" % (h[k], k) for k in OUTCOMES if h.get(k)]
         out.append("  hosts     %s" % ", ".join(parts))
+    if m.get("rerun_of"):
+        out.append("  rerun of  %s  (the hosts that were not ok there)"
+                   % m["rerun_of"].replace(",", ", "))
     if (m.get("passes") or 1) > 1:
         out.append("  passes    %d every %ss" % (m["passes"], m.get("every")))
     if m.get("duration_s") is not None:

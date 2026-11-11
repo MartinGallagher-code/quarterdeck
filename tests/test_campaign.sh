@@ -140,6 +140,22 @@ t_a_parts_previous_run_is_its_own() {
     assert_contains "$(cat err)" "nothing earlier in the store ran"
 }
 
+# QD-027: a campaign's parts are run by the same fan-out, so --max-fail
+# stops a part; --rerun is for a run, and a part runs again by retry
+t_a_part_stops_at_max_fail() {
+    have_muster || { echo "  (no muster here: pip install binnacle)"; return 0; }
+    seed
+    touch "$FAKE_ROOT/a/.unreachable"
+    qdf_rc campaign run burn --parts 1 -j 1 --max-fail 0 > out
+    assert_contains "$(qd show latest --cols host,status --format csv)" "b,not-run"
+}
+
+t_campaign_run_refuses_rerun() {
+    qd_rc campaign run burn --rerun latest 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "campaign retry"
+}
+
 run_test "a part's previous run is its own"         t_a_parts_previous_run_is_its_own
 run_test "without muster: refused, and why"          t_without_muster_it_says_so
 run_test "--dry-run takes nothing from the pool"     t_a_dry_run_takes_nothing
@@ -149,4 +165,6 @@ run_test "failed parts come back on retry"           t_failed_parts_come_back_on
 run_test "two workers never share a part"            t_two_workers_never_share_a_part
 run_test "a campaign's parts compare as wholes"      t_the_parts_compare_as_wholes
 run_test "names are checked"                         t_names_are_checked
+run_test "a part stops at --max-fail"             t_a_part_stops_at_max_fail
+run_test "campaign run refuses --rerun"         t_campaign_run_refuses_rerun
 finish

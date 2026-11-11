@@ -527,6 +527,220 @@ run_test "--remote-dir itself is never removed"     t_the_remote_dir_is_never_re
 run_test "exit 124 on the host is the host's"       t_an_exit_of_124_is_the_host_s
 run_test "a host line reads back as its host"        t_a_host_line_reads_back_as_its_host
 run_test "version, --help and help"                 t_version_and_help
+# -- QD-027: when hosts fail ------------------------------------------------
+
+# eight hosts, one at a time: node02 unreachable, node03's command fails
+seed_failing() {
+    install_fake_ssh
+    : > hosts.txt
+    for h in node01 node02 node03 node04 node05 node06 node07 node08; do
+        fake_host "$h"
+        echo "$h rack=r1" >> hosts.txt
+    done
+    touch "$FAKE_ROOT/node02/.unreachable" "$FAKE_ROOT/node03/bad"
+}
+
+FAILING_CMD='test ! -f bad && echo 5'
+
+t_max_fail_by_count_stops_new_hosts() {
+    seed_failing
+    run_qd -j 1 --max-fail 1 -- "$FAILING_CMD" > out
+    assert_status "$QD_RC" 1
+    out="$(cat out)"
+    assert_contains "$out" "8 hosts, 1 ok, 1 failed, 1 unreachable, 5 not-run"
+    assert_contains "$out" "STOPPED  --max-fail 1: 2 of 3 hosts started were not ok"
+    assert_contains "$out" "not-run: node04, node05, node06, node07, node08"
+    # every host has its row; a host never tried is blank, not zero
+    csv="$(qd show latest --cols host,status,rc,duration_s --format csv)"
+    assert_contains "$csv" "node04,not-run,,"
+    assert_contains "$csv" "node08,not-run,,"
+    assert_eq "$(qd show latest --where status=not-run --format csv | tail -n +2 | wc -l | tr -d ' ')" "5"
+    assert_contains "$(qd log latest)" "5 not-run"
+    assert_contains "$(qd log latest)" "stopped: --max-fail 1"
+    # never contacted
+    assert_not_contains "$(cat "$FAKE_SSH_LOG")" "ssh node05"
+    # 0: the first failure stops it
+    run_qd -j 1 --max-fail 0 -- "$FAILING_CMD" > out
+    assert_contains "$(cat out)" "1 ok, 1 unreachable, 6 not-run"
+}
+
+t_max_fail_on_unreachable_counts_only_the_fleet() {
+    seed_failing
+    QD_MAX_FAIL=1 QD_MAX_FAIL_ON=unreachable run_qd -j 1 -- "$FAILING_CMD" > out
+    assert_status "$QD_RC" 1
+    out="$(cat out)"
+    assert_contains "$out" "8 hosts, 6 ok, 1 failed, 1 unreachable"
+    assert_not_contains "$out" "STOPPED"
+    touch "$FAKE_ROOT/node05/.unreachable"
+    run_qd -j 1 --max-fail 1 --max-fail-on unreachable -- "$FAILING_CMD" > out
+    assert_contains "$(cat out)" "2 ok, 1 failed, 2 unreachable, 3 not-run"
+    assert_contains "$(cat out)" "were unreachable or timed out"
+}
+
+t_max_fail_by_percentage() {
+    seed_failing
+    touch "$FAKE_ROOT/node01/.unreachable"
+    # node01 and node02 are 2 of 2, but a percentage waits for 3 started;
+    # then 2 of 3 is past 30%
+    run_qd -j 1 --max-fail 30% -- "$FAILING_CMD" > out
+    assert_status "$QD_RC" 1
+    assert_contains "$(cat out)" "2 unreachable, 5 not-run"
+    assert_contains "$(cat out)" "--max-fail 30%: 3 of 3 hosts started were not ok"
+    # a fleet that stays under it runs to the end
+    rm "$FAKE_ROOT/node01/.unreachable"
+    run_qd -j 1 --max-fail 50% --max-fail-on unreachable -- "$FAILING_CMD" > out
+    assert_contains "$(cat out)" "6 ok, 1 failed, 1 unreachable"
+    assert_not_contains "$(cat out)" "not-run"
+    qdf_rc run -s hosts.txt --max-fail 'lots' -- true 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "--max-fail wants a number of hosts"
+}
+
+t_rerun_runs_only_the_hosts_that_were_not_ok() {
+    seed
+    run_qd -- cat kernel > /dev/null
+    first="$(qd show ds:qd.runs --cols run --format csv | tail -1)"
+    rm "$FAKE_ROOT/node09/.unreachable"
+    echo "6.1.0-20" > "$FAKE_ROOT/node09/kernel"
+    : > "$FAKE_SSH_LOG"
+    qdf_rc run --rerun latest -- cat kernel > out
+    assert_status "$QD_RC" 0
+    assert_contains "$(cat out)" "1 host, 1 ok"
+    assert_eq "$(grep -c '^ssh node' "$FAKE_SSH_LOG")" "1"
+    # with its attributes, and the record names the run it reran
+    assert_contains "$(qd show latest --format csv)" "node09,r2,ok,0"
+    assert_contains "$(qd log latest)" "rerun of  $first"
+    assert_contains "$(qd show ds:qd.runs --cols rerun_of --format csv)" "$first"
+    # qd diff of a rerun is against the run it reran
+    assert_contains "$(qd diff latest 2>&1 || true)" "$first"
+    # nothing left to rerun
+    qdf_rc run --rerun latest -- cat kernel 2> err
+    assert_status "$QD_RC" 0
+    assert_contains "$(cat err)" "nothing to rerun"
+    qdf_rc run --rerun latest -s hosts.txt -- true 2> err
+    assert_contains "$(cat err)" "takes no -s"
+}
+
+t_rerun_picks_up_not_run_hosts() {
+    seed_failing
+    run_qd -j 1 --max-fail 0 -- "$FAILING_CMD" > /dev/null
+    out="$(qd hosts --rerun latest)"
+    assert_eq "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "7"
+    assert_contains "$out" "node08 rack=r1"
+    assert_not_contains "$out" "node01"
+    assert_contains "$(qdf run --rerun latest --dry-run -- uname 2>&1)" "plan: --rerun"
+}
+
+t_servers_from_stdin_read_a_table_header() {
+    seed
+    run_qd -- cat kernel > /dev/null
+    out="$(qd show latest --where status!=ok --cols host --format csv | qdf run -s - --dry-run -- uname -s)"
+    assert_contains "$out" "node09"
+    assert_not_contains "$out" " host "
+    out="$(qd show latest --cols host,rack,status --format tsv | qd hosts -s -)"
+    assert_eq "$out" "$(printf 'node01\nnode02\nnode03\nnode09')"
+    # qd hosts --csv reads back whole, attributes and all
+    out="$(qd hosts -s hosts.txt --csv | qd hosts -s -)"
+    assert_contains "$out" "node03 rack=r2"
+}
+
+# a fake ssh that finds `flaky` unreachable the first time it is asked
+flaky_ssh() {
+    cat > "$FAKE_BIN/ssh-flaky" <<'SHIM'
+#!/bin/bash
+case " $* " in
+  *" -G "*) ;;
+  *" flaky "*)
+    if [ ! -f "$FAKE_ROOT/flaky/.tried" ]; then
+      touch "$FAKE_ROOT/flaky/.tried"
+      echo "ssh: connect to host flaky port 22: Connection timed out" >&2
+      exit 255
+    fi ;;
+esac
+exec "$FAKE_BIN/ssh" "$@"
+SHIM
+    chmod +x "$FAKE_BIN/ssh-flaky"
+}
+
+t_retries_keep_every_attempt() {
+    install_fake_ssh
+    flaky_ssh
+    fake_host flaky; fake_host node01; fake_host broken
+    touch "$FAKE_ROOT/broken/bad"
+    qd_rc run --ssh "$FAKE_BIN/ssh-flaky" -S flaky,node01,broken \
+        --retries 2 -- "$FAILING_CMD" > out
+    assert_status "$QD_RC" 1
+    assert_contains "$(cat out)" "3 hosts, 2 ok, 1 failed"
+    csv="$(qd show latest --cols host,attempt,status --format csv)"
+    assert_contains "$csv" "flaky,1,unreachable"
+    assert_contains "$csv" "flaky,2,ok"
+    # a command that ran and failed is a finding: tried once
+    assert_eq "$(printf '%s\n' "$csv" | grep -c '^broken,')" "1"
+    assert_contains "$(qd log latest)" "tried again (--retries) on 1 host: flaky"
+    # flaky is ok on its last try: --rerun leaves it out
+    assert_eq "$(qd hosts --rerun latest)" "broken"
+    # --retry-failed tries the failing command too
+    qd_rc run --ssh "$FAKE_BIN/ssh-flaky" -S broken --retries 2 \
+        --retry-failed -- "$FAILING_CMD" > /dev/null
+    assert_eq "$(qd show latest --cols attempt --format csv | tail -n +2 | tr '\n' ' ')" "1 2 3 "
+    qd_rc run -S broken --retry-failed -- true 2> err
+    assert_contains "$(cat err)" "give --retries N too"
+    # --dry-run says what it would do
+    out="$(qdf run -S a,b --retries 1 --retry-delay 2 --max-fail 1 --dry-run -- uname 2>&1)"
+    assert_contains "$out" "plan: --max-fail 1: no new host starts once more than 1 host are not ok"
+    assert_contains "$out" "plan: --retries 1: a host that was unreachable or timed out is tried again, up to 1 more time, 2s apart"
+}
+
+# SIGINT to qd alone, as `timeout -s INT` sends it (python here: macOS
+# has no timeout(1))
+interrupt_after() {
+    local secs="$1"; shift
+    set +e
+    "$PY" -c 'import signal, subprocess, sys, time
+p = subprocess.Popen(sys.argv[2:])
+time.sleep(float(sys.argv[1]))
+p.send_signal(signal.SIGINT)
+sys.exit(p.wait())' "$secs" "$@"
+    QD_RC=$?
+    set -e
+}
+
+t_ctrl_c_keeps_the_hosts_that_answered() {
+    install_fake_ssh
+    for h in node01 node02 node03 node04; do fake_host "$h"; done
+    touch "$FAKE_ROOT/node03/slow"
+    interrupt_after 4 "$PY" "$QD_DIR/qd" run --ssh "$FAKE_BIN/ssh" \
+        -S node01,node02,node03,node04 -j 1 \
+        -- 'if [ -f slow ]; then sleep 6; fi; echo up' > out 2>&1
+    assert_status "$QD_RC" 1
+    assert_contains "$(cat out)" "2 ok, 2 not-run"
+    assert_contains "$(cat out)" "kept the hosts that had answered"
+    csv="$(qd show latest --cols host,status,error --format csv)"
+    assert_contains "$csv" "node01,ok"
+    assert_contains "$csv" "node02,ok"
+    assert_contains "$csv" "node03,not-run,qd: interrupted (Ctrl-C) before it answered"
+    assert_contains "$csv" "node04,not-run,qd: not started: interrupted (Ctrl-C)"
+    assert_eq "$(qd hosts --rerun latest | tr '\n' ' ')" "node03 node04 "
+}
+
+t_not_run_is_not_measured() {
+    seed_failing
+    run_qd -j 1 -- "$FAILING_CMD" > /dev/null
+    run_qd -j 1 --max-fail 1 -- "$FAILING_CMD" > /dev/null
+    printf 'req\tcolumn\top\tlimit\nR1\tA\t>=\t1\n' > t.tsv
+    out="$(qd check latest --against t.tsv --each --format csv || true)"
+    assert_contains "$out" "R1,node01,A,5,>= 1,,pass"
+    assert_contains "$out" "R1,node08,A,,>= 1,,not measured"
+    out="$(qd compare latest~1 latest -c A --format csv || true)"
+    assert_contains "$out" "node08,5,,,R2 missing; R2 ok->not-run"
+    out="$(qd stats latest A --format csv)"
+    # the one host that answered is measured; the rest are blank
+    assert_contains "$out" "A,num,1,7,1,5,"
+    qd_rc report latest > out
+    assert_contains "$(cat out)" "7 of 8 hosts did not answer"
+    assert_contains "$(cat qd-report-*/summary.md)" "5 not-run"
+}
+
 run_test "hosts: ranges, attributes, order"           t_hosts_ranges_attrs_and_order
 run_test "hosts: warn on an attribute that is a host" t_hosts_warn_when_an_attribute_looks_like_a_host
 run_test "hosts: --layout asks manifest"              t_hosts_layout_asks_manifest
@@ -556,4 +770,13 @@ run_test "no provost: refused before any host"        t_no_provost_is_refused_be
 run_test "the store follows provost's rules"          t_store_follows_provost_rules
 run_test "latest, latest~N and names resolve"         t_names_and_refs_resolve
 run_test "LANG=C survives non-ASCII answers"          t_lang_c_and_utf8_output_survive
+run_test "--max-fail N stops new hosts, not-run rows" t_max_fail_by_count_stops_new_hosts
+run_test "--max-fail-on unreachable"                  t_max_fail_on_unreachable_counts_only_the_fleet
+run_test "--max-fail P%"                              t_max_fail_by_percentage
+run_test "--rerun: only the hosts that were not ok"   t_rerun_runs_only_the_hosts_that_were_not_ok
+run_test "--rerun picks up not-run hosts"             t_rerun_picks_up_not_run_hosts
+run_test "-s - reads a csv or tsv host table"         t_servers_from_stdin_read_a_table_header
+run_test "--retries keeps every attempt"              t_retries_keep_every_attempt
+run_test "Ctrl-C keeps the hosts that answered"       t_ctrl_c_keeps_the_hosts_that_answered
+run_test "not-run is not measured, never zero"        t_not_run_is_not_measured
 finish

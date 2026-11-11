@@ -42,6 +42,17 @@ SENTINEL = ".qd-owned"
 OK, FAILED, TIMEOUT, UNREACHABLE, PUSH_FAILED = (
     "ok", "failed", "timeout", "unreachable", "push-failed")
 
+# A host qd never tried (QD-027): --max-fail stopped the fan-out before
+# its turn, or Ctrl-C came first.  A row of its own, so the run says
+# exactly who was not asked, and --rerun picks it up.  Not measured, and
+# never a zero: its rc, duration and ts are blank.
+NOT_RUN = "not-run"
+
+# What a failure of the fleet is, rather than of the command: --max-fail-on
+# unreachable counts only these, and --retries tries only these again
+# unless --retry-failed is given.
+FLEET_FAILURES = (UNREACHABLE, TIMEOUT, PUSH_FAILED)
+
 # Stopping a command on the host (QD-026).  qd's ssh asks for no terminal,
 # so when qd kills its ssh -- past --timeout or --max-output -- sshd does
 # not hang the command up: it goes on running on the host (pdsh, pssh and
@@ -100,7 +111,7 @@ class Unlaunched(int):
 
 class Result(object):
     __slots__ = ("host", "outcome", "rc", "stdout", "stderr", "duration",
-                 "started", "pass_no", "left_running")
+                 "started", "pass_no", "left_running", "attempt", "earlier")
 
     def __init__(self, host, pass_no=1):
         self.host = host
@@ -114,6 +125,14 @@ class Result(object):
         # qd gave up on the command and could not confirm it stopped on
         # the host: it may still be running there
         self.left_running = False
+        # --retries (QD-027): which try this is, and the tries before it,
+        # each kept as a row of its own
+        self.attempt = 1
+        self.earlier = []
+
+    def attempts(self):
+        """Every try at this host in this pass, the first first."""
+        return list(self.earlier) + [self]
 
     def error(self):
         """The first line of what went wrong, for a column."""
@@ -122,7 +141,144 @@ class Result(object):
         for ln in (self.stderr or "").splitlines():
             if ln.strip():
                 return ln.strip()[:200]
-        return "exit %d" % self.rc
+        return "exit %d" % self.rc if self.rc is not None else self.outcome
+
+
+def not_run(host, pass_no=1, why="not started"):
+    """The row of a host qd did not try: blank, not zero, where a host
+    that ran has its rc, duration and start."""
+    r = Result(host, pass_no)
+    r.outcome, r.rc, r.started, r.duration = NOT_RUN, None, None, None
+    r.stderr = "qd: %s" % why
+    return r
+
+
+class Interrupted(Exception):
+    """Ctrl-C part-way through a pass: `results` is the pass as it stood,
+    a host that had answered as it answered and every other host
+    not-run."""
+
+    def __init__(self, results):
+        Exception.__init__(self, "interrupted")
+        self.results = results
+
+
+class MaxFail(object):
+    """--max-fail N|P%: when to stop starting hosts (QD-027).
+
+    More than N hosts not ok, or more than P% of the hosts started so far
+    -- judged once FLOOR hosts have started, so the first failure of a
+    big fleet is not 100% of it.  `on` is "any" (every status but ok) or
+    "unreachable" (only the fleet's failures: unreachable, timeout,
+    push-failed).  Counts are per pass; a pass that trips it is the
+    last."""
+
+    FLOOR = 3
+
+    def __init__(self, limit, percent=False, on="any"):
+        self.limit, self.percent, self.on = limit, percent, on
+        self.lock = threading.Lock()
+        self.reset()
+
+    @classmethod
+    def parse(cls, text, on="any"):
+        """None for no text; ValueError when it is not N or P%."""
+        if text is None or str(text).strip() == "":
+            return None
+        t = str(text).strip()
+        pct = t.endswith("%")
+        num = t[:-1].strip() if pct else t
+        try:
+            v = float(num) if pct else int(num)
+        except ValueError:
+            raise ValueError("--max-fail wants a number of hosts (3) or a "
+                             "percentage (10%%), got %r" % t)
+        if v < 0 or (pct and v >= 100):
+            raise ValueError("--max-fail wants 0 or more hosts, or a "
+                             "percentage from 0%% to below 100%%, got %r" % t)
+        if on not in ("any", "unreachable"):
+            raise ValueError("--max-fail-on wants any or unreachable, got %r"
+                             % on)
+        return cls(v, pct, on)
+
+    def reset(self):
+        self.started, self.bad, self.why = 0, 0, None
+
+    def counts(self, r):
+        if r is None or r.outcome in (OK, NOT_RUN):
+            return False
+        return self.on == "any" or r.outcome in FLEET_FAILURES
+
+    def start(self):
+        with self.lock:
+            self.started += 1
+
+    def ended(self, r):
+        with self.lock:
+            if self.counts(r):
+                self.bad += 1
+            if self.why is None and self._past():
+                self.why = "--max-fail %s: %d of %d hosts started %s" % (
+                    self.text(), self.bad, self.started,
+                    "were not ok" if self.on == "any"
+                    else "were unreachable or timed out")
+
+    def _past(self):
+        if self.percent:
+            return self.started >= self.FLOOR and \
+                self.bad * 100.0 > self.limit * self.started
+        return self.bad > self.limit
+
+    def tripped(self):
+        with self.lock:
+            return self.why is not None
+
+    def text(self):
+        if self.percent:
+            v = ("%g" % self.limit)
+            return v + "%"
+        return str(self.limit)
+
+    def plan(self):
+        return ("--max-fail %s: no new host starts once more than %s %s "
+                "(the running ones finish; the rest are not-run rows)" % (
+                    self.text(),
+                    ("%s of those started" % self.text()) if self.percent
+                    else "%d host%s" % (self.limit,
+                                        "" if self.limit == 1 else "s"),
+                    "are not ok" if self.on == "any"
+                    else "are unreachable or time out"))
+
+
+def retriable(r, failed=False):
+    """Whether --retries tries this host again: the fleet's failures, and
+    a command's own failure only with --retry-failed -- a failing test is
+    a finding.  Never one qd could not stop on the host (QD-026): another
+    try would measure a busy node."""
+    if r.left_running or r.outcome in (OK, NOT_RUN):
+        return False
+    return r.outcome in FLEET_FAILURES or (failed and r.outcome == FAILED)
+
+
+def with_retries(fn, retries, delay=0.0, failed=False, sleep=time.sleep):
+    """fn(host, pass) tried up to `retries` more times while retriable,
+    `delay` seconds apart.  -> the last try, the earlier ones on it."""
+    if not retries:
+        return fn
+
+    def tried(h, k):
+        r = fn(h, k)
+        n = 1
+        while n <= retries and retriable(r, failed):
+            if delay:
+                sleep(delay)
+            nxt = fn(h, k)
+            nxt.earlier = r.attempts()
+            n += 1
+            nxt.attempt = n
+            r = nxt
+        return r
+    return tried
 
 
 def control_dir(bases=None):
@@ -693,24 +849,81 @@ def progress_done():
         sys.stderr.flush()
 
 
-def fan_out(hosts, fn, jobs, label=""):
+def fan_out(hosts, fn, jobs, label="", stop=None, skip=None):
     """Capped concurrency, results in host-list order -- never completion
-    order, or two runs of the same thing could not be diffed."""
-    workers = max(1, min(jobs, len(hosts)))
-    done = [0]
+    order, or two runs of the same thing could not be diffed.
+
+    A host starts only when a slot is free, so `stop` (MaxFail) is asked
+    before each one: once it trips no new host starts, the running ones
+    finish, and the rest are skip(host, why) -- not-run rows.  Ctrl-C
+    raises Interrupted with the pass as it stood."""
     total = len(hosts)
+    workers = max(1, min(jobs, total))
+    skip = skip or not_run
+    results = [None] * total
+    done = [0]
+    lock = threading.Lock()
+    slots = threading.BoundedSemaphore(workers)
 
-    def wrapped(h):
+    def wrapped(i):
         try:
-            return fn(h)
+            r = fn(hosts[i])
+            results[i] = r
+            if stop is not None:
+                stop.ended(r)
         finally:
-            done[0] += 1
-            progress("%s%d/%d done" % (label, done[0], total))
+            with lock:
+                done[0] += 1
+                n = done[0]
+            progress("%s%d/%d done" % (label, n, total))
+            slots.release()
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        results = list(pool.map(wrapped, hosts))
+    pool = ThreadPoolExecutor(max_workers=workers)
+    futures = []
+    try:
+        for i in range(total):
+            slots.acquire()
+            if stop is not None and stop.tripped():
+                slots.release()
+                break
+            if stop is not None:
+                stop.start()
+            futures.append(pool.submit(wrapped, i))
+        for f in futures:
+            f.result()
+    except KeyboardInterrupt:
+        # the ones still running are left to end on their own: what they
+        # say after Ctrl-C is not kept
+        pool.shutdown(wait=False)
+        progress_done()
+        raise Interrupted(fill_skipped(hosts, list(results), skip,
+                                       range(len(futures)), interrupted=True))
+    except BaseException:
+        pool.shutdown(wait=True)
+        raise
+    pool.shutdown(wait=True)
     progress_done()
-    return results
+    return fill_skipped(hosts, results, skip, range(len(futures)),
+                        stop.why if stop is not None else None)
+
+
+def fill_skipped(hosts, results, skip, started, why=None,
+                 interrupted=False):
+    """Every host that has no answer, as skip(host, why): the ones never
+    started, and (after Ctrl-C) the ones that had not finished.  `started`
+    holds the indices of the hosts that were started."""
+    started = set(started)
+    out = []
+    for i, (h, r) in enumerate(zip(hosts, results)):
+        if r is None:
+            if interrupted and i in started:
+                r = skip(h, "interrupted (Ctrl-C) before it answered")
+            elif interrupted:
+                r = skip(h, "not started: interrupted (Ctrl-C)")
+            else:
+                r = skip(h, "not started: %s" % (why or "stopped"))
+        out.append(r)
+    return out
 
 
 # Open files a host in flight holds in qd: its ssh's stdout and stderr
@@ -753,45 +966,68 @@ def fit_jobs(jobs, limits=None):
 
 
 def run_passes(hosts, fn, jobs, count=1, every=0.0, sleep=time.sleep,
-               gate=None, many=None):
+               gate=None, many=None, stop=None, skip=None):
     """`count` passes over the fleet, one starting every `every` seconds.
 
     A pass that runs longer than the interval is followed straight away by
-    the next rather than overlapping it.  Ctrl-C between or during passes
-    keeps every pass that finished.  `gate` (pacing.Gate) caps hosts
-    per attribute value and spaces their starts.  `many(hosts, k, label)`
-    is a launcher that answers for every host in one call (pdsh, clush):
-    a pass is that one call, unless the gate has to space the hosts out.
+    the next rather than overlapping it.  Ctrl-C keeps every pass that
+    finished and the one it came in, as far as it got: the hosts that
+    answered as they answered, the rest skip(host, pass, why) -- not-run
+    rows (QD-027).  `gate` (pacing.Gate) caps hosts per attribute value
+    and spaces their starts.  `stop` (MaxFail) stops new hosts starting
+    once too many have failed, and a pass that trips it is the last.
+    `many(hosts, k, label)` is a launcher that answers for every host in
+    one call (pdsh, clush): a pass is that one call, unless the gate has
+    to space the hosts out or `stop` has to be asked between hosts.
     -> (results, interrupted)
     """
     results = []
     interrupted = False
     gated = gate is not None and gate.active()
-    if many is None or gated:
+    skip = skip or not_run
+    if many is None or gated or stop is not None:
         many = None
         jobs, note = fit_jobs(min(jobs, max(1, len(hosts))))
         if note:
             sys.stderr.write("qd: %s\n" % note)
+    k = 0
     try:
         for k in range(1, count + 1):
             t0 = time.monotonic()
             label = "pass %d/%d: " % (k, count) if count > 1 else ""
+
+            def skip_k(h, why, k=k):
+                return skip(h, k, why)
+            if stop is not None:
+                stop.reset()
             if many is not None:
-                results.extend(many(hosts, k, label))
+                try:
+                    results.extend(many(hosts, k, label))
+                except KeyboardInterrupt:
+                    raise Interrupted([skip_k(h, "interrupted (Ctrl-C) "
+                                              "before it answered")
+                                       for h in hosts])
                 progress_done()
             elif gated:
                 from .pacing import gated_fan_out
                 results.extend(gated_fan_out(
                     hosts, lambda h, k=k: fn(h, k), jobs, gate,
-                    label=label, progress=progress))
+                    label=label, progress=progress, stop=stop,
+                    skip=skip_k))
                 progress_done()
             else:
                 results.extend(fan_out(hosts, lambda h, k=k: fn(h, k), jobs,
-                                       label))
+                                       label, stop=stop, skip=skip_k))
+            if stop is not None and stop.tripped():
+                break
             if k < count and every:
                 left = every - (time.monotonic() - t0)
                 if left > 0:
                     sleep(left)
+    except Interrupted as exc:
+        progress_done()
+        results.extend(exc.results)
+        interrupted = True
     except KeyboardInterrupt:
         progress_done()
         interrupted = True

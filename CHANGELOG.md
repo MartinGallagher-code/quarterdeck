@@ -5,6 +5,50 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.14.0 — 2026-11-11
+
+Stop a fan-out when too many hosts fail, rerun only the hosts that
+failed, try a flaky host again, and keep what answered when interrupted
+(QD-027).
+
+### Added
+- **`--max-fail N|P%`** (`QD_MAX_FAIL`) on `qd run`, `qd probe`, `qd
+  campaign` and `qd doe`: once more than N hosts, or P% of those started
+  (judged from three on), are not ok, no new host starts; the running ones
+  finish, every host not started is a row with the new status
+  **`not-run`**, the summary and `qd log` say why it stopped, and the run
+  exits 1. **`--max-fail-on unreachable`** (`QD_MAX_FAIL_ON`) counts only
+  unreachable, timeout and push-failed. The stop is asked before every host
+  in both fan-out loops (`fleet.fan_out`, `pacing.gated_fan_out`), above
+  the launcher.
+- **`--rerun RUN`** (repeatable): the host list is the hosts whose last
+  pass in RUN was not ok (`not-run` included), with their addresses and
+  attributes. The new run's `qd.runs` row carries `rerun_of`, `qd log`
+  shows it, and `qd diff NEW` compares with that run. `qd hosts --rerun
+  RUN` lists them. `qd campaign run` refuses it (`qd campaign retry` is
+  part by part).
+- **`--retries N`** (`QD_RETRIES`, 0), **`--retry-delay S`**
+  (`QD_RETRY_DELAY`, 0) and **`--retry-failed`**: an unreachable or
+  timed-out host is tried again in the same run; every try is a row with an
+  `attempt` column (`qd.hosts` has it too), and the run's note names the
+  hosts tried again. A command's non-zero exit is not retried without
+  `--retry-failed`; a host where the command may still be running (QD-026)
+  is never retried.
+- `--dry-run` prints the plan for these (`qd: plan: ...`, on stderr).
+- `qd.runs` has a `not_run` count; `not-run` reads as not measured in
+  `qd stats`, `qd compare`, `qd check` and `qd report`, and as a warning
+  on the floor plan.
+
+### Changed
+- **Ctrl-C keeps what answered.** The pass it comes in is filed as far as
+  it got, the hosts that had not answered as `not-run` rows; before, a
+  one-pass run kept nothing and a run of passes dropped the one in
+  progress. Through pdsh or clush every host of that pass is `not-run`.
+- A host list read from a file or `-s -` whose first line is a `host`
+  header is read as CSV or TSV: `qd show ... --cols host --format csv |
+  qd run -s - ...` no longer tries a host called `host`.
+- With `--max-fail` or `--retries`, pdsh and clush go host by host.
+
 ## 0.13.0 — 2026-11-11
 
 Hosts reached through a Slurm allocation, pdsh or clush as well as ssh

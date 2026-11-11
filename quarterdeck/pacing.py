@@ -131,15 +131,22 @@ class Gate(object):
 
 
 def gated_fan_out(hosts, fn, jobs, gate, clock=time.monotonic,
-                  on_start=None, label="", progress=None):
+                  on_start=None, label="", progress=None, stop=None,
+                  skip=None):
     """fn(host) for every host, at most `jobs` at once and as `gate`
     allows, results in host-list order.  `clock` is the time source the
     gate is asked with; waiting is done on a condition variable, so a
-    host that ends wakes the scheduler at once."""
+    host that ends wakes the scheduler at once.  `stop` (fleet.MaxFail)
+    is asked before each start: once it trips no new host starts and the
+    rest are skip(host, why).  Ctrl-C raises fleet.Interrupted with the
+    pass as it stood."""
     from concurrent.futures import ThreadPoolExecutor
+    from . import fleet
+    skip = skip or fleet.not_run
     n = len(hosts)
     results = [None] * n
     waiting = list(range(n))
+    started = []
     cond = threading.Condition()
     state = {"inflight": 0, "error": None}
     workers = max(1, min(jobs, n))
@@ -149,6 +156,8 @@ def gated_fan_out(hosts, fn, jobs, gate, clock=time.monotonic,
     def run(i):
         try:
             results[i] = fn(hosts[i])
+            if stop is not None:
+                stop.ended(results[i])
         except BaseException as exc:     # noqa: kept for the caller
             state["error"] = exc
         finally:
@@ -160,19 +169,25 @@ def gated_fan_out(hosts, fn, jobs, gate, clock=time.monotonic,
                     progress("%s%d/%d done" % (label, done[0], n))
                 cond.notify_all()
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
         with cond:
             while waiting or state["inflight"]:
                 if state["error"] is not None:
                     break
+                if stop is not None and stop.tripped():
+                    waiting = []
                 if waiting and state["inflight"] < workers:
                     i, wait = gate.pick([hosts[j] for j in waiting], clock())
                     if i is not None:
                         j = waiting.pop(i)
                         gate.start(hosts[j], clock())
                         state["inflight"] += 1
+                        if stop is not None:
+                            stop.start()
                         if on_start:
                             on_start(hosts[j])
+                        started.append(j)
                         pool.submit(run, j)
                         continue
                     cond.wait(wait if wait is not None else 1.0)
@@ -180,9 +195,15 @@ def gated_fan_out(hosts, fn, jobs, gate, clock=time.monotonic,
                     cond.wait(1.0)
             while state["inflight"]:
                 cond.wait(1.0)
+    except KeyboardInterrupt:
+        pool.shutdown(wait=False)
+        raise fleet.Interrupted(fleet.fill_skipped(
+            hosts, list(results), skip, started, interrupted=True))
+    pool.shutdown(wait=True)
     if state["error"] is not None:
         raise state["error"]
-    return results
+    return fleet.fill_skipped(hosts, results, skip, started,
+                              stop.why if stop is not None else None)
 
 
 # ---------------------------------------------------------------------------

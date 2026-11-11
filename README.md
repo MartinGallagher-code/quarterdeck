@@ -358,6 +358,19 @@ which servers a `.dc` layout puts under the selectors (`rack[1-3]`,
 rack, slot) comes back as attributes. `qd hosts` prints any of this
 without running anything.
 
+A host list read from a file or from `-s -` whose first line is a `host`
+header is read as a table, CSV or TSV: what `qd show ... --cols host
+--format csv` and `qd hosts --csv` write. So the obvious pipe works:
+
+```bash
+qd show latest --where status!=ok --cols host --format csv | qd run -s - -- uname -s
+```
+
+Only the `host` column is read, with `addr` and `port` where there are
+such columns; `qd hosts --csv`'s shape (`host,addr,port`, then
+attributes) is read back with its attributes. To carry a run's
+attributes over, use `--rerun` (below).
+
 ### Reaching the hosts: ssh, srun, pdsh or clush
 
 ssh is the default: one connection per host, `--jobs` at a time. Where a
@@ -438,7 +451,7 @@ host's answer is kept, exactly, either way.
 
 Every dataset a run makes has these columns: `host`, its attributes,
 `status` (`ok`, `failed`, `timeout`, `unreachable`, `push-failed`, in
-agree's sense of each), `rc`, `duration_s`, `error` (the first line of what
+agree's sense of each, and `not-run` for a host qd never tried), `rc`, `duration_s`, `error` (the first line of what
 went wrong) and `capture` (provost's id for the answer), then what provost
 read.
 
@@ -476,6 +489,67 @@ qd trend latest A                        # a sparkline per host
 `--every S --count N` runs N passes, one starting every S seconds, into a
 single dataset with `pass` and `ts` columns. `--count 0` runs until
 Ctrl-C, and every pass that finished is kept.
+
+### When hosts fail: stop, rerun, try again
+
+```bash
+qd run -s hosts.txt --max-fail 5 -- ./check.sh     # stop starting hosts past 5 failures
+qd run -s hosts.txt --max-fail 10% -- ./check.sh   # or past 10% of those started
+qd run --rerun latest -- ./check.sh                # only the hosts that were not ok
+qd run -s hosts.txt --retries 2 --retry-delay 5 -- uptime
+```
+
+**`--max-fail N|P%`** (`QD_MAX_FAIL`) stops a fan-out part-way. Once more
+than N hosts, or more than P% of the hosts started so far (judged once
+three have started, so one early failure is not 100% of the fleet), have
+ended in anything but `ok`, qd starts no new host. The ones running
+finish and are filed as they answered; every host it never started is a
+row of its own, status **`not-run`**, so the run says exactly who was not
+tried. The summary says why it stopped (`STOPPED --max-fail 5: 6 of 40
+hosts started were not ok`), so does `qd log`, and the run exits 1.
+`--max-fail 0` stops at the first failure (Ansible's `any_errors_fatal`,
+pdsh's `-k`). It counts a command that ran and failed as well as a host
+that did not answer; **`--max-fail-on unreachable`** (`QD_MAX_FAIL_ON`)
+counts only the fleet's failures -- `unreachable`, `timeout`,
+`push-failed` -- for a test whose failures are findings, not a reason to
+stop. Each pass counts afresh, and a pass that trips it is the last.
+
+**`--rerun RUN`** (repeatable, `latest` too) is the host list: the hosts
+whose last pass in RUN ended in anything but `ok` -- unreachable, timed
+out, failed, or `not-run` -- with their addresses and attributes, in
+RUN's order. A host that answered on a later try (`--retries`) was ok.
+The new run's record names the run it reran (`qd log`: `rerun of`; the
+`rerun_of` column of `qd.runs`), and `qd diff NEW` compares it with that
+run. `qd hosts --rerun RUN` lists them without running anything. This is
+host by host where `qd campaign retry` is part by part: a rack with one
+bad host is one host here, the whole rack there. `qd campaign run` takes
+no `--rerun`; `qd campaign new --rerun RUN ...` makes a campaign of them.
+
+**`--retries N`** (`QD_RETRIES`, 0) tries a host that was `unreachable`
+or timed out again within the run, up to N more times, `--retry-delay S`
+apart (`QD_RETRY_DELAY`, 0). Every try is a row, with an **`attempt`**
+column, so a flaky host is seen rather than hidden by its last success,
+and the run's note names it. A command that ran and failed (rc != 0) is a
+finding and is not tried again without **`--retry-failed`**; a host where
+qd gave up on the command and could not stop it (`NOT STOPPED`, above)
+is never tried again, since another try would measure a busy node.
+Retries are off by default: a run reports what happened.
+
+**Ctrl-C keeps what answered.** The pass it comes in is filed as far as
+it got: the hosts that had answered, as they answered; the ones still
+running and the ones not started, `not-run` (`qd: interrupted (Ctrl-C)
+before it answered`, `qd: not started: interrupted (Ctrl-C)`). What the
+running ones say after Ctrl-C is not kept. `--rerun latest` picks them up.
+Through pdsh or clush one call answers for every host, so a pass
+interrupted there keeps none of it: every host is `not-run`.
+
+`not-run` is a status like any other that is not `ok`: its `rc`,
+`duration_s` and `ts` are blank, never zero, and `qd stats`, `qd
+compare`, `qd check` and `qd report` count it as not measured. With
+`--max-fail` or `--retries`, pdsh and clush go host by host, so qd can
+stop or try again between hosts. `qd probe`, a campaign's parts and a
+design's points run through the same fan-out and take the same flags.
+`--dry-run` says what they would do (`qd: plan: ...`, on stderr).
 
 ### Scripts, sudo, and safety
 
@@ -680,6 +754,10 @@ sshd, a push run on one host went from five logins to one
 | `--reuse` | `QD_SSH_REUSE=1` | off: a login per call |
 | `--remote-dir` | `QD_REMOTE_DIR` | `/var/tmp` |
 | `--rate` | `QD_RATE` | none: new connections as fast as `--jobs` allows; `10/s` for a bastion's `MaxStartups` |
+| `--max-fail` | `QD_MAX_FAIL` | none: every host runs; `N` or `P%` stops starting hosts past it |
+| `--max-fail-on` | `QD_MAX_FAIL_ON` | `any`: every status but ok; `unreachable` counts only the fleet's failures |
+| `--retries` | `QD_RETRIES` | 0: a host is tried once |
+| `--retry-delay` | `QD_RETRY_DELAY` | 0 s between tries |
 | `--allow` | `QD_ALLOW` | none: every command may run |
 | `--read-only` | `QD_READ_ONLY=1` | off |
 | | `QD_OPERATOR` | your login user: who a run says ran it (see Who ran it) |
@@ -689,8 +767,8 @@ sshd, a push run on one host went from five logins to one
 | | `QD_FILE_JOBS` | one capture at a time: one provost after another. N files N at once, but only where `mkdir --version` is not uutils coreutils' before 0.11.0 (Ubuntu 25.10 and 26.04): there two can share provost's lock and lose a capture. With `batch`: its `-j` |
 | | `QD_FILE_CHUNK` | 200 inputs per `provost batch`, each a commit, so its lock is never held for a whole big fleet |
 
-Exit status is 0 when every host answered, 1 when one didn't, and 2 for a
-usage error.
+Exit status is 0 when every host answered, 1 when one didn't (or
+`--max-fail` stopped the run), and 2 for a usage error.
 
 ---
 

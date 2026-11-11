@@ -238,7 +238,68 @@ def read_host_file(path):
         if os.sep in path or os.path.isdir(path):
             die("no such host file: %s" % path)
         return None
-    return parse_lines(read_text(path))
+    text = read_text(path)
+    if is_table(text):
+        return parse_table(text)
+    return parse_lines(text)
+
+
+def _first_line(text):
+    for line in text.splitlines():
+        line = line.lstrip("\ufeff").strip()
+        if line and not line.startswith("#"):
+            return line
+    return ""
+
+
+def is_table(text):
+    """Whether host-list text is a CSV or TSV table with a `host` column
+    first -- what `qd show ... --cols host --format csv` and `qd hosts
+    --csv` write -- rather than host lines.  Read as host lines, its
+    header was a host called `host` (QD-027)."""
+    first = _first_line(text)
+    delim = "\t" if "\t" in first else ","
+    head = first.split(delim)[0].strip().strip('"')
+    return head == "host" and (first == "host" or first == '"host"'
+                               or delim in first)
+
+
+def parse_table(text):
+    """A CSV or TSV host table -> [(token, attrs)]: the `host` column, and
+    `addr` and `port` where there are such columns.  Only the shape `qd
+    hosts --csv` writes (host,addr,port, then attributes) has its other
+    columns read as attributes: in `qd show`'s, they are what the hosts
+    said, and `--rerun RUN` is the way to carry a run's attributes over."""
+    lines = [ln.lstrip("\ufeff") for ln in text.splitlines()
+             if ln.strip() and not ln.lstrip("\ufeff").startswith("#")]
+    delim = "\t" if "\t" in lines[0] else ","
+    rows = list(csv.reader(lines, delimiter=delim))
+    cols = [c.strip() for c in rows[0]]
+    hi = cols.index("host")
+    ai = cols.index("addr") if "addr" in cols else None
+    pi = cols.index("port") if "port" in cols else None
+    attrs_from = 3 if cols[:3] == ["host", "addr", "port"] else None
+    out = []
+    for r in rows[1:]:
+        if hi >= len(r) or not r[hi].strip():
+            continue
+        name = r[hi].strip()
+        addr = r[ai].strip() if ai is not None and ai < len(r) else ""
+        port = r[pi].strip() if pi is not None and pi < len(r) else ""
+        if addr and port and ":" in addr:
+            addr = "[%s]" % addr
+        tok = name
+        if addr and (addr != name or port):
+            tok = "%s=%s%s" % (name, addr, (":" + port) if port else "")
+        elif port:
+            tok = "%s:%s" % (name, port)
+        attrs = []
+        if attrs_from is not None:
+            attrs = [_attr("%s=%s" % (cols[i], r[i].strip()))
+                     for i in range(attrs_from, min(len(cols), len(r)))
+                     if cols[i] and r[i].strip()]
+        out.append((tok, attrs))
+    return out
 
 
 def layout_hosts(layout, selectors, manifest_argv):
