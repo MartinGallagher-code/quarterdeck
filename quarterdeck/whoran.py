@@ -4,8 +4,8 @@
 
 Every run records the operator (QD_OPERATOR, else the login user) and the
 machine qd ran on.  A fan-out records how it reached the hosts as well:
-the ssh user, the fingerprint of the key it offered, and whether it ran
-under sudo.  Anything that cannot be found out is left blank -- blank is
+the launcher (--via), the ssh user, the fingerprint of the key it offered,
+whether it ran under sudo, and srun's job.  Anything that cannot be found out is left blank -- blank is
 "not recorded", never a guess -- and nothing here ever stops a run.
 
 `qd doctor HOST` reads ssh's view of a host here too (ssh_settings and
@@ -268,8 +268,16 @@ def certificate_validity(path):
 
 
 def fan_out(runner, hosts, jobs=8):
-    """The fields a fan-out records on top of local()."""
-    return {"ssh_user": ssh_user(runner, hosts, jobs),
-            "ssh_key": ssh_key(runner),
-            "sudo": "yes" if runner.sudo else "no"}
+    """The fields a fan-out records on top of local(), and how the hosts
+    were reached (via, and srun's job).  ssh -G and the keys describe
+    qd's own ssh: srun has none, and pdsh and clush start theirs as their
+    own configuration says, so for them only a --user given is kept."""
+    if getattr(runner, "via", "ssh") == "ssh":
+        fields = {"ssh_user": ssh_user(runner, hosts, jobs),
+                  "ssh_key": ssh_key(runner)}
+    else:
+        fields = {"ssh_user": runner.user or "", "ssh_key": ""}
+    fields["sudo"] = "yes" if runner.sudo else "no"
+    fields.update(runner.run_fields())
+    return fields
 

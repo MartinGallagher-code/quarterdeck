@@ -46,9 +46,9 @@ usage() { sed -n '5,25p' run_tests.sh | sed 's/^# \{0,1\}//'; }
 # the seven; report and join, which came after, timed here beside
 # compare, do and view on both of provost's paths and scaled to their
 # seconds in CI; ssh (QD-018) timed here, a real sshd and all, on four
-# cores.  A run's last line, `seconds:`, gives every suite's, to measure
-# them again from.
-TIMES="doe:236 peers:231 web:225 run:176 xstore:146 compare:132 probe:108 operator:98 report:87 campaign:86 rm:81 do:78 remote:77 view:74 pacing:54 store:41 stop:40 policy:37 read:35 join:30 ssh:25 export:24 runner:18 split:15 diff:14 check:12 analyze:6 cleanup:3"
+# cores; via (QD-008) beside report, scaled the same way.  A run's last
+# line, `seconds:`, gives every suite's, to measure them again from.
+TIMES="doe:236 peers:231 web:225 via:224 run:176 xstore:146 compare:132 probe:108 operator:98 report:87 campaign:86 rm:81 do:78 remote:77 view:74 pacing:54 store:41 stop:40 policy:37 read:35 join:30 ssh:25 export:24 runner:18 split:15 diff:14 check:12 analyze:6 cleanup:3"
 UNLISTED=30
 
 # With --shard K/N, a suite listed here is split into that many parts (or
@@ -57,7 +57,7 @@ UNLISTED=30
 # the rest of its share's.  A suite whose cases start a server can be split
 # too, since its parts never run on one machine.  Without --shard, every
 # suite runs whole.
-PARTS="doe:3 peers:3 web:3 run:2 xstore:2 compare:2 probe:2"
+PARTS="doe:3 peers:3 web:3 via:3 run:2 xstore:2 compare:2 probe:2"
 
 # This machine's cores: Linux, then POSIX, then macOS and the BSDs.
 cores() {

@@ -142,12 +142,17 @@ each run, and `qd web` puts it in the run's header.
 | `ssh_user` | `--user`, else what your ssh config gives each host (`ssh -G`); hosts with users of their own give each, comma-separated | a fan-out |
 | `ssh_key` | the fingerprint of each key qd offered: the `-i` keys (or `IdentityFile`) in `--ssh`, else your agent's (`ssh-add -l`). Never the key itself | a fan-out |
 | `sudo` | `yes` or `no` | a fan-out |
+| `via` | how the hosts were reached: `ssh`, `srun`, `pdsh` or `clush` | a fan-out |
+| `sched_job` | the Slurm job `--via srun` ran in (each answer carries it as `sched.job`) | `--via srun` |
 
 Anything qd cannot find out is blank, never a guess: an ssh without `-G`
 (older than OpenSSH 6.8, or a wrapper), no `ssh-add` or an empty agent,
 or a key file `ssh-keygen` cannot read. Which of several offered keys a
 host accepted is not known without connecting, so `ssh_key` lists every
-one offered. Runs filed before 0.8.2 have none of these columns and show
+one offered. With `--via` other than ssh, `ssh_user` is the `--user`
+given (pdsh's and clush's `-l`) or blank, and `ssh_key` is blank: their
+ssh is configured apart from qd's. Runs filed before 0.8.2 have none of
+these columns, and runs before 0.13.0 no `via` or `sched_job`; they show
 blank. qd also passes the operator to provost as `PROVOST_OPERATOR` (unless
 you set it yourself), for a provost that records it (PV-027); provost
 2.3.0 does not yet.
@@ -353,6 +358,68 @@ which servers a `.dc` layout puts under the selectors (`rack[1-3]`,
 rack, slot) comes back as attributes. `qd hosts` prints any of this
 without running anything.
 
+### Reaching the hosts: ssh, srun, pdsh or clush
+
+ssh is the default: one connection per host, `--jobs` at a time. Where a
+test event reaches its nodes some other way, `--via` (`QD_VIA`) changes
+how the hosts are reached and nothing about what is kept: every host is
+still a row, a host that did not answer is a row too, and the outcomes,
+`--push`, `--script`, `--sudo`, `--every` and the cleanup are the same.
+
+```bash
+salloc -N 64 -p gpu                        # or inside an sbatch script
+qd run --via srun -- nvidia-smi -L         # every node of the allocation
+qd run --via pdsh -s hosts.txt -- uptime   # one pdsh for all of them
+QD_VIA=clush qd probe inventory -s 'node[01-64]'
+```
+
+| `--via` | How | Pushed files and stdin |
+|---|---|---|
+| `ssh` | one `ssh` per host (`--ssh`, `--scp`) | `scp` |
+| `srun` | inside a Slurm allocation: one step per host, `srun --overlap -N1 -n1 -w NODE sh -c CMD` | through the step's own stdin, a step per file |
+| `pdsh` | one `pdsh -w a,b,c -f JOBS` for every host | `pdcp` (which must be on the hosts too) |
+| `clush` | one `clush -w a,b,c -f JOBS` for every host | `clush --copy` |
+
+**srun.** qd runs only inside an allocation it is given (`salloc`,
+`sbatch`, or `SLURM_JOB_ID` set to one of yours); it never asks Slurm for
+one. With no hosts named, the fleet is the allocation's nodes, as
+`scontrol show hostnames $SLURM_JOB_NODELIST` lists them, even if there
+is a `hosts.txt` in the directory; `-s` or `-S` names a subset.
+`--overlap` lets each step run beside the job's own. Every answer's `#%`
+prologue carries the job as `sched.job` (provost's run-manifest key,
+PV-020) and the partition as `sched.partition`: columns of every row in
+the dataset (`qd show ds:NAME`) with a provost that has `batch`, and in
+each capture's context (`provost source`) with any. The run's `qd.runs`
+row says `via=srun` and the job. A node srun could not start a step on
+is `unreachable` with srun's reason. srun runs as you (`--user` is not
+used) and in the directory qd was started from, as srun does. A command
+that times out is stopped with SIGTERM, which ends its step.
+
+**pdsh and clush.** One call answers for every host: pdsh (or clush) puts
+`host: ` before each line, which tells the answers apart, and qd adds a
+line after the command with its exit status, which pdsh does not report
+per host. A host with no such line did not answer. `--jobs` is the
+fan-out (`-f`), `--timeout` each host's limit (`-u`), and `--user` its
+`-l`. pdsh's ssh gets the options qd's own ssh uses (`BatchMode=yes`,
+`StrictHostKeyChecking=accept-new`) after any you set in
+`PDSH_SSH_ARGS_APPEND`; which remote shell it uses is pdsh's own setting
+(`PDSH_RCMD_TYPE`). Some limits:
+
+- A host is reached by name: no port per host (put it in your ssh
+  config), and two hosts at one address are refused.
+- A command's stdin (the script probes send binnacle's scripts on it) is
+  pushed as a file beside the command and read from there, since pdsh
+  forwards none (clush is treated the same way).
+- `--rate` spaces hosts out, which one call cannot: with it, each host is
+  a call of its own.
+- Some pdsh builds merge a host's stderr into its stdout, or cut very long
+  lines; qd keeps what pdsh gives it.
+
+The probes that are tools driving the fleet themselves (`health`,
+`preflight`, `reach`) still reach it over ssh, and say so. `qd doctor
+--via srun` (or pdsh, clush) checks the launcher: found here, and for
+srun, the allocation qd is in.
+
 ### What comes back
 
 provost reads each host's answer: CSV and TSV, JSON, `key: value` and
@@ -417,7 +484,7 @@ Ctrl-C, and every pass that finished is kept.
 | `--script FILE -- ARGS` | push FILE, run it with ARGS, remove it again |
 | `--push FILE` | copy a file over first (repeatable); the command runs beside it, in a directory of the run's own in `--remote-dir` |
 | `--sudo` | run under `sudo -n` |
-| `--dry-run` | print the ssh command per host, less the line ahead of it that lets qd stop it (see *When a host takes too long*); contact nothing |
+| `--dry-run` | print the ssh (or srun) command per host, or the one pdsh or clush call; an ssh command less the line ahead of it that lets qd stop it (see *When a host takes too long*); contact nothing |
 | `--first N` | the first N hosts only, the canary before the fleet |
 | `--limit N` | refuse to run wider than N hosts without `--yes` |
 | `--no-store` | print the answers, keep nothing |
@@ -603,6 +670,7 @@ sshd, a push run on one host went from five logins to one
 | Flag | Variable | Default |
 |---|---|---|
 | `--servers` | `QD_SERVERS` | `hosts.txt` or `servers.txt` |
+| `--via` | `QD_VIA` | `ssh`; or `srun`, `pdsh`, `clush` (see Reaching the hosts) |
 | `--user` | `QD_SSH_USER` | your ssh config |
 | `--jobs` | `QD_JOBS` | 32 hosts at once |
 | `--timeout` | `QD_TIMEOUT` | 60 s per host; past it the command is stopped on the host and reported |
@@ -971,7 +1039,7 @@ evidence/
   command that prints it again (with `--store`, so it works from
   anywhere). `manifest.json` lists every one of those commands.
 - **The summary**, in order: findings; the run (its `qd.runs` record,
-  with who ran it); hosts asked, ok and not answering, with why; the
+  with who ran it, and the launcher and job for a run not over ssh); hosts asked, ok and not answering, with why; the
   figures of every column; the checks; drift against the baseline; the
   outliers; the captures' `#%` keys, the run manifest provost reads
   (PV-020), and the ones `provost annotate` added later; `provost verify`'s
@@ -1694,7 +1762,10 @@ The tests need no network and no second machine, but a real provost
 (`pip install provost`, or `QD_PROVOST`): every case files into a store of
 its own. `QD_PROVOST_BATCH=0` runs them on the one-capture-at-a-time path.
 `ssh` and `scp` are replaced by a shim that runs the "remote" command in a
-sandbox directory per fake host. mx, iperf-orchestrator, agree, dcprobe
+sandbox directory per fake host, and `srun`, `scontrol`, `pdsh`, `pdcp`
+and `clush` by stand-ins that reach the same hosts and say what the real
+ones say (`tests/test_via.sh`); Slurm, pdsh and clush themselves never run
+in the suite. mx, iperf-orchestrator, agree, dcprobe
 and doe are replaced by stand-ins that write what the real ones write,
 where they write it; muster and the probes' binnacle scripts are the real
 ones where binnacle is installed, and doe too where it is. The explorer is

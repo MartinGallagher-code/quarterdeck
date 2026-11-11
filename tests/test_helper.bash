@@ -13,6 +13,8 @@
 #   install_fake_ssh        an ssh+scp pair that run "remote" commands locally
 #                           (FAKE_SSH_DETACH=1: apart from the client, as
 #                           OpenSSH runs them)
+#   install_fake_launchers  srun, scontrol, pdsh, pdcp and clush that do the
+#                           same, on PATH; in_allocation sets a Slurm job
 #   fake_host NAME          a sandbox root for one fake host
 #   fake_host_unreachable NAME
 #   pv ARGS...              provost itself, on the case's store
@@ -81,6 +83,9 @@ setup_env() {
     unset QD_WEB_PORT QD_TEST_KEYS QD_TEST_SCREEN QD_FILE_JOBS QD_RATE
     unset QD_WEB_TOKEN QD_WEB_TOKEN_FILE QD_WEB_TLS_CERT QD_WEB_TLS_KEY QD_TEST_CA
     unset QD_ALLOW QD_READ_ONLY QD_TEST_PART QD_SSH_CONFIG QD_SSH_REUSE
+    unset QD_VIA PDSH_SSH_ARGS_APPEND
+    unset SLURM_JOB_ID SLURM_JOBID SLURM_JOB_NODELIST SLURM_NODELIST
+    unset SLURM_JOB_PARTITION
     unset PROVOST_WORKSPACE PROVOST_HOME PROVOST_CONTEXT_COLUMNS PROVOST_QUIET
     unset QD_OPERATOR PROVOST_OPERATOR
     # Every case files into a store of its own; QD_PROVOST_BATCH=0 from
@@ -360,6 +365,230 @@ ssh_calls() {
         n=$(grep -c '^ssh ' "$FAKE_SSH_LOG" 2>/dev/null) || n=0
     fi
     printf '%s\n' "$n"
+}
+
+# -- fake srun, scontrol, pdsh, pdcp and clush --------------------------------
+#
+# One stand-in, called by each name, that reaches the same fake hosts as
+# the fake ssh ($FAKE_ROOT/<host>, .unreachable) and says what the real
+# tool says: srun's "task 0: Exited with exit code N" and step errors,
+# pdsh's and clush's "host: " before every line -- with the hosts' lines
+# interleaved as they come -- and their own "exited with exit code" and
+# "command timeout" lines.  Put on PATH ahead of anything real, and every
+# call is logged in $FAKE_SSH_LOG.  A host with .nopdcp has no pdcp.
+
+install_fake_launchers() {
+    cat > "$FAKE_BIN/qd-fake-launcher" <<'EOF'
+#!/usr/bin/env python3
+import os, re, signal, subprocess, sys, threading, time
+tool = os.path.basename(sys.argv[0])
+args = sys.argv[1:]
+root = os.environ["FAKE_ROOT"]
+lock = threading.Lock()
+
+def log(text):
+    with open(os.environ["FAKE_SSH_LOG"], "a") as f:
+        f.write(text + "\n")
+
+def say(stream, text):
+    with lock:
+        stream.write(text + "\n")
+        stream.flush()
+
+def expand(spec):
+    out = []
+    for part in re.findall(r"[^,\[]+(?:\[[^\]]*\][^,\[]*)*", spec):
+        m = re.match(r"^([^\[]*)\[([^\]]*)\](.*)$", part)
+        if not m:
+            out.append(part)
+            continue
+        for r in m.group(2).split(","):
+            a, _, b = r.partition("-")
+            for n in range(int(a), int(b or a) + 1):
+                for tail in expand(m.group(3)) if m.group(3) else [""]:
+                    out.append(m.group(1) + str(n).zfill(len(a)) + tail)
+    return out
+
+def state(host):
+    d = os.path.join(root, host)
+    if not os.path.isdir(d):
+        return d, "unknown"
+    if os.path.exists(os.path.join(d, ".unreachable")):
+        return d, "unreachable"
+    return d, "ok"
+
+def run(argv, cwd, host, timeout, out, err, stdin=None):
+    env = dict(os.environ, FAKE_HOST=host, SLURMD_NODENAME=host)
+    p = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, stdin=stdin,
+                         start_new_session=True)
+    def pump(f, fn):
+        for raw in iter(f.readline, b""):
+            fn(raw.decode("utf-8", "replace").rstrip("\n"))
+    ts = [threading.Thread(target=pump, args=(p.stdout, out)),
+          threading.Thread(target=pump, args=(p.stderr, err))]
+    for t in ts:
+        t.start()
+    try:
+        rc = p.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, signal.SIGKILL)
+        p.wait()
+        rc = None
+    for t in ts:
+        t.join()
+    return rc
+
+def opts(names_with_value, flags=()):
+    got, rest = {}, list(args)
+    while rest and rest[0].startswith("-") and rest[0] != "--":
+        a = rest.pop(0)
+        if a in flags:
+            got[a] = True
+        elif a in names_with_value:
+            got[a] = rest.pop(0)
+        elif a[:2] in names_with_value and len(a) > 2:
+            got[a[:2]] = a[2:]
+        else:
+            say(sys.stderr, "%s: unknown option %s" % (tool, a))
+            sys.exit(2)
+    if rest and rest[0] == "--":
+        rest.pop(0)
+    return got, rest
+
+if tool == "scontrol":
+    if args[:2] != ["show", "hostnames"]:
+        sys.exit(1)
+    log("scontrol " + args[2])
+    for h in expand(args[2]):
+        print(h)
+    sys.exit(0)
+
+if tool == "srun":
+    o, cmd = opts(("-N", "-n", "-w"), ("--overlap",))
+    host = o.get("-w", "")
+    log("srun %s %s" % (host, " ".join(cmd[2:] if cmd[:2] == ["sh", "-c"]
+                                       else cmd)))
+    if not os.environ.get("SLURM_JOB_ID"):
+        say(sys.stderr, "srun: error: no allocation here (the fake asks for none)")
+        sys.exit(1)
+    if "--overlap" not in o:
+        say(sys.stderr, "srun: Job step creation temporarily disabled, retrying")
+        sys.exit(1)
+    d, st = state(host)
+    if st == "unknown":
+        say(sys.stderr, "srun: error: Unable to create step for job %s: "
+            "Invalid node name specified" % os.environ["SLURM_JOB_ID"])
+        sys.exit(1)
+    if st == "unreachable":
+        say(sys.stderr, "srun: error: Unable to create step for job %s: "
+            "Requested node configuration is not available"
+            % os.environ["SLURM_JOB_ID"])
+        sys.exit(1)
+    env = dict(os.environ, FAKE_HOST=host, SLURMD_NODENAME=host)
+    p = subprocess.Popen(cmd, cwd=d, env=env, start_new_session=True)
+    def stop(sig, frame):
+        os.killpg(p.pid, signal.SIGKILL)
+        sys.exit(143)
+    signal.signal(signal.SIGTERM, stop)
+    rc = p.wait()
+    if rc != 0:
+        say(sys.stderr, "srun: error: %s: task 0: Exited with exit code %d"
+            % (host, rc))
+    sys.exit(rc)
+
+if tool in ("pdsh", "pdcp", "clush"):
+    o, rest = opts(("-f", "-t", "-u", "-l", "-w", "--dest"), ("--copy",))
+    hosts = o["-w"].split(",")
+    own = {"pdsh": "pdsh@fake: ", "pdcp": "pdcp@fake: ",
+           "clush": "clush: "}[tool]
+    exit_word = "ssh exited" if tool != "clush" else "exited"
+    copying = tool == "pdcp" or "--copy" in o
+    if tool == "clush" and copying and "--dest" in rest:
+        i = rest.index("--dest")
+        o["--dest"] = rest[i + 1]
+        rest = rest[:i] + rest[i + 2:]
+    log("%s %s %s%s" % (tool, o["-w"], "--copy " if "--copy" in o else "",
+                         " ".join(rest)))
+    timeout = float(o["-u"]) if "-u" in o else None
+    bad = [0]
+    sem = threading.Semaphore(int(o.get("-f", "32")))
+
+    def one(host):
+        with sem:
+            d, st = state(host)
+            if st != "ok":
+                why = ("ssh: connect to host %s port 22: Connection timed out"
+                       % host) if st == "unreachable" else \
+                    ("ssh: Could not resolve hostname %s: Name or service "
+                     "not known" % host)
+                say(sys.stderr, "%s: %s" % (host, why))
+                say(sys.stderr, "%s%s: %s with exit code 255" % (own, host, exit_word))
+                bad[0] = 1
+                return
+            if copying:
+                if tool == "pdcp":
+                    files, dest = rest[:-1], rest[-1]
+                else:
+                    files, dest = rest, o["--dest"]
+                if tool == "pdcp" and os.path.exists(os.path.join(d, ".nopdcp")):
+                    say(sys.stderr, "%s: bash: pdcp: command not found" % host)
+                    say(sys.stderr, "%s%s: %s with exit code 127" % (own, host, exit_word))
+                    bad[0] = 1
+                    return
+                target = os.path.join(d, dest.lstrip("/"))
+                for f in files:
+                    try:
+                        with open(f, "rb") as src, open(os.path.join(
+                                target, os.path.basename(f)), "wb") as dst:
+                            dst.write(src.read())
+                    except (IOError, OSError) as exc:
+                        say(sys.stderr, "%s: scp: %s" % (host, exc))
+                        bad[0] = 1
+                        return
+                return
+            rc = run(["bash", "-c", " ".join(rest)], d, host, timeout,
+                     lambda t: say(sys.stdout, "%s: %s" % (host, t)),
+                     lambda t: say(sys.stderr, "%s: %s" % (host, t)),
+                     subprocess.DEVNULL)
+            if rc is None and tool == "clush":
+                timed.append(host)      # said once, for them all, below
+                bad[0] = 1
+            elif rc is None:
+                say(sys.stderr, "%s%s: command timeout" % (own, host))
+                bad[0] = 1
+            elif rc != 0:
+                say(sys.stderr, "%s%s: %s with exit code %d" % (own, host, exit_word, rc))
+                bad[0] = 1
+
+    timed = []
+    ts = [threading.Thread(target=one, args=(h,)) for h in hosts]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    if timed:
+        # clush names the hosts that timed out as one folded node set
+        m = [re.match(r"^(\D+)(\d+)$", h) for h in sorted(timed)]
+        if len(timed) > 1 and all(m) and len(set(x.group(1) for x in m)) == 1:
+            folded = "%s[%s]" % (m[0].group(1), ",".join(x.group(2) for x in m))
+        else:
+            folded = ",".join(sorted(timed))
+        say(sys.stderr, "clush: %s: command timeout" % folded)
+    sys.exit(bad[0])
+EOF
+    chmod +x "$FAKE_BIN/qd-fake-launcher"
+    local t
+    for t in srun scontrol pdsh pdcp clush; do
+        ln -sf qd-fake-launcher "$FAKE_BIN/$t"
+    done
+    export PATH="$FAKE_BIN:$PATH"
+}
+
+# A Slurm allocation, as salloc leaves one in the environment.
+in_allocation() {
+    export SLURM_JOB_ID="${1:-4242}" SLURM_JOB_NODELIST="${2:-node[01-03]}"
+    export SLURM_JOB_PARTITION="${3:-batch}"
 }
 
 # -- a stand-in doe ------------------------------------------------------------

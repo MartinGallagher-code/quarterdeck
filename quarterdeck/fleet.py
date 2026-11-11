@@ -92,6 +92,12 @@ class Flooded(int):
     itself, as TimedOut is."""
 
 
+class Unlaunched(int):
+    """255 for a host the launcher never reached -- srun could not make
+    the step, pdsh or clush had no answer from it -- told apart from a
+    command on the host that exited 255 itself."""
+
+
 class Result(object):
     __slots__ = ("host", "outcome", "rc", "stdout", "stderr", "duration",
                  "started", "pass_no", "left_running")
@@ -241,6 +247,21 @@ class Reuse(object):
 
 
 class Runner(object):
+    """The ssh launcher: one ssh per host, scp for pushed files.  The
+    others (quarterdeck/launch.py: srun, pdsh, clush) are subclasses that
+    change how a host is reached and nothing about what is kept."""
+
+    via = "ssh"
+    # pdsh and clush answer for every host in one call (run_many)
+    batched = False
+    # seconds a launcher is given to stop after SIGTERM before SIGKILL:
+    # killing srun outright leaves its step running on the node
+    stop_grace = 0
+    # every command goes out after MARK_SH, and one qd gives up on is
+    # stopped on the host by a second ssh (QD-026).  srun stops its own
+    # step (stop_grace); pdsh and clush have no second call to make.
+    marks = True
+
     def __init__(self, ssh="ssh", scp="scp", user=None, timeout=60,
                  max_output=4 * 1024 * 1024, remote_dir="/var/tmp",
                  sudo=False, ssh_config=None, reuse=None):
@@ -298,6 +319,38 @@ class Runner(object):
             argv += ["-p", str(host.port)]
         return argv + [self.target(host), command]
 
+    def argv(self, host, command):
+        """How `command` is run on one host."""
+        return self.ssh_argv(host, command)
+
+    def needs(self, pushing, stdin=False):
+        """The commands this launcher runs here, to check before any host
+        is contacted."""
+        return [self.ssh[0]] + ([self.scp[0]] if pushing else [])
+
+    def check_hosts(self, hosts):
+        """Why this launcher cannot reach these hosts, or None."""
+        return None
+
+    def context(self):
+        """(key, value) pairs every answer's prologue carries: srun's job."""
+        return []
+
+    def run_fields(self):
+        """Fields of the qd.runs row: how the hosts were reached."""
+        return {"via": self.via}
+
+    def _stop(self, p):
+        """End a launcher that ran too long or said too much."""
+        if self.stop_grace:
+            p.terminate()
+            try:
+                p.wait(timeout=self.stop_grace)
+                return
+            except subprocess.TimeoutExpired:
+                pass
+        p.kill()
+
     def _note_master(self, host):
         """With --reuse, a host this run connects to, so its master is
         closed when the command ends."""
@@ -317,7 +370,7 @@ class Runner(object):
         --dry-run leaves out (`marked`) so the command can be read."""
         if pushed:
             command = "cd %s && %s" % (shlex.quote(self.work_dir), command)
-        if not marked:
+        if not marked or not self.marks:
             return self.wrap(command)
         return "sh -c %s; %s" % (shlex.quote(MARK_SH % self.mark),
                                  self.wrap(command))
@@ -414,7 +467,7 @@ class Runner(object):
                 # them and ran on, past the deadline
                 timed_out = True
         if timed_out or flooded:
-            p.kill()
+            self._stop(p)
             p.wait()
         for f in (p.stdout, p.stderr):
             f.close()
@@ -460,6 +513,18 @@ class Runner(object):
             if os.path.basename(f) == SENTINEL:
                 return 1, ("qd: cannot push a file named %s: it is the "
                            "mark qd leaves in its own directory" % SENTINEL)
+        rc, out, err = self._exec(self.argv(host, self.mkdir_command()),
+                                  60)
+        if rc != 0:
+            return rc, err
+        if host.name not in self._made:
+            self._made[host.name] = "qd-made-parent" in out
+        return self._copy(host, files)
+
+    def mkdir_command(self):
+        """The shell that makes this run's directory on a host, or finds
+        it there already from an earlier pass, and refuses anything else.
+        It prints qd-made-parent when it made --remote-dir as well."""
         d, w = shlex.quote(self.remote_dir), shlex.quote(self.work_dir)
         # mkdir -m 700 refuses a path that is there already, so nothing
         # someone else put there (a directory, a link) is written into; a
@@ -468,20 +533,18 @@ class Runner(object):
         rid = shlex.quote(self.run_id)
         # a directory this run makes gets the sentinel at once; one that is
         # there already (a later pass) must hold this run's
-        cmd = ("{ [ -d %s ] || echo qd-made-parent; } && mkdir -p %s && "
-               "{ { mkdir -m 700 %s 2>/dev/null && "
-               "printf '%%s\\n' %s > %s; } || "
-               "{ [ -d %s ] && [ ! -L %s ] && [ -O %s ] && [ ! -L %s ] && "
-               "[ \"$(cat %s 2>/dev/null)\" = %s ]; } || "
-               "{ echo %s >&2; exit 1; }; }") % (
-                   d, d, w, rid, s, w, w, w, s, s, rid, shlex.quote(
-                       "qd: %s is there already, and is not this run's"
-                       % self.work_dir))
-        rc, out, err = self._exec(self.ssh_argv(host, cmd), 60)
-        if rc != 0:
-            return rc, err
-        if host.name not in self._made:
-            self._made[host.name] = "qd-made-parent" in out
+        return ("{ [ -d %s ] || echo qd-made-parent; } && mkdir -p %s && "
+                "{ { mkdir -m 700 %s 2>/dev/null && "
+                "printf '%%s\\n' %s > %s; } || "
+                "{ [ -d %s ] && [ ! -L %s ] && [ -O %s ] && [ ! -L %s ] && "
+                "[ \"$(cat %s 2>/dev/null)\" = %s ]; } || "
+                "{ echo %s >&2; exit 1; }; }") % (
+                    d, d, w, rid, s, w, w, w, s, s, rid, shlex.quote(
+                        "qd: %s is there already, and is not this run's"
+                        % self.work_dir))
+
+    def _copy(self, host, files):
+        """The files into this run's directory on a host, executable."""
         argv = list(self.scp) + self.ssh_options()
         if host.port:
             argv += ["-P", str(host.port)]
@@ -493,7 +556,7 @@ class Runner(object):
         names = " ".join(shlex.quote("%s/%s" % (self.work_dir,
                                                 os.path.basename(f)))
                          for f in files)
-        rc, _, err = self._exec(self.ssh_argv(host, "chmod +x %s" % names), 60)
+        rc, _, err = self._exec(self.argv(host, "chmod +x %s" % names), 60)
         return rc, err
 
     def cleanup(self, host):
@@ -509,7 +572,7 @@ class Runner(object):
         if self._made[host.name]:
             cmd += " && { rmdir %s 2>/dev/null || true; }" % shlex.quote(
                 self.remote_dir)
-        rc, _, err = self._exec(self.ssh_argv(host, self.wrap(cmd)), 60)
+        rc, _, err = self._exec(self.argv(host, self.wrap(cmd)), 60)
         if rc == 0:
             return ""
         first = (err or "").strip().splitlines()
@@ -535,10 +598,10 @@ class Runner(object):
                 r.duration = time.monotonic() - t0
                 return r
         rc, out, err, group = self._capture(
-            self.ssh_argv(host, self.command_for(command, bool(push))),
-            self.timeout, stdin, marked=True)
+            self.argv(host, self.command_for(command, bool(push))),
+            self.timeout, stdin, marked=self.marks)
         r.rc, r.stdout, r.stderr = rc, out, err
-        if isinstance(rc, (TimedOut, Flooded)):
+        if self.marks and isinstance(rc, (TimedOut, Flooded)):
             # qd has given up on it, and killed its ssh; the command is
             # stopped on the host too, or the row says it may not be
             why = self.stop(host, group)
@@ -558,22 +621,26 @@ class Runner(object):
                 r.stderr = (r.stderr.rstrip("\n") + "\n" if r.stderr
                             else "") + left
         r.duration = time.monotonic() - t0
+        r.outcome = self.outcome_of(rc, out, err)
+        return r
+
+    def outcome_of(self, rc, out, err):
         if isinstance(rc, TimedOut):
-            r.outcome = TIMEOUT
-        elif rc == 255:
+            return TIMEOUT
+        if rc == 255:
             # 255 is ssh's own failure; anything from the remote shell
             # comes back as that command's status instead -- 127, command
             # not found (sudo, say), is a host that answered.
             low = (err or "").lower()
-            r.outcome = UNREACHABLE if (
+            return UNREACHABLE if (
                 "connect" in low or "resolve" in low or "route" in low
                 or "cannot run" in low
                 or "refused" in low or "timed out" in low
                 or "permission denied" in low or "no such host" in low
                 or not out) else FAILED
-        elif rc != 0:
-            r.outcome = FAILED
-        return r
+        if rc != 0:
+            return FAILED
+        return OK
 
 
 def guarded_rm(work_dir, run_id):
@@ -686,24 +753,33 @@ def fit_jobs(jobs, limits=None):
 
 
 def run_passes(hosts, fn, jobs, count=1, every=0.0, sleep=time.sleep,
-               gate=None):
+               gate=None, many=None):
     """`count` passes over the fleet, one starting every `every` seconds.
 
     A pass that runs longer than the interval is followed straight away by
     the next rather than overlapping it.  Ctrl-C between or during passes
     keeps every pass that finished.  `gate` (pacing.Gate) caps hosts
-    per attribute value and spaces their starts.  -> (results, interrupted)
+    per attribute value and spaces their starts.  `many(hosts, k, label)`
+    is a launcher that answers for every host in one call (pdsh, clush):
+    a pass is that one call, unless the gate has to space the hosts out.
+    -> (results, interrupted)
     """
     results = []
     interrupted = False
-    jobs, note = fit_jobs(min(jobs, max(1, len(hosts))))
-    if note:
-        sys.stderr.write("qd: %s\n" % note)
+    gated = gate is not None and gate.active()
+    if many is None or gated:
+        many = None
+        jobs, note = fit_jobs(min(jobs, max(1, len(hosts))))
+        if note:
+            sys.stderr.write("qd: %s\n" % note)
     try:
         for k in range(1, count + 1):
             t0 = time.monotonic()
             label = "pass %d/%d: " % (k, count) if count > 1 else ""
-            if gate is not None and gate.active():
+            if many is not None:
+                results.extend(many(hosts, k, label))
+                progress_done()
+            elif gated:
                 from .pacing import gated_fan_out
                 results.extend(gated_fan_out(
                     hosts, lambda h, k=k: fn(h, k), jobs, gate,
