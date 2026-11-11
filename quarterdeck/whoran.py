@@ -7,6 +7,11 @@ machine qd ran on.  A fan-out records how it reached the hosts as well:
 the launcher (--via), the ssh user, the fingerprint of the key it offered,
 whether it ran under sudo, and srun's job.  Anything that cannot be found out is left blank -- blank is
 "not recorded", never a guess -- and nothing here ever stops a run.
+
+`qd doctor HOST` reads ssh's view of a host here too (ssh_settings and
+the lookups after it): what qd's ssh resolves from the config, whether a
+master is open, a Kerberos ticket held, a certificate in date.  None of
+them contacts the host.
 """
 
 import getpass
@@ -61,7 +66,7 @@ def _out(argv):
 def resolved_user(runner, host):
     """The user ssh config gives `host`, as `ssh -G` prints it; None if
     that cannot be found out (not OpenSSH 6.8+, a wrapper, a timeout)."""
-    argv = list(runner.ssh) + ["-G"]
+    argv = list(runner.ssh) + runner.config_options() + ["-G"]
     if host.port:
         argv += ["-p", str(host.port)]
     text = _out(argv + [host.addr])
@@ -150,6 +155,116 @@ def ssh_key(runner):
             fps.extend(got)
         return " ".join(fps)
     return " ".join(_fingerprints(_out(["ssh-add", "-l"])))
+
+
+def _host_argv(runner, host):
+    """qd's ssh for `host` up to the host: its options, and -l and -p."""
+    argv = list(runner.ssh) + runner.ssh_options()
+    if runner.user:
+        argv += ["-l", runner.user]
+    if host.port:
+        argv += ["-p", str(host.port)]
+    return argv
+
+
+def ssh_settings(runner, host):
+    """What qd's ssh resolves for `host`, with qd's own options, the
+    config file and the user: `ssh -G`, which reads the config and
+    contacts nothing.  -> ([(key, value)] in ssh's order, keys in lower
+    case, a key repeated as ssh repeats it; '') or (None, why not)."""
+    return _dash_g(_host_argv(runner, host) + ["-G", host.addr])
+
+
+def first_hop(spec):
+    """The first bastion of a ProxyJump value (`[user@]host[:port]`, comma
+    separated, or ssh://...) -> (user, host, port), any of them blank."""
+    first = spec.split(",")[0].strip()
+    if "://" in first:
+        first = first.split("://", 1)[1]
+    user, _, hp = first.rpartition("@")
+    port = ""
+    if hp.startswith("["):
+        host, _, rest = hp[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else ""
+    elif hp.count(":") == 1:
+        host, _, port = hp.partition(":")
+    else:
+        host = hp
+    return user, host, port if port.isdigit() else ""
+
+
+def hop_settings(runner, spec):
+    """The first bastion of a ProxyJump, as ssh resolves it for the hop.
+    ssh reaches a bastion with a second ssh, which is given the config
+    file (-F) and nothing else of the command line: none of qd's -o
+    options.  So this is the config alone.  -> as ssh_settings, and the
+    bastion's name."""
+    user, host, port = first_hop(spec)
+    argv = list(runner.ssh) + runner.config_options()
+    if user:
+        argv += ["-l", user]
+    if port:
+        argv += ["-p", port]
+    pairs, why = _dash_g(argv + ["-G", host])
+    return host, pairs, why
+
+
+def _dash_g(argv):
+    try:
+        p = subprocess.run(argv, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                           timeout=LOOKUP_TIMEOUT)
+    except OSError as exc:
+        return None, "cannot run %s: %s" % (argv[0], exc)
+    except subprocess.SubprocessError:
+        return None, "ssh -G took longer than %d s" % LOOKUP_TIMEOUT
+    if p.returncode != 0:
+        said = [ln.strip() for ln in p.stderr.decode(
+            "utf-8", "replace").splitlines() if ln.strip()]
+        return None, said[0] if said else "ssh -G: exit %d" % p.returncode
+    pairs = []
+    for ln in p.stdout.decode("utf-8", "replace").splitlines():
+        k, _, v = ln.strip().partition(" ")
+        if k:
+            pairs.append((k.lower(), v.strip()))
+    return pairs, ""
+
+
+def master_running(runner, host):
+    """Whether a master is open for `host` at the ControlPath its config
+    names (`ssh -O check`: the local socket, not the host)."""
+    argv = _host_argv(runner, host) + ["-O", "check", host.addr]
+    try:
+        p = subprocess.run(argv, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL,
+                           stdin=subprocess.DEVNULL, timeout=LOOKUP_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return p.returncode == 0
+
+
+def kerberos_ticket():
+    """True when a Kerberos ticket is held (`klist -s`), False when not,
+    None when there is no klist to ask."""
+    try:
+        p = subprocess.run(["klist", "-s"], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL,
+                           stdin=subprocess.DEVNULL, timeout=LOOKUP_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return p.returncode == 0
+
+
+def certificate_validity(path):
+    """A certificate's `Valid:` line as ssh-keygen -L prints it ("from
+    2026-11-10T08:00:00 to 2026-11-11T08:00:00", "forever"), or None when
+    it cannot be read."""
+    text = _out(["ssh-keygen", "-L", "-f", os.path.expanduser(path)])
+    for ln in (text or "").splitlines():
+        k, _, v = ln.strip().partition(":")
+        if k == "Valid" and v.strip():
+            return v.strip()
+    return None
 
 
 def fan_out(runner, hosts, jobs=8):

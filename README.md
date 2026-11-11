@@ -60,8 +60,10 @@ pip install ./quarterdeck                # or put qd (and quarterdeck) on PATH
 qd itself is Python 3.6+, standard library only. It needs provost to keep
 anything (`--no-store` runs without it); binnacle gives it its probes'
 instruments and campaigns' muster, and `doe` its designs, each found on
-`PATH` or where `QD_<TOOL>` points. Nothing is installed on the fleet and
-nothing is left running there. All it needs is key-based ssh, which the
+`PATH` or where `QD_<TOOL>` points. Nothing is installed on the fleet, and
+a command qd gives up on (past `--timeout` or `--max-output`) is stopped
+there, not only its ssh; where qd cannot confirm that, it says so (see
+*When a host takes too long*). All it needs is key-based ssh, which the
 rest of the toolchain needs anyway.
 
 ---
@@ -150,7 +152,7 @@ host accepted is not known without connecting, so `ssh_key` lists every
 one offered. With `--via` other than ssh, `ssh_user` is the `--user`
 given (pdsh's and clush's `-l`) or blank, and `ssh_key` is blank: their
 ssh is configured apart from qd's. Runs filed before 0.8.2 have none of
-these columns, and runs before 0.11.0 no `via` or `sched_job`; they show
+these columns, and runs before 0.13.0 no `via` or `sched_job`; they show
 blank. qd also passes the operator to provost as `PROVOST_OPERATOR` (unless
 you set it yourself), for a provost that records it (PV-027); provost
 2.3.0 does not yet.
@@ -440,6 +442,30 @@ agree's sense of each), `rc`, `duration_s`, `error` (the first line of what
 went wrong) and `capture` (provost's id for the answer), then what provost
 read.
 
+### When a host takes too long
+
+A host whose command runs past `--timeout`, or sends more than
+`--max-output`, is given up on: its row is `timeout` (or `failed`, rc
+125, past the cap), and the command is **stopped on the host**. Killing
+the local ssh is not enough: ssh asks for no terminal, so the host's sshd
+does not hang the command up, and it would go on loading the host after
+qd reported it finished (pdsh, pssh and parallel-ssh document the same of
+theirs). So every command goes out after one line written to stderr,
+which qd takes off again: the process group sshd started the command in.
+When qd gives up, a second ssh sends that group TERM, then KILL 2 s later,
+under `sudo -n` with `--sudo`; children it started go with it (not a
+daemon that left for a session of its own). `--script` and `--push`
+files are removed only after that.
+
+The row's `error` says which: `timed out after 60s; qd stopped it on the
+host`, or `..., and may still be running on the host: qd could not stop
+it (why)` when the host could not be reached again, a part of the command
+ran as another user, or the host never said where it ran. Such a host is
+named on the run's summary (`NOT STOPPED`, `--quiet` too) and in its note
+(`qd log RUN`), and its `--script`/`--push` directory is left there with
+the command. A command that finishes in time comes back exactly as
+before.
+
 ### Over time
 
 ```bash
@@ -458,7 +484,7 @@ Ctrl-C, and every pass that finished is kept.
 | `--script FILE -- ARGS` | push FILE, run it with ARGS, remove it again |
 | `--push FILE` | copy a file over first (repeatable); the command runs beside it, in a directory of the run's own in `--remote-dir` |
 | `--sudo` | run under `sudo -n` |
-| `--dry-run` | print the ssh (or srun) command per host, or the one pdsh or clush call; contact nothing |
+| `--dry-run` | print the ssh (or srun) command per host, or the one pdsh or clush call; an ssh command less the line ahead of it that lets qd stop it (see *When a host takes too long*); contact nothing |
 | `--first N` | the first N hosts only, the canary before the fleet |
 | `--limit N` | refuse to run wider than N hosts without `--yes` |
 | `--no-store` | print the answers, keep nothing |
@@ -522,6 +548,123 @@ hosts already hold, or a quoting trick gets past any list of patterns.
 It stops the mistakes and the out-of-scope commands; the real control is
 the account's own ssh and sudo rights on the hosts.
 
+### Bastions, certificates, Kerberos and MFA
+
+qd runs the system's OpenSSH (`ssh`, `scp`) with three options of its
+own: `BatchMode=yes`, `ConnectTimeout=8` and
+`StrictHostKeyChecking=accept-new`. Everything else comes from your ssh
+config, so whatever it can do, qd does: a bastion, certificates, Kerberos,
+a connection held open. Two flags help, and `qd doctor HOST` shows what
+ssh will do for a host before anything runs.
+
+| | |
+|---|---|
+| `--ssh-config FILE` (`QD_SSH_CONFIG`) | ssh and scp read FILE (`ssh -F`) instead of `~/.ssh/config`: a test event's own config, and yours untouched. `qd doctor`, the `ssh_user` a run records and a remote store's git read it too |
+| `--reuse` (`QD_SSH_REUSE=1`) | one ssh login per host for the whole command (below) |
+| `qd doctor HOST` | what qd's ssh resolves for HOST (`ssh -G`, which reads the config and contacts nothing): user, port, the bastion and the bastion's own settings, the certificate and the dates it is valid, the identity files that exist, Kerberos and whether a ticket is held, a master and whether it is open, BatchMode. `--ssh-config`, `--user` and `--ssh` as for `qd run` |
+
+**`BatchMode=yes` means nothing can be typed.** No password, passphrase,
+one-time code or "are you sure?" about a host key: anything that would
+ask fails that host instead, reported unreachable with ssh's reason. That
+is what you want across five hundred hosts, and it means every setup below
+logs in without a prompt: a key in an agent, a certificate, a Kerberos
+ticket, or a master already open.
+
+**A bastion (ProxyJump).**
+
+```
+Host bastion
+    HostName bastion.example.mil
+    User ops
+    BatchMode yes
+    StrictHostKeyChecking yes      # its key already in known_hosts
+Host node-* 10.20.*
+    ProxyJump bastion
+    User ops
+```
+
+```bash
+qd doctor node-01 --ssh-config event.cfg
+qd run --ssh-config event.cfg -s hosts.txt --rate 10/s --reuse -- uname -r
+```
+
+ssh reaches the bastion with a second ssh, which reads the config file
+and **none of qd's `-o` options**. So the bastion's own `Host` block needs
+`BatchMode yes`, or that hop can stop at a prompt on your terminal in the
+middle of a run. Its host key must be known already, or that block must
+say `StrictHostKeyChecking accept-new`: qd's `accept-new` does not reach
+it. `qd doctor` shows the bastion's own settings and says when one would
+stop a run. `--rate` keeps qd inside the bastion's `MaxStartups` (see At
+scale), and `--reuse` makes one hop per host instead of one per call.
+
+**SSH certificates.** ssh offers `KEY-cert.pub` beside `KEY` by itself;
+name one kept elsewhere with `CertificateFile`:
+
+```
+Host node-*
+    IdentityFile ~/.ssh/id_ed25519
+    CertificateFile ~/.ssh/id_ed25519-cert.pub
+```
+
+`qd doctor HOST` shows the certificate ssh will offer and its `Valid:`
+dates (`ssh-keygen -L`). A certificate past its date is the usual reason a
+whole fleet starts refusing at once.
+
+**Kerberos (GSSAPI).** With a ticket (`kinit`) and
+
+```
+Host *.example.mil
+    GSSAPIAuthentication yes
+    GSSAPIDelegateCredentials no
+```
+
+ssh logs in with the ticket, and nothing is asked. Get the ticket before
+the run, and one that outlasts it: qd cannot renew it. `qd doctor HOST`
+says whether GSSAPI is on for the host and whether `klist -s` finds a
+ticket.
+
+**MFA (a one-time code, a card PIN).** A login that asks for a code
+cannot happen under BatchMode. Open a master to each host, or only to the
+bastion where only the bastion asks, by hand, once; every call qd makes
+then rides on it:
+
+```
+Host bastion node-*
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%C
+    ControlPersist 8h
+```
+
+```bash
+ssh -fN bastion                    # type the code once
+qd doctor node-01                  # controlpath ...: a master is open
+qd run -s hosts.txt -- uptime      # no prompt: the hop rides the master
+```
+
+Leave `--reuse` off for this: it opens masters of its own, in a directory
+of its own, and would not find yours.
+
+**Connection reuse: `--reuse`.** Every call qd makes to a host is a new
+ssh login: a push run makes four or five (make the run's directory, copy,
+`chmod`, run, clean up), and `--every 10 --count 30` thirty. `--reuse`
+makes one per host for the whole command (`ControlMaster`). On a real
+sshd, a push run on one host went from five logins to one
+(`tests/test_ssh.sh`).
+
+- The sockets go in a new directory of this command's own,
+  `qd-ssh-XXXXXXXX`, mode 0700, in `TMPDIR`, or in `/tmp` where `TMPDIR`
+  is too long for a socket's path, as macOS's is (104 bytes on macOS, 108
+  on Linux, and ssh's own name for a socket takes 58 of them). Each
+  socket is `%C`, a hash of the host, port and user.
+- A master idles 60 s for the next call (`ControlPersist`), or, with
+  `--every`, until the next pass.
+- When qd ends (done, failed, Ctrl-C, `kill`, a closed terminal) it
+  closes every master with `ssh -O exit`, which talks to the socket and
+  not the host, and removes the directory. A `kill -9` leaves the masters
+  to close themselves after `ControlPersist`.
+- `--dry-run` shows the options it adds, and `qd probe A B` shares
+  one set of masters between its runs.
+
 ### Every knob has a flag and a variable
 
 | Flag | Variable | Default |
@@ -530,9 +673,11 @@ the account's own ssh and sudo rights on the hosts.
 | `--via` | `QD_VIA` | `ssh`; or `srun`, `pdsh`, `clush` (see Reaching the hosts) |
 | `--user` | `QD_SSH_USER` | your ssh config |
 | `--jobs` | `QD_JOBS` | 32 hosts at once |
-| `--timeout` | `QD_TIMEOUT` | 60 s per host |
-| `--max-output` | `QD_MAX_OUTPUT` | 4 MiB per host; past it the host is killed and reported |
+| `--timeout` | `QD_TIMEOUT` | 60 s per host; past it the command is stopped on the host and reported |
+| `--max-output` | `QD_MAX_OUTPUT` | 4 MiB per host; past it the command is stopped on the host and reported |
 | `--ssh`, `--scp` | `QD_SSH`, `QD_SCP` | `ssh`, `scp` |
+| `--ssh-config` | `QD_SSH_CONFIG` | none: ssh's own, `~/.ssh/config` |
+| `--reuse` | `QD_SSH_REUSE=1` | off: a login per call |
 | `--remote-dir` | `QD_REMOTE_DIR` | `/var/tmp` |
 | `--rate` | `QD_RATE` | none: new connections as fast as `--jobs` allows; `10/s` for a bastion's `MaxStartups` |
 | `--allow` | `QD_ALLOW` | none: every command may run |
@@ -999,8 +1144,9 @@ said and left alone, not filed as this run's. `--import PATH` reads more
 files afterwards, whatever they hold; `--no-import` reads nothing
 back. A tool is found on `PATH`, as an installed module, or wherever
 `QD_<TOOL>` points (`QD_MX="python3 ~/src/matrix_orchestrator/mx"`).
-`qd doctor` says which tools this machine can drive. The exit status is
-the tool's.
+`qd doctor` says which tools this machine can drive (and `qd doctor
+HOST` how ssh reaches a host: see Bastions, certificates, Kerberos and
+MFA). The exit status is the tool's.
 
 Each table read back is filed in provost as a capture of its own, as
 TSV, its notes and display metadata kept with it.
@@ -1031,6 +1177,9 @@ Every reader works on what's *inside* a file, never its name:
   are pairs that weren't measured, and they stay out.
 - **Wide tables**: `Timestamp host rtt (us) loss %`, which is what
   monitoring writes and the viewer reads. A commented-out header works.
+- **Telemetry exports**, with `qd import --telemetry`: Splunk, CloudVision,
+  Prometheus or a gNMI collector's samples, kept as one `time, host,
+  metric, value` table for `qd join` (see *Beside the telemetry*).
 - A BOM, CRLF line ends and a header repeated mid-file are all handled.
 
 ---
@@ -1129,6 +1278,159 @@ anything differs, like `diff(1)`.
 
 ---
 
+## Beside the telemetry: `qd join`
+
+A benchmark row says what a host did. The telemetry another system kept
+says what it was going through at the time: inlet temperature, power draw,
+link errors. `qd join` puts the two side by side, matched by host and by
+**time window**: for each row, each metric's samples from that host
+inside the window it was measured in, reduced to a few figures.
+
+```bash
+qd import splunk-export.csv --telemetry        # keep an export as a dataset
+qd join iperf latest                           # each iperf row, with the mean and max of each metric
+qd join iperf splunk-export.csv --window +-30 --agg mean,max,p99 --metrics 'temp*,power*'
+qd join latest export.csv --map cloudvision.map --alias bmc-names.txt
+qd join iperf latest --where 'inlet_temp_c_max>35' --format csv -o hot.csv
+```
+
+```text
+qd join -- 20261110-180048-iperf:data with 20261110-180051-splunk_csv: 6 rows; 2 metrics x mean, max; window run
+  matched   5 of 6 rows had samples in their window
+  note      windows: each host's own, from qd.hosts: when qd started it and how long it took
+  note      telemetry: 210 samples kept for the run's hosts and windows, of 700 rows read from ...
+  note      1 row with nothing in the window (blank, not 0): node05
+
+host    window_from               window_to                 telemetry_host          inlet_temp_c_mean  inlet_temp_c_max  power_w_mean  power_w_max  rack  ...  mbps
+node01  2026-11-10T18:00:47.109Z  2026-11-10T18:00:48.119Z  node01.dc1.example.com               25.3              26.9         439.9          468  r1    ...  9363
+node03  2026-11-10T18:00:47.109Z  2026-11-10T18:00:48.119Z  node03.dc1.example.com              31.52              32.9         441.8          470  r1    ...  9289
+node05  2026-11-10T18:00:47.110Z  2026-11-10T18:00:48.120Z                                                                                          r2    ...  9215
+```
+
+The joined table is the run's own columns, then `window_from` and
+`window_to` (UTC, to the millisecond), `telemetry_host` (what the
+telemetry called the host), and a `METRIC_FIGURE` column for each metric
+and figure. In text the host comes first and the figures next, since a
+terminal cuts from the right; `--format` writes the table in its own
+order. `--where` reads the joined columns, so it can filter on the
+telemetry. **A row with no sample in its window gets blanks, never
+zeros**, a `count` included, and the notes name those rows. When no row
+had any telemetry at all, the exit status is 1, and the notes say the
+likeliest reason: names that matched no host, or a window or zone that
+missed.
+
+**The windows.**
+
+| The rows are | Each row's window |
+|---|---|
+| a fan-out (`qd run`, a probe, a campaign's part, a design point) | its host's own, from `qd.hosts`: when qd started it (`ts`) and how long it took (`duration_s`), per pass |
+| `qd do` | the run's own start and finish |
+| anything, with `--time COL` | the row's own time, `--window +-N` either side of it |
+| anything, with `--time START,END` | the row's own start and end |
+
+An import, a `ds:NAME` dataset or a file says nothing of when it was
+measured (an import keeps when it was imported), so those need `--time`.
+`ts` is kept to the millisecond from 0.12.0. Runs filed before kept the
+whole second, so their windows run a second longer to cover what was cut
+off, and the notes say so. A sample counts when its time is at or after
+the start and at or before the end: both edges are in.
+
+**`--window +-N`** widens each window by N seconds either side (`+-30`,
+`30s`, `2m`, `500ms`, `±30`). Telemetry sampled every 30 s may have no
+sample inside a ten-second test at all, and two clocks rarely agree. The
+windows are this machine's clock. The samples carry the hosts' (or their
+collectors'). So `qd join` reads the latest `qd probe skew` in the store
+(binnacle's skew, run on every host), and names each host whose clock was
+further out than the window reaches, with the `--window` that would cover
+it. `--skew RUN` reads another; `--skew none` reads none. Without a skew
+run, the notes say that nothing has checked the clocks.
+
+**Figures (`--agg`)**: `mean` and `max` unless told. Also `min`, `median`,
+`p05`, `p25`, `p75`, `p95`, `p99` (linear between ranks, as `qd stats`),
+`stdev`, `count`, `first` and `last` (by time), and, for counters,
+`delta` (last less first) and `rate` (delta per second). `--metrics`
+keeps some metrics by name or pattern (`'temp*,if_*_errors'`).
+
+**Hosts** are matched by name: the alias file's first, then the run's
+name exactly, then without case, then without a `:port` (Prometheus's
+`instance`), then the short name (`node01` for `node01.dc1.example.com`)
+when only one host of the run has it. A fan-out's addresses count as its
+hosts' names too. A BMC or a switch port has a name of its own, so give an
+alias file, one line per host: the run's name first, then the names the
+telemetry uses.
+
+```text
+# bmc-names.txt: the run's name, then what the telemetry calls it
+node01  node01-bmc  node01-ipmi.oob.example.com
+node02  node02-bmc
+```
+
+The notes list the names in the telemetry that matched no host of the run,
+with how many samples each had, and any name that fits two hosts and so
+matches neither.
+
+### Telemetry exports
+
+`qd` reads an export **from a file**, never from Splunk or CloudVision
+directly. No API client, no credentials, no network. Export with the
+other system's own tools, then join or import the file. Exports can be
+big: `qd join` reads a CSV, TSV or NDJSON export a line at a time and
+keeps only the samples of the run's hosts inside its windows. NDJSON is
+read twice, once for every line's keys, since collectors write different
+fields on different lines. A JSON list is read whole: the standard library
+has no streaming reader for one.
+
+Two shapes are read: **long**, a row per sample (`time, host, metric,
+value`), or **wide**, a column per metric (`time, host, temp, power`).
+Columns are found by name: the time in `_time`, `time`, `timestamp`,
+`ts`, `@timestamp` or `datetime`; the host in `host`, `hostname`,
+`device`, `node`, `instance`, `target`, `server`, `tags.host` or
+`tags.source` (nested JSON keys are joined with dots); the metric in `metric`,
+`metric_name`, `__name__`, `name`, `path`, `key` or `field`; the value in
+`value`, `_value`, `val` or `reading`. With a time and a host but no metric
+and value, every other column is a metric, apart from Splunk's own fields
+(`_*`, `date_*`, `index`, `source`, `sourcetype`, `linecount`, `punct`
+...). Times are epoch seconds, milliseconds, microseconds or nanoseconds
+(told apart by size), or ISO 8601. A time that names no zone is UTC. A
+blank or non-numeric reading is not a sample, and neither is a time that
+cannot be read. The notes count them.
+
+| Export | Usually |
+|---|---|
+| Splunk: `... \| table _time host metric value`, *Export* as CSV | read as it is |
+| Splunk: `... \| timechart span=10s avg(temp) by host` | wide, one column per host: export it `\| untable _time host temp` first, so that each row is one host's sample |
+| Prometheus samples written out as CSV (`timestamp, instance, __name__, value`, say from its HTTP API's `query_range`) | read as it is; `instance`'s `:9100` is ignored |
+| Telegraf's JSON output (NDJSON), from its `gnmi`, `ipmi_sensor` or `redfish` inputs among others | read as it is: `tags.host` (or `tags.source`, gnmi's) is the host and every field a metric (`fields.temp_c`) |
+| CloudVision, or anything else, exported as CSV | a map naming its time and device columns, and its metrics |
+| BMC or switch logs kept in local time | a map with `tz` |
+
+**A column map** (`--map FILE`) says which column is which, for an export
+whose names qd does not know. One `KEY VALUE` a line, `#` for comments:
+
+```text
+# cloudvision.map
+time         Time
+host         Device
+metrics      Inlet Temp, Power Supply 1 Output Power   # wide: these columns
+time_format  %d/%m/%Y %H:%M:%S                         # strptime, when not epoch or ISO 8601
+tz           +01:00                                    # for times that name no zone
+```
+
+Instead of `metrics`, `metric COLUMN` and `value COLUMN` name a long
+export's. `metrics *` takes every other column. `tz` is UTC or a fixed
+offset: a zone name would need Python 3.9, and an export's times are in
+one offset anyway (export in UTC where you can).
+
+**`qd import EXPORT --telemetry`** (or `--map FILE`, or `--alias FILE`)
+keeps an export as a run with one table, `telemetry`: `time` (UTC, ISO
+8601 to the millisecond), `host`, `metric` and `value`, whatever shape it
+arrived in. Several files become one table. `--alias` keeps each alias's
+samples under the run's name for the host. `qd join RUN IMPORT` then reads
+it from the store: from another one with `IMPORT@STORE`, and on the
+**Telemetry** tab of `qd web`.
+
+---
+
 ## In a browser: `qd web`
 
 ```bash
@@ -1162,6 +1464,11 @@ engine's, as everywhere.
   it's one metric), **Trend** (a line per host, with a crosshair and
   tooltip; past eight hosts they're drawn grey and the one you point at
   lifts), **Diff** against any other run, **About** the run.
+- **Telemetry**: `qd join` on the page. Pick telemetry the store keeps
+  (`qd import --telemetry`), a window, the figures and the metrics, and
+  every row of the run comes back with what its host's telemetry said in
+  its window. The filter bar reads the joined columns. The server only
+  joins what is in a store and never reads a file.
 - **Compare**: `qd compare` on the page. The last runs like this one, or
   every run of its campaign or design; a row per run with where the column
   sat and how far it moved from the baseline, then every host's value per
@@ -1393,7 +1700,7 @@ The numbers, and how they were measured, are in
 | | |
 |---|---|
 | 0 | done, and every host answered |
-| 1 | a finding: a host that did not answer, a diff or compare that differs, a check that failed or was not measured, nothing to bin, a report that records any of these |
+| 1 | a finding: a host that did not answer, a diff or compare that differs, a check that failed or was not measured, nothing to bin, a join that found no telemetry in any window, a report that records any of these |
 | 2 | a usage error, or something could not be read or written |
 | other | `qd do` passes on the tool's own |
 
@@ -1442,6 +1749,7 @@ On every pull request and every push to `main` (`.github/workflows/ci.yml`):
 | test (python 3.9 to 3.13) | the whole suite, PyPI's newest provost (`batch`), binnacle, and doe from 3.10 | 3 each, `--shard 1/3` to `3/3` |
 | Python 3.6 compatibility | vermin and the compile check, then the whole suite under a real Python 3.6 in a container, provost's bundle | 3 |
 | test (provost 2.1.0) | the whole suite, one capture at a time | 3 |
+| ssh (a real sshd on loopback) | `test_ssh.sh` with openssh-server installed and `QD_TEST_SSHD=require`: a bastion, `--reuse`, a master opened first, a certificate | 1 |
 | version, web page syntax, shellcheck and the shard check, REUSE, build the wheel | once each | 1 each |
 
 A newer push to a pull request cancels that pull request's run still in
@@ -1463,6 +1771,16 @@ where they write it; muster and the probes' binnacle scripts are the real
 ones where binnacle is installed, and doe too where it is. The explorer is
 driven by a script of keys (`QD_TEST_KEYS`, as binnacle's `rig` does it)
 and the web suite talks to a real server on loopback.
+
+`tests/test_ssh.sh` records every argv the fake ssh and scp are given,
+and then, where `sshd` is installed, starts a real one of its own on
+loopback, as the user running it, to log in through: a ProxyJump through
+it as a bastion, `--reuse`'s one login per host, a master opened
+beforehand carrying a run once the key is withdrawn (the MFA setup), and
+a certificate login. Where there is no sshd those cases are skipped and
+named; `QD_TEST_SSHD=require`, as in CI's ssh job, fails them instead.
+Kerberos is not tested: it needs a KDC. `qd doctor`'s reading of `klist`
+is, with stand-ins.
 
 ---
 
@@ -1504,6 +1822,12 @@ QD_TEST_ONLY=import bash tests/run_tests.sh store   # only its cases whose name 
 
 doehelper wants Python 3.10 or newer; on an older one the doe suite uses its
 stand-in, as CI's 3.9 and 3.6 jobs do.
+
+`tests/check_real_sshd.sh` is not one of the suites either, nor in CI: it
+starts a throwaway sshd on 127.0.0.1 as you (`openssh-server`; it skips
+without one) and checks against real OpenSSH what the fake ssh cannot
+prove, that a command past `--timeout` or `--max-output` is stopped on
+the host (see *When a host takes too long*).
 
 `tests/stress_filing.sh` is not one of the suites: it loops, for a race
 that shows only now and then. It files `qd do` runs of several tables one

@@ -19,13 +19,16 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
        qd baseline set|ls|show|rm              qualified baselines, for
                                                compare --baseline NAME
        qd check RUN --against limits.tsv       pass/fail by requirement
+       qd join RUN TELEMETRY [--window +-30]   beside Splunk/CloudVision/
+                                               Prometheus samples, by host
+                                               and time
        qd report RUN|campaign:NAME --out DIR   an evidence package: data,
                                                manifest, hashes, summary
        qd export RUN [--format overlay]        CSV, JSON, the viewer's TSV,
                                                Splunk HEC, OpenMetrics
        qd web                                  the store in a browser
        qd floor RUN --layout floor.dc          paint it on the floor plan
-       qd hosts | doctor | hints | help
+       qd hosts | doctor [HOST] | hints | help
 
 Examples:
   qd run --servers hosts.txt -- uname -r
@@ -43,6 +46,7 @@ Examples:
   qd baseline set gold iperf --last 5 --peers sku -c mbps
   qd compare iperf --last 5 --baseline gold
   qd diff kernel@wr01 kernel@wr02       qd compare facts@lab facts@bench
+  qd import splunk.csv --telemetry      qd join latest~1 latest --agg max,p99
   qd view latest                        qd web
 
 RUN is latest, latest~1, a run id or a unique part of one, a run's
@@ -385,8 +389,11 @@ def host_row(rid, r):
     # would be another address, on port 22
     addr = ("[%s]" % h.addr if ":" in h.addr and h.port else h.addr) + (
         ":%d" % h.port if h.port else "")
+    # ts to the millisecond: with duration_s it is the host's own window,
+    # which `qd join` lines telemetry up against (a whole second, before
+    # 0.12.0, left the window up to a second short)
     return [rid, h.name, addr if (h.addr != h.name or h.port) else "",
-            str(r.pass_no), "%d" % int(r.started), r.outcome, str(r.rc),
+            str(r.pass_no), "%.3f" % r.started, r.outcome, str(r.rc),
             "%.2f" % r.duration, str(len(r.stdout.encode("utf-8"))),
             r.error(), storemod.join_attrs(h.attrs),
             r.stderr[:STDERR_KEEP]]
@@ -496,14 +503,70 @@ def new_runner(args, hs=None):
     if via == "srun" and args.user:
         warn("--user (QD_SSH_USER) is not used with --via srun: srun runs "
              "as you")
+    ssh_config, reuse = ssh_config_of(args), None
+    if via == "ssh":
+        reuse = reuse_of(args)
+    elif ssh_config or getattr(args, "reuse", False):
+        # pdsh and clush start their own ssh, and srun none
+        warn("--ssh-config and --reuse are ssh's: --via %s does not use "
+             "them" % via)
+        ssh_config = None
     runner = launch.make(via, ssh=args.ssh, scp=args.scp,
                          user=None if via == "srun" else args.user,
                          timeout=args.timeout, max_output=args.max_output,
-                         remote_dir=args.remote_dir, sudo=args.sudo)
+                         remote_dir=args.remote_dir, sudo=args.sudo,
+                         ssh_config=ssh_config, reuse=reuse)
     problem = runner.check_hosts(hs or [])
     if problem:
         die(problem)
     return runner
+
+
+def ssh_config_of(args):
+    """--ssh-config (QD_SSH_CONFIG) as a path ssh reads from any directory,
+    or None."""
+    cfg = getattr(args, "ssh_config", None)
+    if not cfg:
+        return None
+    return os.path.abspath(os.path.expanduser(cfg))
+
+
+def reuse_of(args):
+    """--reuse (QD_SSH_REUSE=1): one fleet.Reuse for the whole command, so
+    a campaign's parts and a probe's runs share each host's connection.
+    main() closes it when the command ends.  -> a Reuse, or None."""
+    if not (getattr(args, "reuse", False) or
+            policymod._truthy(env("SSH_REUSE"))):
+        return None
+    r = getattr(args, "_reuse", None)
+    if r is None:
+        # a master idles this long for the next call; a pass every S
+        # seconds keeps it to the next pass
+        every = getattr(args, "every", None) or 0
+        persist = max(fleet.CONTROL_PERSIST, int(every + 0.999) + 30)
+        r = args._reuse = fleet.Reuse(persist)
+        r.close_on_signals()
+    return r
+
+
+def check_ssh_config(path):
+    if path and not os.path.isfile(path):
+        die("cannot read --ssh-config %s: no such file (QD_SSH_CONFIG) -- "
+            "no host was contacted" % path)
+    if path and not os.access(path, os.R_OK):
+        die("cannot read --ssh-config %s: permission denied "
+            "(QD_SSH_CONFIG) -- no host was contacted" % path)
+
+
+def check_ssh_setup(runner):
+    """--ssh-config is there to read, and --reuse has its directory: both
+    refused before any host is contacted, --dry-run's lines included."""
+    check_ssh_config(runner.ssh_config)
+    if runner.reuse is not None:
+        try:
+            runner.reuse.directory()
+        except OSError as exc:
+            die("--reuse: %s -- no host was contacted" % exc)
 
 
 def check_transport(runner, pushing, stdin=False):
@@ -512,6 +575,7 @@ def check_transport(runner, pushing, stdin=False):
             die("cannot run %s: not found (%s) -- no host was contacted" % (
                 tool, "--ssh/--scp, QD_SSH/QD_SCP" if runner.via == "ssh"
                 else "--via %s" % runner.via))
+    check_ssh_setup(runner)
 
 
 def dry_run_lines(runner, hs, command, push=(), stdin=None, jobs=1):
@@ -525,7 +589,7 @@ def dry_run_lines(runner, hs, command, push=(), stdin=None, jobs=1):
         return
     for h in hs:
         out(" ".join(shlex.quote(a) for a in runner.argv(
-            h, runner.command_for(command, bool(push)))) +
+            h, runner.command_for(command, bool(push), marked=False))) +
             (" < %s" % shlex.quote(stdin) if stdin else ""))
 
 
@@ -559,6 +623,7 @@ def add_own_tables(b, rid, label, command, created, took, hs, results,
     fields = dict(extra or {})
     notes = [n for n in (("interrupted after %s" % plural(
         passes, "pass", "passes")) if interrupted else None,
+        left_running_note(results),
         fields.pop("policy", None), fields.pop("notes", None)) if n]
     b.add_own(storemod.RUNS, filing.own_tsv(storemod.RUN_COLUMNS, [run_row(
         rid, fields.pop("kind", "run"), label, command, created,
@@ -569,6 +634,21 @@ def add_own_tables(b, rid, label, command, created, took, hs, results,
         push_failed=counts.get(fleet.PUSH_FAILED, 0), passes=passes,
         every=every, captures=ncap,
         notes="; ".join(notes) or None, **fields)]))
+
+
+def left_running_note(results):
+    """The hosts where qd gave up on the command and could not stop it
+    there (QD-026), as a run's note and its summary say them; or None."""
+    names = []
+    for r in results:
+        if r.left_running and r.host.name not in names:
+            names.append(r.host.name)
+    if not names:
+        return None
+    shown = ", ".join(names[:8]) + (
+        " and %d more" % (len(names) - 8) if len(names) > 8 else "")
+    return "may still be running on %s, where qd could not stop it: %s" % (
+        plural(len(names), "host"), shown)
 
 
 def say_filing(ncap):
@@ -602,6 +682,7 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
         extra["policy"] = pol.notes()
     runner = new_runner(args, hs)
     if args.dry_run:
+        check_ssh_setup(runner)
         dry_run_lines(runner, hs, command, push, stdin, args.jobs)
         return None
     check_transport(runner, bool(push), bool(stdin))
@@ -778,6 +859,9 @@ def report_run(args, command, hs, job, title=None):
     if interrupted:
         lines.append("  interrupted: kept the %s that finished"
                      % plural(passes, "pass", "passes"))
+    stray = left_running_note(job.results)
+    if stray:
+        lines.append("  NOT STOPPED  the command %s" % stray)
     if entry is not None:
         caps = sorted(entry.captures(), key=storemod.cnum)
         lines.append("  stored   %s in %s  (%s%s)" % (
@@ -1146,10 +1230,15 @@ def cmd_import(args):
     for p in args.paths:
         if not os.path.exists(p):
             die("no such file or directory: %s" % p)
+    telemetry = args.telemetry or args.map or args.alias
     tables = []
-    for p in args.paths:
-        for t in importers.read_path(p, args.as_):
-            tables.append((os.path.abspath(p), t))
+    if telemetry:
+        tables.append((" ".join(os.path.abspath(p) for p in args.paths),
+                       telemetry_import(args)))
+    else:
+        for p in args.paths:
+            for t in importers.read_path(p, args.as_):
+                tables.append((os.path.abspath(p), t))
     created = now_iso()
     rid = new_run_id(st, label)
     b = filing.Batch()
@@ -1171,10 +1260,42 @@ def cmd_import(args):
             plural(len(t.columns), "column"), origin))
     for n in notes:
         lines.append("  note     %s" % n)
-    lines.extend(next_steps([("%s view latest" % PROG, "explore it"),
-                             ("%s stats latest" % PROG, "describe it")]))
+    if telemetry:
+        for n in tables[0][1].notes:
+            lines.append("  #        %s" % n)
+        tips = [("%s join RUN %s" % (PROG, entry.id),
+                 "each row of a run beside these samples, by host and time"),
+                ("%s show %s --limit 20" % (PROG, entry.id),
+                 "the samples as they were kept")]
+    else:
+        tips = [("%s view latest" % PROG, "explore it"),
+                ("%s stats latest" % PROG, "describe it")]
+    lines.extend(next_steps(tips))
     sys.stdout.write(render.page(lines))
     return 0
+
+
+def telemetry_import(args):
+    """`qd import --telemetry`: every path's samples as one table, named
+    telemetry -- time (UTC), host, metric, value -- whatever shape each
+    export arrived in."""
+    cmap = importers.read_map(args.map) if args.map else None
+    aliases = importers.read_aliases(args.alias) if args.alias else None
+    rows, notes = [], []
+    for p in args.paths:
+        if os.path.isdir(p):
+            die("--telemetry reads exports, one file each, and %s is a "
+                "directory" % p)
+        t = importers.telemetry_table(p, cmap, aliases)
+        rows.extend(t.rows)
+        many = len(args.paths) > 1
+        notes.extend(("%s: %s" % (os.path.basename(p), n)) if many else n
+                     for n in t.notes)
+    if not rows:
+        die("no samples in %s: %s" % (" ".join(args.paths), "; ".join(
+            notes[1:]) or "nothing to read"))
+    return tablemod.Table(list(importers.TELEMETRY), rows, "telemetry",
+                          " ".join(args.paths), notes=notes)
 
 
 def cmd_log(args):
@@ -1802,6 +1923,79 @@ def diff_report(a, b, res, args):
         lines.append("")
         lines.append("  no differences")
     return lines
+
+
+# ---------------------------------------------------------------------------
+# join: a run beside another system's telemetry
+# ---------------------------------------------------------------------------
+
+def telemetry_of(args, ref):
+    """The telemetry `qd join` reads: a file, read a line at a time, or a
+    table in a store (REF[:TABLE][@STORE]; a run's `telemetry` table when
+    it has one, as `qd import --telemetry` files it)."""
+    if os.path.exists(ref):
+        return importers.telemetry_source(ref)
+    st, r = ref_store(args, ref)
+    r, tname = split_ref(r)
+    e = st.resolve(r)
+    if tname is None and "telemetry" in e.table_names():
+        tname = "telemetry"
+    t = e.load(tname)
+    return importers.table_source(t, shown_id(e, t.name if len(e.tables) > 1
+                                              else None))
+
+
+def cmd_join(args):
+    from . import join as joinmod
+    st, ref = ref_store(args, args.ref)
+    t = load_ref(st, ref, args.as_)
+    entry = getattr(t, "entry", None)
+    cmap = importers.read_map(args.map) if args.map else None
+    aliases = importers.read_aliases(args.alias) if args.alias else None
+    margin = joinmod.parse_window(args.window)
+    aggs = joinmod.parse_aggs(args.agg)
+    # whose clocks were how far out: the latest `qd probe skew` beside the
+    # run, another named, or none
+    if args.skew == "none":
+        skew = False
+    elif args.skew:
+        skew = joinmod.skew_offsets(*ref_store(args, args.skew))
+    else:
+        skew = joinmod.skew_offsets(st)
+    source = telemetry_of(args, args.telemetry)
+    j = joinmod.join(t, entry, source, cmap, aliases, margin, aggs,
+                     joinmod.split_list(args.metrics),
+                     joinmod.split_list(args.time), args.host_col, skew,
+                     shown_id)
+    s = subset(args, j.table)
+    fmt = args.format or "text"
+    lines = ["%s join -- %s with %s: %s; %s x %s; window %s" % (
+        PROG, source_name(t), source.origin, plural(len(t.rows), "row"),
+        plural(len(j.metrics), "metric"), ", ".join(aggs),
+        joinmod.window_text(margin))]
+    lines.append("  matched   %d of %s had samples in their window" % (
+        j.rows_with, plural(len(t.rows), "row")))
+    for n in j.notes:
+        lines.append("  note      %s" % n)
+    if args.where:
+        lines.append("  where     %s: %s" % (" and ".join(args.where),
+                                             plural(len(s.rows), "row")))
+    lines.append("")
+    shown = s
+    if fmt == "text" and not args.cols:
+        # the row's host first, then what the telemetry said, then the
+        # rest of the run's own columns: a terminal cuts from the right
+        figs = [c for c in s.columns[len(t.columns):]]
+        lead = [c for c in t.columns if c in ("host", "pass") or
+                c == (args.host_col or "")]
+        rest = [c for c in t.columns if c not in lead]
+        shown = s.derive(columns=lead + figs + rest)
+    lines.extend(render.render_table(shown, max_cell=40,
+                                     width=width_of(args)))
+    if not j.rows_with:
+        warn("no row had any telemetry in its window: see the notes")
+    emit(args, s, lines)
+    return 0 if j.rows_with else 1
 
 
 # ---------------------------------------------------------------------------
@@ -3551,6 +3745,9 @@ def cmd_doctor(args):
     via = via_of(args)
     line, ok = launcher_line(via, [r[0] for r in rows if r[1] == "ok"])
     lines.append("  launcher  %s" % line)
+    ssh_ok = True
+    if args.host:
+        ssh_ok = doctor_ssh(args, lines)
     hints = sorted(set(tools.install_hint(m) for m in missing
                        if tools.install_hint(m)))
     if via == "ssh" and "ssh" in missing:
@@ -3559,8 +3756,9 @@ def cmd_doctor(args):
         lines.extend(next_steps([("", h) for h in hints]))
     sys.stdout.write(render.page(lines))
     if via == "ssh":
-        return 1 if "ssh" in missing or "scp" in missing else 0
-    return 0 if ok else 1
+        return 1 if "ssh" in missing or "scp" in missing or not ssh_ok \
+            else 0
+    return 0 if ok and ssh_ok else 1
 
 
 def launcher_line(via, here):
@@ -3593,6 +3791,110 @@ def launcher_line(via, here):
             % (via, copier, extra), True)
 
 
+
+# What `qd doctor HOST` shows of ssh -G, in this order: how the host is
+# reached, the keys, Kerberos, connection sharing, and whether a prompt
+# can be answered.  A key ssh does not print is shown as -.
+DOCTOR_SSH_KEYS = [
+    "user", "hostname", "port", "proxyjump", "proxycommand",
+    "certificatefile", "identityfile", "gssapiauthentication",
+    "gssapidelegatecredentials", "controlmaster", "controlpath",
+    "controlpersist", "batchmode", "stricthostkeychecking"]
+
+
+def doctor_hop(runner, spec):
+    """The bastion's own settings, for `qd doctor HOST`: ssh reaches it
+    with a second ssh that reads the config file and none of qd's -o
+    options, so BatchMode and a host key check that will not ask have to
+    be in the config, under the bastion's Host.  -> rows"""
+    name, pairs, why = whoran.hop_settings(runner, spec)
+    if pairs is None:
+        return [("  bastion", "%s: ssh -G could not say: %s" % (name, why))]
+    got = dict(pairs)
+    batch = got.get("batchmode", "-")
+    check = got.get("stricthostkeychecking", "-")
+    rows = [("  bastion", "%s, as %s, port %s: its own settings, from the "
+             "config alone (qd's -o options do not reach the hop)" % (
+                 name, got.get("user", "-"), got.get("port", "-")))]
+    rows.append(("  its batchmode", batch + (
+        "" if batch == "yes" else ": the hop can stop at a password or "
+        "host-key prompt; put BatchMode yes under its Host")))
+    rows.append(("  its stricthostkeychecking", check + (
+        ": an unknown bastion key fails every host; have it in known_hosts"
+        if check in ("yes", "true", "ask") else "")))
+    return rows
+
+
+def doctor_ssh(args, lines):
+    """`qd doctor HOST`: what qd's ssh resolves for HOST -- through which
+    bastion, as whom, with which certificate, by Kerberos or not, over a
+    master already open or not -- and the checks that need no connection.
+    -> False when ssh -G could not say."""
+    h = hostmod.parse_host_token(args.host)
+    cfg = ssh_config_of(args)
+    check_ssh_config(cfg)
+    runner = fleet.Runner(ssh=args.ssh, user=args.user, ssh_config=cfg)
+    lines.append("")
+    lines.append("  ssh       %s, as qd's ssh resolves it (ssh -G%s; no host "
+                 "is contacted)" % (args.host, " -F " + cfg if cfg else ""))
+    pairs, why = whoran.ssh_settings(runner, h)
+    if pairs is None:
+        lines.append("            ssh -G failed: %s" % why)
+        return False
+    got = {}
+    for k, v in pairs:
+        got.setdefault(k, []).append(v)
+    rows = []
+    for k in DOCTOR_SSH_KEYS:
+        vs = got.get(k) or []
+        if k == "proxycommand" and (not vs or vs == ["none"]):
+            continue
+        if k == "identityfile":
+            # ssh names its defaults whether they are there or not, and
+            # offers only those that are
+            here = [v for v in vs if os.path.exists(os.path.expanduser(v))]
+            if vs and not here:
+                rows.append((k, "- (none of the %d ssh would offer is here)"
+                             % len(vs)))
+            else:
+                rows.extend((k, v) for v in here)
+            continue
+        if k == "certificatefile":
+            for v in vs:
+                if not os.path.exists(os.path.expanduser(v)):
+                    say = "not here, so no certificate is offered"
+                else:
+                    valid = whoran.certificate_validity(v)
+                    say = ("valid " + valid) if valid else \
+                        "cannot be read as a certificate (ssh-keygen -L)"
+                rows.append((k, "%s: %s" % (v, say)))
+            if not vs:
+                rows.append((k, "-"))
+            continue
+        val = vs[0] if vs else "-"
+        if k == "proxyjump" and vs and vs[0] != "none":
+            rows.append((k, val + "  (through this bastion)"))
+            rows.extend(doctor_hop(runner, vs[0]))
+            continue
+        if k == "gssapiauthentication" and val == "yes":
+            t = whoran.kerberos_ticket()
+            val += {True: ": a Kerberos ticket is held (klist -s)",
+                    False: ": no Kerberos ticket held (klist -s): kinit "
+                    "first", None: ": klist is not here to say whether a "
+                    "ticket is held"}[t]
+        if k == "controlpath" and vs and vs[0] != "none":
+            val += (": a master is open" if whoran.master_running(runner, h)
+                    else ": no master is open")
+        if k == "batchmode" and val == "yes":
+            val += (": no password or one-time code can be typed; an "
+                    "interactive login fails the host")
+        rows.append((k, val))
+    width = max(len(k) for k, _ in rows)
+    for k, v in rows:
+        lines.append("            %-*s  %s" % (width, k, v))
+    return True
+
+
 HINTS = [
     ("Is my host list even real?",
      "qd run --servers hosts.txt -- true            (then: reachable hosts.txt -i)"),
@@ -3622,6 +3924,8 @@ HINTS = [
     ("Which settings matter, and how much?",
      "qd doe run design.json -s hosts.txt -- 'CMD {factor}'; qd doe analyze ..."),
     ("Half the fleet against the other half", "qd split -s hosts.txt --ab --out ab/"),
+    ("What were temperature and power doing meanwhile?",
+     "qd join RUN splunk-export.csv --window +-30 --agg mean,max"),
     ("Who is far from the rest?", "qd outliers latest COLUMN"),
     ("Who is far from their own peers?",
      "qd peers define sku --by sku; qd outliers latest COLUMN --peers sku"),
@@ -3751,15 +4055,22 @@ def add_ssh(sp):
                    help="hosts contacted at once (QD_JOBS, 32)")
     g.add_argument("--timeout", type=seconds,
                    default=env_float("TIMEOUT", 60.0),
-                   help="per-host command timeout, seconds (QD_TIMEOUT, 60)")
+                   help="per-host command timeout, seconds; past it the "
+                   "command is stopped on the host (QD_TIMEOUT, 60)")
     g.add_argument("--max-output", type=positive, metavar="BYTES",
                    default=env_int("MAX_OUTPUT", 4 * 1024 * 1024),
-                   help="per-host output cap; past it the host is killed and "
-                   "reported (QD_MAX_OUTPUT, 4 MiB)")
+                   help="per-host output cap; past it the command is "
+                   "stopped on the host and reported (QD_MAX_OUTPUT, 4 MiB)")
     g.add_argument("--ssh", default=env("SSH", "ssh"), metavar="CMD",
                    help="ssh transport (QD_SSH)")
     g.add_argument("--scp", default=env("SCP", "scp"), metavar="CMD",
                    help="scp transport (QD_SCP)")
+    g.add_argument("--ssh-config", default=env("SSH_CONFIG"), metavar="FILE",
+                   help="ssh and scp read FILE (ssh -F), not ~/.ssh/config "
+                   "(QD_SSH_CONFIG)")
+    g.add_argument("--reuse", action="store_true",
+                   help="one ssh connection per host for the whole command "
+                   "(ControlMaster), closed at the end (QD_SSH_REUSE=1)")
     g.add_argument("--sudo", action="store_true",
                    help="run the command under sudo -n")
     g.add_argument("--rate", default=env("RATE"), metavar="N/s",
@@ -3794,7 +4105,8 @@ def add_safety(sp):
     g = sp.add_argument_group("safety")
     g.add_argument("--dry-run", action="store_true",
                    help="print the ssh (srun) command per host, or the "
-                   "pdsh or clush call, and stop")
+                   "pdsh or clush call, and stop (less the line ahead of an "
+                   "ssh command that lets qd stop it)")
     g.add_argument("--limit", type=positive, metavar="N",
                    help="refuse to run wider than N hosts without --yes")
     g.add_argument("--yes", action="store_true",
@@ -3917,6 +4229,19 @@ def build_parser():
                     "path's)")
     sp.add_argument("--as", dest="as_", metavar="FORMAT",
                     help="read as this format rather than detecting it")
+    g = sp.add_argument_group("telemetry (another system's samples, for "
+                              "qd join)")
+    g.add_argument("--telemetry", action="store_true",
+                   help="keep the paths as one telemetry table: time (UTC), "
+                   "host, metric, value -- from a long export (a row a "
+                   "sample) or a wide one (a column a metric)")
+    g.add_argument("--map", metavar="FILE",
+                   help="which column is which: time, host, metric, value "
+                   "or metrics, time_format, tz (README: qd join); implies "
+                   "--telemetry")
+    g.add_argument("--alias", metavar="FILE",
+                   help="lines NAME ALIAS...: keep each ALIAS's samples "
+                   "under NAME, the run's name for it; implies --telemetry")
     sp.set_defaults(fn=cmd_import)
 
     sp = verb("log", "list the runs in the store, or describe one")
@@ -4092,6 +4417,44 @@ def build_parser():
                     help="applied to both sides")
     add_format(sp)
     sp.set_defaults(fn=cmd_diff)
+
+    sp = verb("join", "a run's rows beside another system's telemetry, "
+              "by host and time window")
+    sp.add_argument("ref", metavar="RUN",
+                    help="the rows: a run (each host's own window), RUN:"
+                    "TABLE, ds:NAME or a file with --time")
+    sp.add_argument("telemetry", metavar="TELEMETRY",
+                    help="an export (CSV, TSV, NDJSON or JSON; read a line at "
+                    "a time), or what qd import --telemetry kept")
+    sp.add_argument("--window", default="run", metavar="run|+-N",
+                    help="each row's window as it is (run), or widened N "
+                    "seconds either side: +-30, 30s, 2m (run)")
+    sp.add_argument("--agg", metavar="LIST",
+                    help="figures per metric, comma-separated: mean, max, "
+                    "min, median, p05, p25, p75, p95, p99, stdev, count, "
+                    "first, last, delta, rate (mean,max)")
+    sp.add_argument("--metrics", metavar="A,B",
+                    help="only these metrics; * and ? match (default every "
+                    "one)")
+    sp.add_argument("--map", metavar="FILE",
+                    help="which column of the export is which (README: qd "
+                    "join)")
+    sp.add_argument("--alias", metavar="FILE",
+                    help="lines NAME ALIAS...: the run's name for a host, "
+                    "then what the telemetry calls it")
+    sp.add_argument("--time", metavar="COL[,COL]",
+                    help="the rows' own times instead: an instant (with "
+                    "--window +-N) or a start and an end")
+    sp.add_argument("--host-col", metavar="COL",
+                    help="the column naming each row's host (default host, "
+                    "target, ...)")
+    sp.add_argument("--skew", metavar="RUN|none",
+                    help="the qd probe skew run that says how far the hosts' "
+                    "clocks were out (default the latest in the store)")
+    add_query(sp)
+    sp.add_argument("--cols", metavar="A,B", help="only these columns")
+    add_format(sp)
+    sp.set_defaults(fn=cmd_join)
 
     sp = verb("compare", "line up N stored runs: summary, host by host, "
               "what moved")
@@ -4380,7 +4743,20 @@ def build_parser():
                     "overlay into qd's cache (refused otherwise)")
     sp.set_defaults(fn=cmd_web)
 
-    sp = verb("doctor", "which of the toolchain this machine can drive")
+    sp = verb("doctor", "which of the toolchain this machine can drive; "
+              "with HOST, what ssh resolves for it")
+    sp.add_argument("host", nargs="?", metavar="HOST",
+                    help="show what qd's ssh resolves for HOST (ssh -G): "
+                    "user, bastion, certificate, Kerberos, master; contacts "
+                    "nothing")
+    g = sp.add_argument_group("ssh")
+    g.add_argument("-u", "--user", default=env("SSH_USER"),
+                   help="ssh user (QD_SSH_USER; default: your ssh config)")
+    g.add_argument("--ssh", default=env("SSH", "ssh"), metavar="CMD",
+                   help="ssh transport (QD_SSH)")
+    g.add_argument("--ssh-config", default=env("SSH_CONFIG"), metavar="FILE",
+                   help="ssh reads FILE (ssh -F), not ~/.ssh/config "
+                   "(QD_SSH_CONFIG)")
     sp.add_argument("--via", default=env("VIA", "ssh"), metavar="LAUNCHER",
                     help="check this launcher: ssh (default), srun, pdsh "
                     "or clush (QD_VIA); exit 1 if it cannot run from here")
@@ -4472,6 +4848,10 @@ def main(argv=None):
     except KeyboardInterrupt:
         sys.stderr.write("\n")
         return 130
+    finally:
+        # --reuse's masters, however the command ended
+        if getattr(args, "_reuse", None) is not None:
+            args._reuse.close(getattr(args, "jobs", 32) or 32)
 
 
 if __name__ == "__main__":

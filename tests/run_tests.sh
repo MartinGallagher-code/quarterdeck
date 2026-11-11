@@ -43,12 +43,12 @@ usage() { sed -n '5,25p' run_tests.sh | sed 's/^# \{0,1\}//'; }
 # name order whatever this says.  Measured in CI on 2026-11-10 (run #101,
 # QD-024): each suite's seconds in each of the seven jobs that run the
 # suite, four at a time on four cores, parts added up, then the mean of
-# the seven; report, which came after, timed here beside compare, do and
-# view on both of provost's paths and scaled to their seconds in CI; via
-# (QD-008) the same way, beside report.  A
-# run's last line, `seconds:`, gives every suite's, to measure them again
-# from.
-TIMES="doe:236 peers:231 web:225 via:224 run:176 xstore:146 compare:132 probe:108 operator:98 report:87 campaign:86 rm:81 do:78 remote:77 view:74 pacing:54 store:41 policy:37 read:35 export:24 runner:18 split:15 diff:14 check:12 analyze:6 cleanup:3"
+# the seven; report and join, which came after, timed here beside
+# compare, do and view on both of provost's paths and scaled to their
+# seconds in CI; ssh (QD-018) timed here, a real sshd and all, on four
+# cores; via (QD-008) beside report, scaled the same way.  A run's last
+# line, `seconds:`, gives every suite's, to measure them again from.
+TIMES="doe:236 peers:231 web:225 via:224 run:176 xstore:146 compare:132 probe:108 operator:98 report:87 campaign:86 rm:81 do:78 remote:77 view:74 pacing:54 store:41 stop:40 policy:37 read:35 join:30 ssh:25 export:24 runner:18 split:15 diff:14 check:12 analyze:6 cleanup:3"
 UNLISTED=30
 
 # With --shard K/N, a suite listed here is split into that many parts (or

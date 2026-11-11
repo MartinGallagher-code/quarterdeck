@@ -114,8 +114,11 @@ class SrunRunner(fleet.Runner):
     """One srun step per host, inside the allocation qd was started in."""
 
     via = "srun"
-    # srun stopped with SIGTERM ends its step; SIGKILL would leave it
+    # srun stopped with SIGTERM ends its step; SIGKILL would leave it.
+    # That is how a command qd gives up on is stopped on the node, so no
+    # MARK_SH line and no second call (QD-026's stop is ssh's).
     stop_grace = 5
+    marks = False
 
     def __init__(self, alloc=None, srun="srun", **kw):
         fleet.Runner.__init__(self, **kw)
@@ -145,19 +148,20 @@ class SrunRunner(fleet.Runner):
     def run_fields(self):
         return {"via": self.via, "sched_job": self.alloc.get("job", "")}
 
-    def _exec(self, argv, timeout, stdin=None):
-        rc, out, err = fleet.Runner._exec(self, argv, timeout, stdin)
-        if isinstance(rc, fleet.TimedOut):
-            return rc, out, err
+    def _capture(self, argv, timeout, stdin=None, marked=False):
+        rc, out, err, group = fleet.Runner._capture(self, argv, timeout,
+                                                    stdin, marked)
+        if isinstance(rc, (fleet.TimedOut, fleet.Flooded)):
+            return rc, out, err, group
         if rc == 255 and err.startswith("cannot run "):
-            return fleet.Unlaunched(255), out, err
+            return fleet.Unlaunched(255), out, err, group
         lines = err.splitlines(True)
         ran = any(TASK_RE.match(ln) for ln in lines)
         kept = "".join(ln for ln in lines if not TASK_EXIT_RE.match(ln))
         if rc != 0 and not ran and any(SRUN_ERR_RE.match(ln)
                                        for ln in lines):
-            return fleet.Unlaunched(255), out, kept
-        return rc, out, kept
+            return fleet.Unlaunched(255), out, kept, group
+        return rc, out, kept, group
 
     def _copy(self, host, files):
         # through the step's stdin: the host's own copy, in the same step
@@ -195,6 +199,9 @@ class FanRunner(fleet.Runner):
     apart by the `host: ` each line comes with."""
 
     batched = True
+    # one call for every host: there is no second one to stop a host's
+    # command with, so no MARK_SH line either
+    marks = False
 
     def __init__(self, via="pdsh", **kw):
         fleet.Runner.__init__(self, **kw)

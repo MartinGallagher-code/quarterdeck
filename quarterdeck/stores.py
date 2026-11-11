@@ -310,6 +310,10 @@ def ago(seconds):
 def _git_env():
     from .fleet import SSH_OPTS
     ssh = shlex.split(env("SSH", "ssh"))
+    # QD_SSH_CONFIG reaches a remote store's host as it does `qd run`'s
+    cfg = env("SSH_CONFIG")
+    if cfg:
+        ssh += ["-F", os.path.abspath(os.path.expanduser(cfg))]
     e = dict(os.environ)
     e["GIT_SSH_COMMAND"] = " ".join(shlex.quote(a) for a in ssh + SSH_OPTS)
     # whatever QD_SSH is called, it takes ssh's options

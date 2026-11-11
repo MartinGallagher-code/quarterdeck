@@ -206,6 +206,48 @@ t_compare_against_a_qualified_baseline() {
     assert_contains "$out" "no peer group"
 }
 
+t_join_is_the_terminal_s() {
+    seed
+    # telemetry for the latest run's hosts, inside each one's window, kept
+    # in the store as qd import --telemetry keeps it
+    qd show ds:qd.hosts --format csv > hosts.csv
+    "$PY" - <<'PYEOF'
+import csv
+rows = [r for r in csv.DictReader(open("hosts.csv"))]
+last = rows[-1]["run"]
+out = ["_time,host,metric,value"]
+for r in rows:
+    if r["run"] == last:
+        t, d = float(r["ts"]), float(r["duration_s"])
+        out.append("%.3f,%s,temp_c,%d" % (t + d / 2, r["host"],
+                                          40 + ord(r["host"]) - ord("a")))
+open("tel.csv", "w").write("\n".join(out) + "\n")
+PYEOF
+    qd import tel.csv --telemetry > /dev/null
+    start_web
+    out="$(get '/api/join?e=latest~1&tel=latest&agg=max,count')"
+    assert_contains "$out" "200"
+    assert_contains "$out" '"with": 5'
+    assert_contains "$out" '"figures": ["window_from", "window_to", "telemetry_host", "temp_c_max", "temp_c_count"]'
+    assert_contains "$out" '["e", "r2", "ok"'
+    # the same figures the terminal prints
+    qd join latest~1 latest --agg max,count --format csv > cli.csv
+    assert_contains "$(grep '^e,' cli.csv)" ",e,44,1"
+    assert_contains "$out" '"e", "44", "1"'
+    # where= reads the telemetry's columns: the hot one alone
+    out="$(get '/api/join?e=latest~1&tel=latest&where=temp_c_max>43')"
+    assert_contains "$out" '"matched": 1'
+    out="$(get '/api/join?e=latest~1')"
+    assert_contains "$out" "400"
+    assert_contains "$out" "tel=REF names the telemetry"
+    # a file beside the server is never read as telemetry: a name is a
+    # run's (tel.csv is the import's) or nothing
+    cp tel.csv other.csv
+    out="$(get '/api/join?e=latest~1&tel=other.csv')"
+    assert_contains "$out" "400"
+    assert_contains "$out" "no run or dataset"
+}
+
 t_campaigns_and_designs_are_listed() {
     install_fake_ssh
     for h in a b c d; do fake_host "$h"; done
@@ -517,6 +559,7 @@ run_test "diff defaults to the last same run"       t_diff_defaults_to_the_last_
 run_test "compare: the terminal's verdict"           t_compare_is_the_terminal_s
 run_test "compare: a qualified baseline, peer groups" t_compare_against_a_qualified_baseline
 run_test "campaigns and designs, and their runs"     t_campaigns_and_designs_are_listed
+run_test "telemetry joined as the terminal joins it" t_join_is_the_terminal_s
 run_test "raw answers, export, overlay"             t_raw_export_and_overlay
 run_test "static page; nothing escapes its root"    t_static_page_and_no_escape
 run_test "references are never paths"              t_refs_are_never_paths
