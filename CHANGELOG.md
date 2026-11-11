@@ -53,6 +53,56 @@ per host instead of one per call (QD-018).
   requires them (`QD_TEST_SSHD=require`). Kerberos needs a KDC and is not
   run; doctor's reading of `klist` is, with stand-ins.
 
+## 0.10.3 — 2026-11-10
+
+A command `qd` gives up on is stopped on the host, not only its local ssh
+(QD-026).
+
+### Fixed
+- **Past `--timeout` or `--max-output`, the command is stopped on the
+  host.** qd killed only its own ssh, and with no terminal the host's sshd
+  does not hang the command up, so it went on running there after qd had
+  reported the host done, and a pushed script lost its `qd.<run id>`
+  directory under it. Reproduced against OpenSSH 9.6 on localhost before
+  the fix: `qd run --timeout 2 -- 'sleep 6; touch MARK'` said `timeout`,
+  and MARK appeared four seconds later. Now every command goes out after
+  one line on stderr naming the process group sshd started it in (taken
+  off again; written by `sh -c` with builtins only, so any login shell
+  works); when qd gives up, a second ssh sends that group TERM, then KILL
+  2 s later, under `sudo -n` with `--sudo`. A shell that does not lead its
+  own group is never signalled.
+- **The row says what happened.** `error` reads `timed out after 60s; qd
+  stopped it on the host`, or `..., and may still be running on the host:
+  qd could not stop it (why)` when the host could not be reached again,
+  part of the command ran as another user, or the host never said where
+  it ran. Such hosts are named on the summary (`NOT STOPPED`, under
+  `--quiet` too) and in the run's note (`qd log RUN`), and their `--script`
+  or `--push` directory is left with the command rather than removed under
+  it.
+- **Past `--max-output` no longer says "host killed"**, which was never
+  so: `output exceeded --max-output (N bytes); qd stopped it on the host`.
+- **A command that closed its output and ran on past the deadline** is a
+  `timeout`, stopped as above; it was `failed`, exit -9.
+
+### Unchanged
+- A command that finishes in time answers byte for byte as before: no
+  terminal, no CRLF, stderr apart, and `--max-output` counts the same bytes
+  (the line naming the group is not counted).
+- `--dry-run` prints the command without that line, so it can still be
+  read; its help says so.
+
+### Tests
+- `tests/test_stop.sh` (new, in `TIMES`): the fake ssh's new
+  `FAKE_SSH_DETACH=1` runs the "remote" command apart from the client, as
+  OpenSSH does, so killing the client leaves it running (its first case
+  shows that); then a timed-out command and its children, a flooding one,
+  a `--script` (stopped before its directory goes), a probe on stdin, a
+  stop that cannot be confirmed, and answers in time byte for byte. On
+  main's `fleet.py` it fails: the marks are written.
+- `tests/check_real_sshd.sh` (new, not in CI): starts a throwaway sshd on
+  127.0.0.1 as the current user and checks the same against real OpenSSH;
+  it skips where there is no sshd.
+
 ## 0.10.2 — 2026-11-10
 
 CI finishes sooner (QD-024). Nothing `qd` does has changed: only CI, the

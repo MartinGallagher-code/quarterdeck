@@ -11,6 +11,8 @@
 #   fail MSG                fail a case with a reason no assert_ covers
 #   qd ARGS...              the CLI under test, run from a clone
 #   install_fake_ssh        an ssh+scp pair that run "remote" commands locally
+#                           (FAKE_SSH_DETACH=1: apart from the client, as
+#                           OpenSSH runs them)
 #   fake_host NAME          a sandbox root for one fake host
 #   fake_host_unreachable NAME
 #   pv ARGS...              provost itself, on the case's store
@@ -67,6 +69,8 @@ setup_env() {
     export FAKE_SSH_LOG="$TEST_TMPDIR/ssh.log"
     # every ssh and scp the fakes are started with, options and all
     export FAKE_SSH_ARGV="$TEST_TMPDIR/ssh.argv"
+    export FAKE_PY="$PY"
+    unset FAKE_SSH_DETACH
     mkdir -p "$FAKE_BIN" "$FAKE_ROOT"
     : > "$FAKE_SSH_LOG"
     : > "$FAKE_SSH_ARGV"
@@ -306,6 +310,17 @@ fi
 [ -d "$FAKE_ROOT/$host" ] || { echo "ssh: Could not resolve hostname $host" >&2; exit 255; }
 cd "$FAKE_ROOT/$host" || exit 255
 export FAKE_HOST="$host"
+# FAKE_SSH_DETACH=1: as OpenSSH does, the "remote" command runs in a
+# session of its own, apart from this client, so killing the client
+# leaves it running (QD-026).  Otherwise it is this process.
+if [ -n "${FAKE_SSH_DETACH:-}" ]; then
+  exec 3<&0
+  "${FAKE_PY:-python3}" -c 'import os, sys
+os.setsid()
+os.execvp("bash", ["bash", "-c", sys.argv[1]])' "${args[*]}" <&3 3<&- &
+  wait $!
+  exit $?
+fi
 exec bash -c "${args[*]}"
 SHIM
     cat > "$FAKE_BIN/scp" <<'SHIM'
