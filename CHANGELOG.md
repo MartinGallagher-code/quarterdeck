@@ -51,7 +51,9 @@ Hosts reached through a Slurm allocation, pdsh or clush as well as ssh
 - `tests/test_via.sh`, with stand-ins for srun, scontrol, pdsh, pdcp and
   clush: every node answering, one failing, one not reached, the job
   captured, the same table through ssh and through pdsh or clush, pushes,
-  timeouts, probes through every launcher, and the doctor. It is in
+  timeouts, probes through every launcher, the doctor, and that the
+  stop on the host stays ssh's (no marker line, no ssh after a srun or
+  pdsh timeout; `--ssh-config` with pdsh says so). It is in
   `run_tests.sh`'s TIMES (224 s, timed beside report and scaled to CI)
   and PARTS (three parts), so CI's shares stay even.
 

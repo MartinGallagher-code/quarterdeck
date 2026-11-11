@@ -359,6 +359,37 @@ t_dry_run_through_each_launcher() {
     assert_eq "$(grep -c '^pdsh \|^clush ' "$FAKE_SSH_LOG")" "0"
 }
 
+# QD-026's stop on the host is ssh's: the line every ssh command goes out
+# after, and the second ssh that stops one qd gave up on.  srun stops its
+# own step; pdsh and clush make one call.  Neither sends the line, and a
+# timeout through them starts no ssh.  --ssh-config and --reuse (QD-018)
+# are ssh's too, and another launcher says so.
+# shellcheck disable=SC2016  # expanded on the far side, not here
+t_the_stop_on_the_host_is_sshs() {
+    seed
+    qd run -S node01 -q -- true
+    assert_contains "$(grep '^ssh ' "$FAKE_SSH_LOG")" ".pgid"
+    : > "$FAKE_SSH_LOG"
+    in_allocation 4242 'node[01-02]'
+    qd_rc run --via srun --timeout 1 -q -- \
+        'if [ "$FAKE_HOST" = node02 ]; then sleep 8; fi; echo hi'
+    assert_status "$QD_RC" 1
+    assert_eq "$(grep -c '^ssh ' "$FAKE_SSH_LOG" || true)" "0"
+    assert_not_contains "$(cat "$FAKE_SSH_LOG")" ".pgid"
+    unset SLURM_JOB_ID SLURM_JOBID SLURM_JOB_NODELIST SLURM_NODELIST
+    : > "$FAKE_SSH_LOG"
+    qd_rc run --via pdsh -S 'node[01-02]' --timeout 1 -q -- \
+        'if [ "$FAKE_HOST" = node02 ]; then sleep 8; fi; echo hi'
+    assert_status "$QD_RC" 1
+    assert_not_contains "$(cat "$FAKE_SSH_LOG")" ".pgid"
+    assert_eq "$(grep -c '^ssh ' "$FAKE_SSH_LOG" || true)" "0"
+    printf 'Host *\n' > my.cfg
+    qd run --via pdsh -S node01 --ssh-config my.cfg --reuse -q -- true \
+        2> err
+    assert_contains "$(cat err)" \
+        "--ssh-config and --reuse are ssh's: --via pdsh does not use them"
+}
+
 t_a_launcher_not_here_is_refused() {
     seed
     nop="$(path_without pdsh pdcp clush srun)"
@@ -411,6 +442,7 @@ run_test "runs with other #% keys share a dataset"        t_runs_with_other_keys
 run_test "probes through every launcher"                  t_probes_through_every_launcher
 run_test "a tool probe says it reaches hosts by ssh"      t_a_tool_probe_says_it_uses_ssh
 run_test "--dry-run through each launcher"                t_dry_run_through_each_launcher
+run_test "the stop on the host is ssh's"                 t_the_stop_on_the_host_is_sshs
 run_test "a launcher not here, or unknown, is refused"    t_a_launcher_not_here_is_refused
 run_test "doctor checks the launcher"                     t_doctor_checks_the_launcher
 
