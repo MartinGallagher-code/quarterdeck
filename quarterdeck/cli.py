@@ -19,6 +19,9 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
        qd baseline set|ls|show|rm              qualified baselines, for
                                                compare --baseline NAME
        qd check RUN --against limits.tsv       pass/fail by requirement
+       qd join RUN TELEMETRY [--window +-30]   beside Splunk/CloudVision/
+                                               Prometheus samples, by host
+                                               and time
        qd report RUN|campaign:NAME --out DIR   an evidence package: data,
                                                manifest, hashes, summary
        qd export RUN [--format overlay]        CSV, JSON, the viewer's TSV,
@@ -42,6 +45,7 @@ Examples:
   qd baseline set gold iperf --last 5 --peers sku -c mbps
   qd compare iperf --last 5 --baseline gold
   qd diff kernel@wr01 kernel@wr02       qd compare facts@lab facts@bench
+  qd import splunk.csv --telemetry      qd join latest~1 latest --agg max,p99
   qd view latest                        qd web
 
 RUN is latest, latest~1, a run id or a unique part of one, a run's
@@ -376,8 +380,11 @@ def host_row(rid, r):
     # would be another address, on port 22
     addr = ("[%s]" % h.addr if ":" in h.addr and h.port else h.addr) + (
         ":%d" % h.port if h.port else "")
+    # ts to the millisecond: with duration_s it is the host's own window,
+    # which `qd join` lines telemetry up against (a whole second, before
+    # 0.12.0, left the window up to a second short)
     return [rid, h.name, addr if (h.addr != h.name or h.port) else "",
-            str(r.pass_no), "%d" % int(r.started), r.outcome, str(r.rc),
+            str(r.pass_no), "%.3f" % r.started, r.outcome, str(r.rc),
             "%.2f" % r.duration, str(len(r.stdout.encode("utf-8"))),
             r.error(), storemod.join_attrs(h.attrs),
             r.stderr[:STDERR_KEEP]]
@@ -1151,10 +1158,15 @@ def cmd_import(args):
     for p in args.paths:
         if not os.path.exists(p):
             die("no such file or directory: %s" % p)
+    telemetry = args.telemetry or args.map or args.alias
     tables = []
-    for p in args.paths:
-        for t in importers.read_path(p, args.as_):
-            tables.append((os.path.abspath(p), t))
+    if telemetry:
+        tables.append((" ".join(os.path.abspath(p) for p in args.paths),
+                       telemetry_import(args)))
+    else:
+        for p in args.paths:
+            for t in importers.read_path(p, args.as_):
+                tables.append((os.path.abspath(p), t))
     created = now_iso()
     rid = new_run_id(st, label)
     b = filing.Batch()
@@ -1176,10 +1188,42 @@ def cmd_import(args):
             plural(len(t.columns), "column"), origin))
     for n in notes:
         lines.append("  note     %s" % n)
-    lines.extend(next_steps([("%s view latest" % PROG, "explore it"),
-                             ("%s stats latest" % PROG, "describe it")]))
+    if telemetry:
+        for n in tables[0][1].notes:
+            lines.append("  #        %s" % n)
+        tips = [("%s join RUN %s" % (PROG, entry.id),
+                 "each row of a run beside these samples, by host and time"),
+                ("%s show %s --limit 20" % (PROG, entry.id),
+                 "the samples as they were kept")]
+    else:
+        tips = [("%s view latest" % PROG, "explore it"),
+                ("%s stats latest" % PROG, "describe it")]
+    lines.extend(next_steps(tips))
     sys.stdout.write(render.page(lines))
     return 0
+
+
+def telemetry_import(args):
+    """`qd import --telemetry`: every path's samples as one table, named
+    telemetry -- time (UTC), host, metric, value -- whatever shape each
+    export arrived in."""
+    cmap = importers.read_map(args.map) if args.map else None
+    aliases = importers.read_aliases(args.alias) if args.alias else None
+    rows, notes = [], []
+    for p in args.paths:
+        if os.path.isdir(p):
+            die("--telemetry reads exports, one file each, and %s is a "
+                "directory" % p)
+        t = importers.telemetry_table(p, cmap, aliases)
+        rows.extend(t.rows)
+        many = len(args.paths) > 1
+        notes.extend(("%s: %s" % (os.path.basename(p), n)) if many else n
+                     for n in t.notes)
+    if not rows:
+        die("no samples in %s: %s" % (" ".join(args.paths), "; ".join(
+            notes[1:]) or "nothing to read"))
+    return tablemod.Table(list(importers.TELEMETRY), rows, "telemetry",
+                          " ".join(args.paths), notes=notes)
 
 
 def cmd_log(args):
@@ -1807,6 +1851,79 @@ def diff_report(a, b, res, args):
         lines.append("")
         lines.append("  no differences")
     return lines
+
+
+# ---------------------------------------------------------------------------
+# join: a run beside another system's telemetry
+# ---------------------------------------------------------------------------
+
+def telemetry_of(args, ref):
+    """The telemetry `qd join` reads: a file, read a line at a time, or a
+    table in a store (REF[:TABLE][@STORE]; a run's `telemetry` table when
+    it has one, as `qd import --telemetry` files it)."""
+    if os.path.exists(ref):
+        return importers.telemetry_source(ref)
+    st, r = ref_store(args, ref)
+    r, tname = split_ref(r)
+    e = st.resolve(r)
+    if tname is None and "telemetry" in e.table_names():
+        tname = "telemetry"
+    t = e.load(tname)
+    return importers.table_source(t, shown_id(e, t.name if len(e.tables) > 1
+                                              else None))
+
+
+def cmd_join(args):
+    from . import join as joinmod
+    st, ref = ref_store(args, args.ref)
+    t = load_ref(st, ref, args.as_)
+    entry = getattr(t, "entry", None)
+    cmap = importers.read_map(args.map) if args.map else None
+    aliases = importers.read_aliases(args.alias) if args.alias else None
+    margin = joinmod.parse_window(args.window)
+    aggs = joinmod.parse_aggs(args.agg)
+    # whose clocks were how far out: the latest `qd probe skew` beside the
+    # run, another named, or none
+    if args.skew == "none":
+        skew = False
+    elif args.skew:
+        skew = joinmod.skew_offsets(*ref_store(args, args.skew))
+    else:
+        skew = joinmod.skew_offsets(st)
+    source = telemetry_of(args, args.telemetry)
+    j = joinmod.join(t, entry, source, cmap, aliases, margin, aggs,
+                     joinmod.split_list(args.metrics),
+                     joinmod.split_list(args.time), args.host_col, skew,
+                     shown_id)
+    s = subset(args, j.table)
+    fmt = args.format or "text"
+    lines = ["%s join -- %s with %s: %s; %s x %s; window %s" % (
+        PROG, source_name(t), source.origin, plural(len(t.rows), "row"),
+        plural(len(j.metrics), "metric"), ", ".join(aggs),
+        joinmod.window_text(margin))]
+    lines.append("  matched   %d of %s had samples in their window" % (
+        j.rows_with, plural(len(t.rows), "row")))
+    for n in j.notes:
+        lines.append("  note      %s" % n)
+    if args.where:
+        lines.append("  where     %s: %s" % (" and ".join(args.where),
+                                             plural(len(s.rows), "row")))
+    lines.append("")
+    shown = s
+    if fmt == "text" and not args.cols:
+        # the row's host first, then what the telemetry said, then the
+        # rest of the run's own columns: a terminal cuts from the right
+        figs = [c for c in s.columns[len(t.columns):]]
+        lead = [c for c in t.columns if c in ("host", "pass") or
+                c == (args.host_col or "")]
+        rest = [c for c in t.columns if c not in lead]
+        shown = s.derive(columns=lead + figs + rest)
+    lines.extend(render.render_table(shown, max_cell=40,
+                                     width=width_of(args)))
+    if not j.rows_with:
+        warn("no row had any telemetry in its window: see the notes")
+    emit(args, s, lines)
+    return 0 if j.rows_with else 1
 
 
 # ---------------------------------------------------------------------------
@@ -3694,6 +3811,8 @@ HINTS = [
     ("Which settings matter, and how much?",
      "qd doe run design.json -s hosts.txt -- 'CMD {factor}'; qd doe analyze ..."),
     ("Half the fleet against the other half", "qd split -s hosts.txt --ab --out ab/"),
+    ("What were temperature and power doing meanwhile?",
+     "qd join RUN splunk-export.csv --window +-30 --agg mean,max"),
     ("Who is far from the rest?", "qd outliers latest COLUMN"),
     ("Who is far from their own peers?",
      "qd peers define sku --by sku; qd outliers latest COLUMN --peers sku"),
@@ -3992,6 +4111,19 @@ def build_parser():
                     "path's)")
     sp.add_argument("--as", dest="as_", metavar="FORMAT",
                     help="read as this format rather than detecting it")
+    g = sp.add_argument_group("telemetry (another system's samples, for "
+                              "qd join)")
+    g.add_argument("--telemetry", action="store_true",
+                   help="keep the paths as one telemetry table: time (UTC), "
+                   "host, metric, value -- from a long export (a row a "
+                   "sample) or a wide one (a column a metric)")
+    g.add_argument("--map", metavar="FILE",
+                   help="which column is which: time, host, metric, value "
+                   "or metrics, time_format, tz (README: qd join); implies "
+                   "--telemetry")
+    g.add_argument("--alias", metavar="FILE",
+                   help="lines NAME ALIAS...: keep each ALIAS's samples "
+                   "under NAME, the run's name for it; implies --telemetry")
     sp.set_defaults(fn=cmd_import)
 
     sp = verb("log", "list the runs in the store, or describe one")
@@ -4167,6 +4299,44 @@ def build_parser():
                     help="applied to both sides")
     add_format(sp)
     sp.set_defaults(fn=cmd_diff)
+
+    sp = verb("join", "a run's rows beside another system's telemetry, "
+              "by host and time window")
+    sp.add_argument("ref", metavar="RUN",
+                    help="the rows: a run (each host's own window), RUN:"
+                    "TABLE, ds:NAME or a file with --time")
+    sp.add_argument("telemetry", metavar="TELEMETRY",
+                    help="an export (CSV, TSV, NDJSON or JSON; read a line at "
+                    "a time), or what qd import --telemetry kept")
+    sp.add_argument("--window", default="run", metavar="run|+-N",
+                    help="each row's window as it is (run), or widened N "
+                    "seconds either side: +-30, 30s, 2m (run)")
+    sp.add_argument("--agg", metavar="LIST",
+                    help="figures per metric, comma-separated: mean, max, "
+                    "min, median, p05, p25, p75, p95, p99, stdev, count, "
+                    "first, last, delta, rate (mean,max)")
+    sp.add_argument("--metrics", metavar="A,B",
+                    help="only these metrics; * and ? match (default every "
+                    "one)")
+    sp.add_argument("--map", metavar="FILE",
+                    help="which column of the export is which (README: qd "
+                    "join)")
+    sp.add_argument("--alias", metavar="FILE",
+                    help="lines NAME ALIAS...: the run's name for a host, "
+                    "then what the telemetry calls it")
+    sp.add_argument("--time", metavar="COL[,COL]",
+                    help="the rows' own times instead: an instant (with "
+                    "--window +-N) or a start and an end")
+    sp.add_argument("--host-col", metavar="COL",
+                    help="the column naming each row's host (default host, "
+                    "target, ...)")
+    sp.add_argument("--skew", metavar="RUN|none",
+                    help="the qd probe skew run that says how far the hosts' "
+                    "clocks were out (default the latest in the store)")
+    add_query(sp)
+    sp.add_argument("--cols", metavar="A,B", help="only these columns")
+    add_format(sp)
+    sp.set_defaults(fn=cmd_join)
 
     sp = verb("compare", "line up N stored runs: summary, host by host, "
               "what moved")

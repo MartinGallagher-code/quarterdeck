@@ -1109,6 +1109,9 @@ Every reader works on what's *inside* a file, never its name:
   are pairs that weren't measured, and they stay out.
 - **Wide tables**: `Timestamp host rtt (us) loss %`, which is what
   monitoring writes and the viewer reads. A commented-out header works.
+- **Telemetry exports**, with `qd import --telemetry`: Splunk, CloudVision,
+  Prometheus or a gNMI collector's samples, kept as one `time, host,
+  metric, value` table for `qd join` (see *Beside the telemetry*).
 - A BOM, CRLF line ends and a header repeated mid-file are all handled.
 
 ---
@@ -1207,6 +1210,159 @@ anything differs, like `diff(1)`.
 
 ---
 
+## Beside the telemetry: `qd join`
+
+A benchmark row says what a host did. The telemetry another system kept
+says what it was going through at the time: inlet temperature, power draw,
+link errors. `qd join` puts the two side by side, matched by host and by
+**time window**: for each row, each metric's samples from that host
+inside the window it was measured in, reduced to a few figures.
+
+```bash
+qd import splunk-export.csv --telemetry        # keep an export as a dataset
+qd join iperf latest                           # each iperf row, with the mean and max of each metric
+qd join iperf splunk-export.csv --window +-30 --agg mean,max,p99 --metrics 'temp*,power*'
+qd join latest export.csv --map cloudvision.map --alias bmc-names.txt
+qd join iperf latest --where 'inlet_temp_c_max>35' --format csv -o hot.csv
+```
+
+```text
+qd join -- 20261110-180048-iperf:data with 20261110-180051-splunk_csv: 6 rows; 2 metrics x mean, max; window run
+  matched   5 of 6 rows had samples in their window
+  note      windows: each host's own, from qd.hosts: when qd started it and how long it took
+  note      telemetry: 210 samples kept for the run's hosts and windows, of 700 rows read from ...
+  note      1 row with nothing in the window (blank, not 0): node05
+
+host    window_from               window_to                 telemetry_host          inlet_temp_c_mean  inlet_temp_c_max  power_w_mean  power_w_max  rack  ...  mbps
+node01  2026-11-10T18:00:47.109Z  2026-11-10T18:00:48.119Z  node01.dc1.example.com               25.3              26.9         439.9          468  r1    ...  9363
+node03  2026-11-10T18:00:47.109Z  2026-11-10T18:00:48.119Z  node03.dc1.example.com              31.52              32.9         441.8          470  r1    ...  9289
+node05  2026-11-10T18:00:47.110Z  2026-11-10T18:00:48.120Z                                                                                          r2    ...  9215
+```
+
+The joined table is the run's own columns, then `window_from` and
+`window_to` (UTC, to the millisecond), `telemetry_host` (what the
+telemetry called the host), and a `METRIC_FIGURE` column for each metric
+and figure. In text the host comes first and the figures next, since a
+terminal cuts from the right; `--format` writes the table in its own
+order. `--where` reads the joined columns, so it can filter on the
+telemetry. **A row with no sample in its window gets blanks, never
+zeros**, a `count` included, and the notes name those rows. When no row
+had any telemetry at all, the exit status is 1, and the notes say the
+likeliest reason: names that matched no host, or a window or zone that
+missed.
+
+**The windows.**
+
+| The rows are | Each row's window |
+|---|---|
+| a fan-out (`qd run`, a probe, a campaign's part, a design point) | its host's own, from `qd.hosts`: when qd started it (`ts`) and how long it took (`duration_s`), per pass |
+| `qd do` | the run's own start and finish |
+| anything, with `--time COL` | the row's own time, `--window +-N` either side of it |
+| anything, with `--time START,END` | the row's own start and end |
+
+An import, a `ds:NAME` dataset or a file says nothing of when it was
+measured (an import keeps when it was imported), so those need `--time`.
+`ts` is kept to the millisecond from 0.12.0. Runs filed before kept the
+whole second, so their windows run a second longer to cover what was cut
+off, and the notes say so. A sample counts when its time is at or after
+the start and at or before the end: both edges are in.
+
+**`--window +-N`** widens each window by N seconds either side (`+-30`,
+`30s`, `2m`, `500ms`, `±30`). Telemetry sampled every 30 s may have no
+sample inside a ten-second test at all, and two clocks rarely agree. The
+windows are this machine's clock. The samples carry the hosts' (or their
+collectors'). So `qd join` reads the latest `qd probe skew` in the store
+(binnacle's skew, run on every host), and names each host whose clock was
+further out than the window reaches, with the `--window` that would cover
+it. `--skew RUN` reads another; `--skew none` reads none. Without a skew
+run, the notes say that nothing has checked the clocks.
+
+**Figures (`--agg`)**: `mean` and `max` unless told. Also `min`, `median`,
+`p05`, `p25`, `p75`, `p95`, `p99` (linear between ranks, as `qd stats`),
+`stdev`, `count`, `first` and `last` (by time), and, for counters,
+`delta` (last less first) and `rate` (delta per second). `--metrics`
+keeps some metrics by name or pattern (`'temp*,if_*_errors'`).
+
+**Hosts** are matched by name: the alias file's first, then the run's
+name exactly, then without case, then without a `:port` (Prometheus's
+`instance`), then the short name (`node01` for `node01.dc1.example.com`)
+when only one host of the run has it. A fan-out's addresses count as its
+hosts' names too. A BMC or a switch port has a name of its own, so give an
+alias file, one line per host: the run's name first, then the names the
+telemetry uses.
+
+```text
+# bmc-names.txt: the run's name, then what the telemetry calls it
+node01  node01-bmc  node01-ipmi.oob.example.com
+node02  node02-bmc
+```
+
+The notes list the names in the telemetry that matched no host of the run,
+with how many samples each had, and any name that fits two hosts and so
+matches neither.
+
+### Telemetry exports
+
+`qd` reads an export **from a file**, never from Splunk or CloudVision
+directly. No API client, no credentials, no network. Export with the
+other system's own tools, then join or import the file. Exports can be
+big: `qd join` reads a CSV, TSV or NDJSON export a line at a time and
+keeps only the samples of the run's hosts inside its windows. NDJSON is
+read twice, once for every line's keys, since collectors write different
+fields on different lines. A JSON list is read whole: the standard library
+has no streaming reader for one.
+
+Two shapes are read: **long**, a row per sample (`time, host, metric,
+value`), or **wide**, a column per metric (`time, host, temp, power`).
+Columns are found by name: the time in `_time`, `time`, `timestamp`,
+`ts`, `@timestamp` or `datetime`; the host in `host`, `hostname`,
+`device`, `node`, `instance`, `target`, `server`, `tags.host` or
+`tags.source` (nested JSON keys are joined with dots); the metric in `metric`,
+`metric_name`, `__name__`, `name`, `path`, `key` or `field`; the value in
+`value`, `_value`, `val` or `reading`. With a time and a host but no metric
+and value, every other column is a metric, apart from Splunk's own fields
+(`_*`, `date_*`, `index`, `source`, `sourcetype`, `linecount`, `punct`
+...). Times are epoch seconds, milliseconds, microseconds or nanoseconds
+(told apart by size), or ISO 8601. A time that names no zone is UTC. A
+blank or non-numeric reading is not a sample, and neither is a time that
+cannot be read. The notes count them.
+
+| Export | Usually |
+|---|---|
+| Splunk: `... \| table _time host metric value`, *Export* as CSV | read as it is |
+| Splunk: `... \| timechart span=10s avg(temp) by host` | wide, one column per host: export it `\| untable _time host temp` first, so that each row is one host's sample |
+| Prometheus samples written out as CSV (`timestamp, instance, __name__, value`, say from its HTTP API's `query_range`) | read as it is; `instance`'s `:9100` is ignored |
+| Telegraf's JSON output (NDJSON), from its `gnmi`, `ipmi_sensor` or `redfish` inputs among others | read as it is: `tags.host` (or `tags.source`, gnmi's) is the host and every field a metric (`fields.temp_c`) |
+| CloudVision, or anything else, exported as CSV | a map naming its time and device columns, and its metrics |
+| BMC or switch logs kept in local time | a map with `tz` |
+
+**A column map** (`--map FILE`) says which column is which, for an export
+whose names qd does not know. One `KEY VALUE` a line, `#` for comments:
+
+```text
+# cloudvision.map
+time         Time
+host         Device
+metrics      Inlet Temp, Power Supply 1 Output Power   # wide: these columns
+time_format  %d/%m/%Y %H:%M:%S                         # strptime, when not epoch or ISO 8601
+tz           +01:00                                    # for times that name no zone
+```
+
+Instead of `metrics`, `metric COLUMN` and `value COLUMN` name a long
+export's. `metrics *` takes every other column. `tz` is UTC or a fixed
+offset: a zone name would need Python 3.9, and an export's times are in
+one offset anyway (export in UTC where you can).
+
+**`qd import EXPORT --telemetry`** (or `--map FILE`, or `--alias FILE`)
+keeps an export as a run with one table, `telemetry`: `time` (UTC, ISO
+8601 to the millisecond), `host`, `metric` and `value`, whatever shape it
+arrived in. Several files become one table. `--alias` keeps each alias's
+samples under the run's name for the host. `qd join RUN IMPORT` then reads
+it from the store: from another one with `IMPORT@STORE`, and on the
+**Telemetry** tab of `qd web`.
+
+---
+
 ## In a browser: `qd web`
 
 ```bash
@@ -1240,6 +1396,11 @@ engine's, as everywhere.
   it's one metric), **Trend** (a line per host, with a crosshair and
   tooltip; past eight hosts they're drawn grey and the one you point at
   lifts), **Diff** against any other run, **About** the run.
+- **Telemetry**: `qd join` on the page. Pick telemetry the store keeps
+  (`qd import --telemetry`), a window, the figures and the metrics, and
+  every row of the run comes back with what its host's telemetry said in
+  its window. The filter bar reads the joined columns. The server only
+  joins what is in a store and never reads a file.
 - **Compare**: `qd compare` on the page. The last runs like this one, or
   every run of its campaign or design; a row per run with where the column
   sat and how far it moved from the baseline, then every host's value per
@@ -1471,7 +1632,7 @@ The numbers, and how they were measured, are in
 | | |
 |---|---|
 | 0 | done, and every host answered |
-| 1 | a finding: a host that did not answer, a diff or compare that differs, a check that failed or was not measured, nothing to bin, a report that records any of these |
+| 1 | a finding: a host that did not answer, a diff or compare that differs, a check that failed or was not measured, nothing to bin, a join that found no telemetry in any window, a report that records any of these |
 | 2 | a usage error, or something could not be read or written |
 | other | `qd do` passes on the tool's own |
 

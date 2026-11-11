@@ -544,6 +544,51 @@ class Api(object):
                                    for p, meds, flags in res.peer_rows]}
                 if peers is not None else None}
 
+    def join(self, q):
+        """A run's rows beside telemetry the store keeps, as `qd join`
+        lines them up: tel=REF[:TABLE][@STORE] names the telemetry (a
+        run's `telemetry` table, as `qd import --telemetry` files it) --
+        never a file, which this server does not read.  where= applies to
+        the joined rows, so it can name the telemetry's columns."""
+        from . import importers, join as joinmod
+        tel = one(q, "tel")
+        if not tel:
+            die("tel=REF names the telemetry to join (qd import --telemetry "
+                "files one)")
+        t = self.table(one(q, "e"), one(q, "t"))
+        entry = getattr(t, "entry", None)
+        st, r = self.store_for(tel)
+        r, tname = split_ref(r)
+        te = st.resolve(r)
+        if tname is None and "telemetry" in te.table_names():
+            tname = "telemetry"
+        tt = self.cache.get((st.root, te.id, tname, st.stamp()),
+                            lambda: te.load(tname))
+        source = importers.table_source(
+            tt, shown_id(te, tt.name if len(te.tables) > 1 else None))
+        margin = joinmod.parse_window(one(q, "window"))
+        aggs = joinmod.parse_aggs(one(q, "agg"))
+        j = joinmod.join(t, entry, source, None, None, margin, aggs,
+                         joinmod.split_list(one(q, "metrics")),
+                         joinmod.split_list(one(q, "time")), None,
+                         joinmod.skew_offsets(self.book), shown_id)
+        jt = j.table
+        wh = [w for w in q.get("where", []) if w.strip()]
+        rows = query.where(jt, wh)
+        sort = one(q, "sort")
+        if sort:
+            rows = query.sort_rows(jt, rows, sort)
+        lim = int(one(q, "limit") or PAGE_ROWS)
+        return {"columns": jt.columns,
+                "kinds": dict((c, jt.kind(c)) for c in jt.columns),
+                "rows": rows[:lim], "total": len(jt.rows),
+                "matched": len(rows), "with": j.rows_with,
+                "without": len(j.rows_without), "metrics": j.metrics,
+                "aggs": aggs, "window": joinmod.window_text(margin),
+                "telemetry": source.origin, "notes": j.notes,
+                "figures": jt.columns[len(t.columns):],
+                "lead": len(t.columns)}
+
     def groups(self, q):
         """The campaigns and designs in the store, how far each has got,
         and its parts or points: what `qd campaign status` and `qd doe
@@ -742,7 +787,7 @@ ROUTES = {"/api/entries": "entries", "/api/entry": "entry_info",
           "/api/group": "group", "/api/pivot": "pivot",
           "/api/trend": "trend", "/api/diff": "diff", "/api/raw": "raw",
           "/api/overlay": "overlay", "/api/compare": "compare",
-          "/api/groups": "groups"}
+          "/api/groups": "groups", "/api/join": "join"}
 
 
 LOOPBACK = ("127.0.0.1", "localhost", "::1")

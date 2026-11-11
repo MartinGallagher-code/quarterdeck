@@ -5,6 +5,89 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.12.0 — 2026-11-10
+
+`qd join`: a run's rows beside another system's telemetry (Splunk,
+CloudVision, Prometheus, a gNMI collector), matched by host and time
+window (QD-011).
+
+Its pull request first took 0.9.0, then 0.10.0, but each reached `main`
+first from another: 0.9.0 is QD-009's peer groups and baselines, 0.9.1
+QD-023's `release.yml` change, 0.10.0 QD-021's `qd report`, and then
+0.11.0 QD-018's ssh work. So this is 0.12.0. Every version before it
+(0.10.1 to 0.11.0 included) still keeps `ts` to the whole second.
+
+### Added
+- **`qd join RUN TELEMETRY`.** Each row of the run gets the window it was
+  measured in and, for each metric, figures from its host's samples in
+  that window (`--agg`: mean and max unless told; min, median, p05 to p99,
+  stdev, count, first, last, and delta and rate for counters).
+  - **The windows.** A fan-out's are each host's own, from `qd.hosts`:
+    start (`ts`) plus `duration_s`, per pass. A `qd do`'s are the run's
+    start and finish. `--time COL` or `--time START,END` gives the rows'
+    own times, for an import, a dataset or a file. Both edges count.
+  - **`--window +-N`** (`30s`, `2m`, `±30`) widens every window either
+    side, for sparse sampling and for clocks that disagree.
+  - **Clock skew.** The latest `qd probe skew` in the store (binnacle's
+    skew) is read, and a host whose clock was further out than the window
+    is named, with the `--window` that would cover it. `--skew RUN` reads
+    another; `--skew none` reads none.
+  - **Hosts** match by an alias file (`--alias`: `NAME ALIAS ...`), then
+    exactly, without case, without a `:port`, and by the short name when
+    it is unique. A fan-out's addresses count as names too. The notes name
+    any telemetry names that matched nothing, and any that fit two hosts.
+  - **Blanks, never zeros**, where a row has no sample in its window. A
+    join with no telemetry in any window exits 1, and its notes say why
+    that is likely.
+  - `--metrics` (patterns), `--where` over the joined columns, `--cols`
+    and `--format`, as the other reading verbs have.
+- **Telemetry exports are read from a file**: no API client, no
+  credentials, no network. CSV, TSV and NDJSON are read a line at a
+  time, and only the samples of the run's hosts inside its windows are
+  kept, so an export bigger than memory joins (a 600,000-line export
+  stays under 100 MB). A JSON list is read whole. Long exports (a row per
+  sample) and wide ones (a column per metric) are both read. Columns are
+  found by name (Splunk's `_time` and `host`, Prometheus's `timestamp`,
+  `instance` and `__name__`, Telegraf's `tags.host` and `fields.*`), or
+  named by a **column map** (`--map FILE`: `time`, `host`, `metric`,
+  `value` or `metrics`, `time_format`, `tz`). Epoch seconds, ms, µs and
+  ns, and ISO 8601, are read; a time naming no zone is UTC unless the
+  map's `tz` says otherwise.
+- **`qd import EXPORT --telemetry`** (or `--map`, `--alias`) keeps an
+  export as a run with one `telemetry` table: `time` (UTC, to the
+  millisecond), `host`, `metric`, `value`, whatever shape it came in.
+  `qd join RUN IMPORT` reads it from the store, `@STORE` included.
+- **`qd web`: a Telemetry tab and `/api/join`.** It is `qd join` on the
+  page, over telemetry the store keeps, with its figures from the engine.
+  The filter bar reads the joined columns. The server joins only what is
+  in a store and never reads a file.
+- `qd hints` names it. `tests/test_join.sh` has twelve cases, and
+  `tests/test_web.sh` one more. The cases check window edges, every
+  figure against a hand-worked value, blanks, host matching, widening
+  and skew, a real fan-out's windows, the pre-0.12.0 whole second,
+  import against file, NDJSON at nanoseconds, a memory bound on a big
+  export, and the mistakes.
+  `join` is in `tests/run_tests.sh`'s `TIMES` at 30 seconds, so CI's
+  shares deal it like the rest: timed beside compare, do and view on
+  both of provost's paths and scaled to their seconds in CI, as
+  `report` was.
+
+### Changed
+- **`qd.hosts` keeps each host's start (`ts`) to the millisecond**, not
+  the whole second, so a host's window is exact. `qd show` of a run with
+  several passes shows `ts` with three decimals. Runs filed before 0.12.0
+  keep their whole seconds, and `qd join` gives their windows a second more to
+  cover what was cut off.
+- **One reader of times.** `qd export --format hec` reads row times with
+  the same function as `qd join`. It now also reads microsecond and
+  nanosecond epochs (they used to come out thousands of years ahead), a
+  ` UTC` or `GMT` suffix, and `+01` offsets.
+
+### Not done, by design
+- No live query of Splunk, CloudVision or Prometheus: that would need
+  credentials and a network, which qd has never held. Export a file and
+  join that.
+
 ## 0.11.0 — 2026-11-10
 
 qd through the ssh setups secure sites use: bastions, certificates,
