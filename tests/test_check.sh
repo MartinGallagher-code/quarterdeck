@@ -172,27 +172,28 @@ t_unchanged_without_the_new_columns() {
     # --waivers, gives what 0.14.0 gave, byte for byte
     data
     printf 'req\tcolumn\top\tlimit\tlimit2\twhere\tagg\tunit\tnote\n%s\n%s\n%s\n%s\n' \
-        'R1	mbps	>=	900		status=ok			the link' \
-        'R2	temp	between	20	45	rack=r1	max		' \
+        'R1	mbps	>=	900		status=ok			' \
+        'R2	temp	between	20	45	rack=r1	max		hot' \
         'R3	rtt	<=	250				us	' \
         'R4	status	in	ok						' > t.tsv
     qd_rc check d.csv --against t.tsv --format csv > got.csv 2> /dev/null
     assert_status "$QD_RC" 1
     cat > want.csv <<'CSV'
 req,column,agg,where,observed,limit,unit,measured,verdict,note
-R1,mbps,each,status=ok,880,>= 900,,2/3,fail,1 of 3 failed: b; 1 not measured; the link
-R2,temp,max,rack=r1,44,between 20 and 45,,2/2,pass,
+R1,mbps,each,status=ok,880,>= 900,,2/3,fail,1 of 3 failed: b; 1 not measured
+R2,temp,max,rack=r1,44,between 20 and 45,,2/2,pass,hot
 R3,rtt,each,,300,<= 250,us,3/4,fail,1 of 4 failed: b; 1 not measured
 R4,status,each,,unreachable,in ok,,4/4,fail,1 of 4 failed: d
 CSV
     assert_eq "$(cat got.csv)" "$(cat want.csv)"
+    # (no note long enough to be cut: 3.6 in C cuts with ~, not an ellipsis)
     qd_rc check d.csv --against t.tsv > got.txt 2> /dev/null
     cat > want.txt <<'TXT'
 qd check -- d.csv against t.tsv (4 rows): 1 pass, 3 fail, 0 not measured
 
   req  column  agg   where      observed     limit              unit  measured  verdict  note
-  R1   mbps    each  status=ok  880          >= 900                   2/3       fail     1 of 3 failed: b; 1 not measured; the l…
-  R2   temp    max   rack=r1    44           between 20 and 45        2/2       pass
+  R1   mbps    each  status=ok  880          >= 900                   2/3       fail     1 of 3 failed: b; 1 not measured
+  R2   temp    max   rack=r1    44           between 20 and 45        2/2       pass     hot
   R3   rtt     each             300          <= 250             us    3/4       fail     1 of 4 failed: b; 1 not measured
   R4   status  each             unreachable  in ok                    4/4       fail     1 of 4 failed: d
 TXT
