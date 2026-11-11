@@ -60,8 +60,10 @@ pip install ./quarterdeck                # or put qd (and quarterdeck) on PATH
 qd itself is Python 3.6+, standard library only. It needs provost to keep
 anything (`--no-store` runs without it); binnacle gives it its probes'
 instruments and campaigns' muster, and `doe` its designs, each found on
-`PATH` or where `QD_<TOOL>` points. Nothing is installed on the fleet and
-nothing is left running there. All it needs is key-based ssh, which the
+`PATH` or where `QD_<TOOL>` points. Nothing is installed on the fleet, and
+a command qd gives up on (past `--timeout` or `--max-output`) is stopped
+there, not only its ssh; where qd cannot confirm that, it says so (see
+*When a host takes too long*). All it needs is key-based ssh, which the
 rest of the toolchain needs anyway.
 
 ---
@@ -373,6 +375,30 @@ agree's sense of each), `rc`, `duration_s`, `error` (the first line of what
 went wrong) and `capture` (provost's id for the answer), then what provost
 read.
 
+### When a host takes too long
+
+A host whose command runs past `--timeout`, or sends more than
+`--max-output`, is given up on: its row is `timeout` (or `failed`, rc
+125, past the cap), and the command is **stopped on the host**. Killing
+the local ssh is not enough: ssh asks for no terminal, so the host's sshd
+does not hang the command up, and it would go on loading the host after
+qd reported it finished (pdsh, pssh and parallel-ssh document the same of
+theirs). So every command goes out after one line written to stderr,
+which qd takes off again: the process group sshd started the command in.
+When qd gives up, a second ssh sends that group TERM, then KILL 2 s later,
+under `sudo -n` with `--sudo`; children it started go with it (not a
+daemon that left for a session of its own). `--script` and `--push`
+files are removed only after that.
+
+The row's `error` says which: `timed out after 60s; qd stopped it on the
+host`, or `..., and may still be running on the host: qd could not stop
+it (why)` when the host could not be reached again, a part of the command
+ran as another user, or the host never said where it ran. Such a host is
+named on the run's summary (`NOT STOPPED`, `--quiet` too) and in its note
+(`qd log RUN`), and its `--script`/`--push` directory is left there with
+the command. A command that finishes in time comes back exactly as
+before.
+
 ### Over time
 
 ```bash
@@ -391,7 +417,7 @@ Ctrl-C, and every pass that finished is kept.
 | `--script FILE -- ARGS` | push FILE, run it with ARGS, remove it again |
 | `--push FILE` | copy a file over first (repeatable); the command runs beside it, in a directory of the run's own in `--remote-dir` |
 | `--sudo` | run under `sudo -n` |
-| `--dry-run` | print the ssh command per host; contact nothing |
+| `--dry-run` | print the ssh command per host, less the line ahead of it that lets qd stop it (see *When a host takes too long*); contact nothing |
 | `--first N` | the first N hosts only, the canary before the fleet |
 | `--limit N` | refuse to run wider than N hosts without `--yes` |
 | `--no-store` | print the answers, keep nothing |
@@ -462,8 +488,8 @@ the account's own ssh and sudo rights on the hosts.
 | `--servers` | `QD_SERVERS` | `hosts.txt` or `servers.txt` |
 | `--user` | `QD_SSH_USER` | your ssh config |
 | `--jobs` | `QD_JOBS` | 32 hosts at once |
-| `--timeout` | `QD_TIMEOUT` | 60 s per host |
-| `--max-output` | `QD_MAX_OUTPUT` | 4 MiB per host; past it the host is killed and reported |
+| `--timeout` | `QD_TIMEOUT` | 60 s per host; past it the command is stopped on the host and reported |
+| `--max-output` | `QD_MAX_OUTPUT` | 4 MiB per host; past it the command is stopped on the host and reported |
 | `--ssh`, `--scp` | `QD_SSH`, `QD_SCP` | `ssh`, `scp` |
 | `--remote-dir` | `QD_REMOTE_DIR` | `/var/tmp` |
 | `--rate` | `QD_RATE` | none: new connections as fast as `--jobs` allows; `10/s` for a bastion's `MaxStartups` |
@@ -1433,6 +1459,12 @@ QD_TEST_ONLY=import bash tests/run_tests.sh store   # only its cases whose name 
 
 doehelper wants Python 3.10 or newer; on an older one the doe suite uses its
 stand-in, as CI's 3.9 and 3.6 jobs do.
+
+`tests/check_real_sshd.sh` is not one of the suites either, nor in CI: it
+starts a throwaway sshd on 127.0.0.1 as you (`openssh-server`; it skips
+without one) and checks against real OpenSSH what the fake ssh cannot
+prove, that a command past `--timeout` or `--max-output` is stopped on
+the host (see *When a host takes too long*).
 
 `tests/stress_filing.sh` is not one of the suites: it loops, for a race
 that shows only now and then. It files `qd do` runs of several tables one
