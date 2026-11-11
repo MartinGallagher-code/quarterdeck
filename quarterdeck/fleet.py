@@ -17,13 +17,24 @@ import re
 import secrets
 import selectors
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
             "-o", "StrictHostKeyChecking=accept-new"]
+
+# --reuse's control sockets.  A socket's path must fit sun_path: 108
+# bytes on Linux, 104 on macOS and the BSDs (the smaller is the limit
+# here).  A master binds at ControlPath plus "." and 16 random characters
+# and renames it after, and %C is 40, so the directory gets what is left.
+SUN_PATH = 104
+CONTROL_TAIL = len("/") + 40 + len(".") + 16 + 1    # and the NUL
+CONTROL_PERSIST = 60
 
 # The file in every directory qd makes on a host, holding the run's id.
 SENTINEL = ".qd-owned"
@@ -108,12 +119,137 @@ class Result(object):
         return "exit %d" % self.rc
 
 
+def control_dir(bases=None):
+    """A new directory for --reuse's sockets, private to this user (mkdtemp
+    makes it 0700), in the first of `bases` short enough for a socket path:
+    TMPDIR, then /tmp (macOS's TMPDIR, /var/folders/..., is too long).
+    -> the path, or None when none is short enough or writable."""
+    if bases is None:
+        bases = [tempfile.gettempdir(), "/tmp"]
+    seen = set()
+    for base in bases:
+        if not base or base in seen or not os.path.isdir(base):
+            continue
+        seen.add(base)
+        # mkdtemp's name is the prefix and 8 characters
+        if len(base.rstrip("/")) + len("/qd-ssh-12345678") + CONTROL_TAIL \
+                > SUN_PATH:
+            continue
+        try:
+            return tempfile.mkdtemp(prefix="qd-ssh-", dir=base)
+        except OSError:
+            continue
+    return None
+
+
+class Reuse(object):
+    """--reuse: one ssh connection to each host for the whole qd command,
+    shared by every ssh and scp to it -- a push's four or five, every
+    pass, every run of a `qd probe A B`.  OpenSSH's ControlMaster does it: the first call to
+    a host opens a master, the rest ride on it.  The sockets live in a
+    private directory of this command's own, named by %C (a hash of the
+    host, port and user), and close() shuts every master and removes the
+    directory when the command ends, however it ends."""
+
+    def __init__(self, persist=CONTROL_PERSIST, bases=None):
+        # how long an idle master waits for the next call: a pass every S
+        # seconds keeps it for the next pass
+        self.persist = max(1, int(persist))
+        self._bases = bases
+        self.dir = None
+        # reentrant: close() runs from a signal handler too, on the main
+        # thread, which may hold it at that moment
+        self._lock = threading.RLock()
+        self._hosts = {}        # (ssh argv, target, port): None
+        self._closed = False
+
+    def directory(self):
+        """The socket directory, made the first time it is asked for."""
+        with self._lock:
+            if self.dir is None:
+                self.dir = control_dir(self._bases)
+                if self.dir is None:
+                    raise OSError(
+                        "no directory short enough for ssh's control "
+                        "sockets (%d bytes at most): point TMPDIR at a short "
+                        "one, such as /tmp" % SUN_PATH)
+            return self.dir
+
+    def options(self):
+        return ["-o", "ControlMaster=auto",
+                "-o", "ControlPath=%s/%%C" % self.directory(),
+                "-o", "ControlPersist=%d" % self.persist]
+
+    def used(self, argv, target, port):
+        """A host this command connected to: its master is closed after."""
+        with self._lock:
+            self._hosts[(tuple(argv), target, port)] = None
+
+    def close(self, jobs=32, timeout=10):
+        """Every master closed (`ssh -O exit`, which contacts no host: it
+        talks to the local socket), then the directory removed.  Never
+        raises; safe to call twice."""
+        with self._lock:
+            if self._closed or self.dir is None:
+                self._closed = True
+                return
+            self._closed = True
+            hosts = list(self._hosts)
+        try:
+            masters = bool(os.listdir(self.dir))
+        except OSError:
+            masters = False
+
+        def stop(key):
+            argv, target, port = key
+            cmd = list(argv) + (["-p", str(port)] if port else []) + \
+                ["-O", "exit", target]
+            try:
+                subprocess.run(cmd, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=timeout)
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+        if masters and hosts:
+            with ThreadPoolExecutor(
+                    max_workers=max(1, min(jobs, len(hosts)))) as pool:
+                list(pool.map(stop, hosts))
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def close_on_signals(self):
+        """A TERM or HUP (a timeout, a cancelled job, a closed terminal)
+        still ends qd at once, as it always has, but closes the masters
+        first: left alone they idle on for ControlPersist seconds.  A
+        signal already ignored (nohup) stays ignored.  Only the main
+        thread can set a handler; elsewhere this does nothing."""
+        import signal
+
+        def handler(signum, frame):
+            self.close()
+            os._exit(128 + signum)
+
+        for name in ("SIGTERM", "SIGHUP"):
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                if signal.getsignal(sig) == signal.SIG_DFL:
+                    signal.signal(sig, handler)
+            except (ValueError, OSError):
+                pass
+
+
 class Runner(object):
     def __init__(self, ssh="ssh", scp="scp", user=None, timeout=60,
                  max_output=4 * 1024 * 1024, remote_dir="/var/tmp",
-                 sudo=False):
+                 sudo=False, ssh_config=None, reuse=None):
         self.ssh = shlex.split(ssh)
         self.scp = shlex.split(scp)
+        # --ssh-config: ssh and scp alike read this file, not ~/.ssh/config
+        self.ssh_config = ssh_config
+        # a Reuse, shared by every Runner of one command, or None
+        self.reuse = reuse
         self.user = user
         self.timeout = timeout
         self.max_output = max_output
@@ -144,11 +280,30 @@ class Runner(object):
         addr = "[%s]" % host.addr if ":" in host.addr else host.addr
         return "%s@%s" % (self.user, addr) if self.user else addr
 
+    def config_options(self):
+        """-F FILE with --ssh-config: what ssh -G is given as well."""
+        return ["-F", self.ssh_config] if self.ssh_config else []
+
+    def ssh_options(self):
+        """What every ssh and scp qd starts is given before the host: the
+        config file, qd's own options, and --reuse's."""
+        opts = self.config_options() + SSH_OPTS
+        if self.reuse is not None:
+            opts = opts + self.reuse.options()
+        return opts
+
     def ssh_argv(self, host, command):
-        argv = list(self.ssh) + SSH_OPTS
+        argv = list(self.ssh) + self.ssh_options()
         if host.port:
             argv += ["-p", str(host.port)]
         return argv + [self.target(host), command]
+
+    def _note_master(self, host):
+        """With --reuse, a host this run connects to, so its master is
+        closed when the command ends."""
+        if self.reuse is not None:
+            self.reuse.used(list(self.ssh) + self.ssh_options(),
+                            self.target(host), host.port)
 
     def wrap(self, command):
         if self.sudo:
@@ -327,7 +482,7 @@ class Runner(object):
             return rc, err
         if host.name not in self._made:
             self._made[host.name] = "qd-made-parent" in out
-        argv = list(self.scp) + SSH_OPTS
+        argv = list(self.scp) + self.ssh_options()
         if host.port:
             argv += ["-P", str(host.port)]
         argv += ["-q"] + list(files) + ["%s:%s/" % (self.scp_target(host),
@@ -365,6 +520,7 @@ class Runner(object):
                 stdin=None):
         r = Result(host, pass_no)
         t0 = time.monotonic()
+        self._note_master(host)
         if push:
             rc, err = self.push(host, push)
             if rc != 0:

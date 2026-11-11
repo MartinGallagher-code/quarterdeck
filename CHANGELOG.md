@@ -5,6 +5,54 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.11.0 — 2026-11-10
+
+qd through the ssh setups secure sites use: bastions, certificates,
+Kerberos and one-time codes, proved against a real sshd, and one ssh login
+per host instead of one per call (QD-018).
+
+### Added
+- **`--reuse`** (`QD_SSH_REUSE=1`), on every verb that reaches hosts: one
+  ssh login per host for the whole command (`ControlMaster=auto`,
+  `ControlPersist=60`, or to the next pass with `--every`), shared by the
+  push, the run, the clean-up, every pass and every run of a `qd probe A
+  B`. The sockets go in a new 0700 directory, `qd-ssh-XXXXXXXX`, in
+  `TMPDIR`, or in `/tmp` where `TMPDIR` is too long for a socket's path
+  (macOS's is). When qd ends, however it ends short of `kill -9`, every
+  master is closed with `ssh -O exit` and the directory removed. On a real
+  sshd a push run on one host went from five logins to one.
+- **`--ssh-config FILE`** (`QD_SSH_CONFIG`): ssh and scp read FILE
+  (`ssh -F`), and so do the `ssh -G` behind a run's `ssh_user`, `qd
+  doctor` and a remote store's git. A missing file is refused before any
+  host is contacted, `--dry-run` included.
+- **`qd doctor HOST`** (with `--ssh`, `--ssh-config`, `--user`): what qd's
+  ssh resolves for a host, from `ssh -G`, contacting nothing: user, port,
+  the bastion and the bastion's own BatchMode and host-key checking, the
+  certificate and its `Valid:` dates, the identity files that exist,
+  GSSAPI and whether `klist -s` finds a ticket, a ControlPath and whether
+  a master is open, BatchMode. Exit 1 when `ssh -G` cannot say.
+- README: **Bastions, certificates, Kerberos and MFA**, with worked
+  `ssh_config` for each, what `BatchMode=yes` rules out, and how a master
+  opened by hand carries a run past a one-time code.
+
+### Found on the way
+- ssh reaches a ProxyJump bastion with a second ssh that reads the config
+  file and none of qd's `-o` options: qd's `BatchMode=yes` and
+  `StrictHostKeyChecking=accept-new` never reached the hop. The README now
+  says the bastion's own `Host` block must carry them, and `qd doctor`
+  shows the hop's settings and warns. A test proves it on a real sshd.
+
+### Tests
+- `tests/test_ssh.sh`, 20 cases. The fake ssh and scp now record every
+  argv (`$FAKE_SSH_ARGV`) and play `-F`, `-l`, `-O exit|check` and
+  masters. Where `sshd` is installed, four cases start one of their own on
+  loopback as the user running them: a ProxyJump (and the hop ignoring
+  qd's `-o`), `--reuse`'s one login, a master opened first carrying a run
+  with the key withdrawn, and a certificate login. Elsewhere they are
+  skipped and named; CI's new **ssh** job installs openssh-server and
+  requires them (`QD_TEST_SSHD=require`). Kerberos needs a KDC and is not
+  run; doctor's reading of `klist` is, with stand-ins.
+
 ## 0.10.3 — 2026-11-10
 
 A command `qd` gives up on is stopped on the host, not only its local ssh

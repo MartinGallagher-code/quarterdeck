@@ -148,6 +148,37 @@ jobs:
       - name: Run the test suite
         run: bash tests/run_tests.sh --shard ${{ matrix.shard }}/3
 
+  ssh:
+    # tests/test_ssh.sh logs in to a real sshd of its own on loopback,
+    # started as the runner's user, where one is installed, and skips those
+    # cases where not.  Here one is installed and they are required: a
+    # ProxyJump through a bastion, --reuse's one login per host, a master
+    # opened first carrying a run, a certificate login (QD-018).  The suite
+    # runs in its share of the test jobs above too.
+    name: ssh (a real sshd on loopback)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install openssh-server and provost
+        run: |
+          command -v sshd > /dev/null || [ -x /usr/sbin/sshd ] ||
+            { sudo apt-get update && sudo apt-get install -y openssh-server; }
+          python -m pip install provost
+
+      - name: Run the ssh suite, a real sshd required
+        env:
+          QD_TEST_SSHD: require
+        run: bash tests/run_tests.sh ssh
+
   version:
     # Every change moves the version in three places (CLAUDE.md; shared_tools
     # BN-002, whose templates/version-job.yml the last two steps are). A pull
