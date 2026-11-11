@@ -23,7 +23,7 @@ import sys
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
             "-o", "StrictHostKeyChecking=accept-new"]
@@ -882,13 +882,19 @@ def fan_out(hosts, fn, jobs, label="", stop=None, skip=None):
     futures = []
     try:
         for i in range(total):
-            slots.acquire()
+            # waits with a timeout, so Ctrl-C is heard: an untimed lock
+            # wait is not interrupted by a signal everywhere (macOS)
+            while not slots.acquire(timeout=0.2):
+                pass
             if stop is not None and stop.tripped():
                 slots.release()
                 break
             if stop is not None:
                 stop.start()
             futures.append(pool.submit(wrapped, i))
+        pending = set(futures)
+        while pending:
+            _, pending = wait(pending, timeout=0.2)
         for f in futures:
             f.result()
     except KeyboardInterrupt:

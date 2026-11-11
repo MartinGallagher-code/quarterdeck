@@ -692,15 +692,23 @@ t_retries_keep_every_attempt() {
 }
 
 # SIGINT to qd alone, as `timeout -s INT` sends it (python here: macOS
-# has no timeout(1))
-interrupt_after() {
-    local secs="$1"; shift
+# has no timeout(1)), once FILE exists -- a host is mid-command then.  A
+# suite run in the background (run_tests.sh) starts with SIGINT ignored,
+# and a python that starts so never hears it: qd is started with it back.
+interrupt_when() {
+    local file="$1"; shift
     set +e
-    "$PY" -c 'import signal, subprocess, sys, time
-p = subprocess.Popen(sys.argv[2:])
-time.sleep(float(sys.argv[1]))
-p.send_signal(signal.SIGINT)
-sys.exit(p.wait())' "$secs" "$@"
+    "$PY" -c 'import os, signal, subprocess, sys, time
+p = subprocess.Popen(sys.argv[2:], preexec_fn=lambda: signal.signal(
+    signal.SIGINT, signal.SIG_DFL))
+end = time.time() + 60
+while not os.path.exists(sys.argv[1]) and time.time() < end \
+        and p.poll() is None:
+    time.sleep(0.05)
+time.sleep(0.3)
+if p.poll() is None:
+    p.send_signal(signal.SIGINT)
+sys.exit(p.wait())' "$file" "$@"
     QD_RC=$?
     set -e
 }
@@ -709,9 +717,9 @@ t_ctrl_c_keeps_the_hosts_that_answered() {
     install_fake_ssh
     for h in node01 node02 node03 node04; do fake_host "$h"; done
     touch "$FAKE_ROOT/node03/slow"
-    interrupt_after 4 "$PY" "$QD_DIR/qd" run --ssh "$FAKE_BIN/ssh" \
-        -S node01,node02,node03,node04 -j 1 \
-        -- 'if [ -f slow ]; then sleep 6; fi; echo up' > out 2>&1
+    interrupt_when "$FAKE_ROOT/node03/started" "$PY" "$QD_DIR/qd" run \
+        --ssh "$FAKE_BIN/ssh" -S node01,node02,node03,node04 -j 1 \
+        -- 'if [ -f slow ]; then touch started; sleep 8; fi; echo up' > out 2>&1
     assert_status "$QD_RC" 1
     assert_contains "$(cat out)" "2 ok, 2 not-run"
     assert_contains "$(cat out)" "kept the hosts that had answered"

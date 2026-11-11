@@ -46,9 +46,10 @@ usage() { sed -n '5,25p' run_tests.sh | sed 's/^# \{0,1\}//'; }
 # the seven; report and join, which came after, timed here beside
 # compare, do and view on both of provost's paths and scaled to their
 # seconds in CI; ssh (QD-018) timed here, a real sshd and all, on four
-# cores; via (QD-008) beside report, scaled the same way.  A run's last
+# cores; via (QD-008) beside report, scaled the same way; run and probe
+# raised by the share of cases QD-027 added, an estimate.  A run's last
 # line, `seconds:`, gives every suite's, to measure them again from.
-TIMES="doe:236 peers:231 web:225 via:224 run:176 xstore:146 compare:132 probe:108 operator:98 report:87 campaign:86 rm:81 do:78 remote:77 view:74 pacing:54 store:41 stop:40 policy:37 read:35 join:30 ssh:25 export:24 runner:18 split:15 diff:14 check:12 analyze:6 cleanup:3"
+TIMES="doe:236 peers:231 web:225 via:224 run:205 xstore:146 compare:132 probe:112 operator:98 report:87 campaign:86 rm:81 do:78 remote:77 view:74 pacing:54 store:41 stop:40 policy:37 read:35 join:30 ssh:25 export:24 runner:18 split:15 diff:14 check:12 analyze:6 cleanup:3"
 UNLISTED=30
 
 # With --shard K/N, a suite listed here is split into that many parts (or
