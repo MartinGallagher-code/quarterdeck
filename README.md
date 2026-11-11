@@ -1037,6 +1037,7 @@ qd check latest --against limits.tsv --keep   # and file the verdicts (qd web, q
 qd check latest --against limits.tsv --format csv -o trr.csv
 qd check latest --against limits.tsv --waivers waivers.tsv   # agreed deviations
 qd check latest --against limits.tsv --fail-level high       # exit 1 only for high and critical
+qd check latest --against limits.tsv --format junit -o qd-check.xml   # for CI
 ```
 
 The thresholds file is TSV (or CSV) with a header. `req`, `column`, `op`
@@ -1144,6 +1145,39 @@ named `check-<run>`, so `qd show`, `qd export` and `qd web` read it like
 any other dataset; with its severity and waiver columns, and the
 `--waivers` file named in its command.
 
+### JUnit XML, for CI
+
+**`--format junit`** writes the verdicts as JUnit XML, the result format
+Jenkins, GitLab and the GitHub Actions test reporters read, so a CI job
+that runs `qd check` shows each requirement as a test:
+
+- One `<testsuite>` per run: its name is the run's id, its `timestamp`
+  the run's start, and its properties the operator, the store, and the
+  thresholds file (and the waivers file) by name with its sha256. A
+  dataset read from a file is named by the file, with no timestamp.
+- One `<testcase>` per check, `classname` the `req` and `name` the column
+  with its limit (`mbps >= 900 where status=ok`; `max of temp between 20
+  and 45` for an aggregate). With **`--each`**, one per host per check,
+  `name` the host (and the column and limit too, when a `req` has more
+  than one check). A `severity` is a property of its testcase.
+
+| Verdict | In JUnit |
+|---|---|
+| pass | a `<testcase>` with nothing in it |
+| fail | `<failure type="fail" message="observed 880; want >= 900">`, the note inside |
+| unexpected pass | `<failure type="unexpected pass">`: it fails the run, so it fails the build |
+| not measured | `<error type="not measured" message="not measured: ...">`: never a pass, and not counted as one |
+| waived | `<skipped message="waived: justification (expires ...; granted by ...)">` |
+
+So `tests`, `failures`, `errors` and `skipped` on `<testsuite>` are the
+head line's counts: failures are fail and unexpected pass, errors not
+measured, skipped waived. A failure below `--fail-level` is still a
+`<failure>` (the verdict is fail; only the exit status lets it off), and
+the suite carries `fail_level` as a property. Every string is escaped,
+and the characters XML 1.0 cannot hold (NUL and the other control
+characters) are dropped, so a hostile host name or note cannot break the
+file. The exit status is the same as for any other format.
+
 ---
 
 ## For a test report: `qd report`
@@ -1167,6 +1201,7 @@ evidence/
   data/RUN/data.stats.csv, .json qd stats on it
   data/RUN/outliers.csv, .json   qd outliers on every numeric column
   data/RUN/check.csv, .json      qd check's verdicts
+  data/RUN/check.junit.xml       the same verdicts as JUnit XML (qd check --format junit)
   data/RUN/captures/c0001.txt    every host's answer, exactly as provost keeps it
   data/baseline.csv, .json       medians against --baseline
   inputs/limits.tsv              the --check file, as given

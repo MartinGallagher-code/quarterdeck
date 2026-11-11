@@ -1823,7 +1823,17 @@ def cmd_check(args):
         lines.append("")
         lines.append("  filed as %s: qd show %s, qd web, qd export %s"
                      % (rid, rid, rid))
-    emit(args, vt, lines)
+    if (args.format or "").lower() == "junit":
+        from . import exporters
+        name, stamp, props = exporters.junit_suite(
+            e, source_name(t), [("thresholds", args.against),
+                                ("waivers", args.waivers)])
+        if level != "info":
+            props.append(("fail_level", level))
+        write_text(args.output or "-",
+                   exporters.to_junit(vt, name, stamp, props))
+    else:
+        emit(args, vt, lines)
     return 1 if hard else 0
 
 
@@ -4224,10 +4234,10 @@ def add_query(p, sort=True):
                    "(results, csv, json, grid, lines)")
 
 
-def add_format(p, default_hint="text"):
+def add_format(p, default_hint="text", help_=None):
     p.add_argument("--format", metavar="FMT",
-                   help="text (default), csv, tsv, json, ndjson or md: the "
-                   "table behind the report, for whatever comes next")
+                   help=help_ or "text (default), csv, tsv, json, ndjson or "
+                   "md: the table behind the report, for whatever comes next")
     p.add_argument("-o", "--output", metavar="FILE",
                    help="write there instead of stdout")
 
@@ -4609,7 +4619,9 @@ def build_parser():
                     help="file the verdicts in the store, for qd web and qd "
                     "export")
     add_query(sp, sort=False)
-    add_format(sp)
+    add_format(sp, help_="text (default), csv, tsv, json, ndjson, md, or "
+               "junit: JUnit XML for CI, a testcase per check (per host per "
+               "check with --each)")
     sp.set_defaults(fn=cmd_check)
 
     sp = verb("report", "an evidence package for a run or a campaign: "
