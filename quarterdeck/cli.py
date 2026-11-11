@@ -1779,27 +1779,43 @@ def cmd_outliers(args):
 def cmd_check(args):
     from . import check as checkmod
     checks = checkmod.read_thresholds(args.against)
+    level = (args.fail_level or "info").strip().lower()
+    if level not in checkmod.SEVERITIES:
+        die("--fail-level %s: want one of %s (QD_FAIL_LEVEL)" % (
+            args.fail_level, ", ".join(checkmod.SEVERITIES)), 2)
+    waivers = checkmod.read_waivers(args.waivers, checks) \
+        if args.waivers else None
     t = load(args)
     s = subset(args, t)
-    results = checkmod.run(s, checks)
+    results = checkmod.run(s, checks, waivers)
     n = checkmod.counts(results)
     e = getattr(t, "entry", None)
     if args.each:
-        vt = tablemod.Table(checkmod.EACH_COLUMNS,
-                            checkmod.each_rows(results), "check")
+        cols = checkmod.columns(checkmod.EACH_COLUMNS, checks, waivers)
+        vt = tablemod.Table(cols, checkmod.each_rows(results, cols),
+                            "check")
     else:
-        vt = tablemod.Table(checkmod.SUMMARY_COLUMNS,
-                            checkmod.summary_rows(results), "check")
-    head = "%s check -- %s against %s (%s): %d pass, %d fail, %d not " \
-        "measured" % (PROG, source_name(t), args.against, scope(args, t, s),
-                      n[checkmod.PASS], n[checkmod.FAIL],
-                      n[checkmod.UNMEASURED])
+        cols = checkmod.columns(checkmod.SUMMARY_COLUMNS, checks, waivers)
+        vt = tablemod.Table(cols, checkmod.summary_rows(results, cols),
+                            "check")
+    head = "%s check -- %s against %s (%s): %s" % (
+        PROG, source_name(t), args.against, scope(args, t, s),
+        checkmod.counts_text(n, waivers is not None))
     lines = [head]
     if e is not None:
         m = e.meta
         lines.append("  run %s  %s  %s%s" % (
             shown_id(e), m.get("name") or "", m.get("created") or "",
             ("  " + m["command"]) if m.get("command") else ""))
+    if waivers is not None:
+        lines.append("  waivers %s: %d, %d expired" % (
+            args.waivers, len(waivers),
+            sum(1 for w in waivers if w.expired())))
+    hard, soft = checkmod.failing(results, level)
+    if soft:
+        lines.append("  %s below --fail-level %s (%s): shown, not failing "
+                     "the run" % (plural(len(soft), "failure"), level,
+                                  ", ".join(r.chk.req for r in soft[:10])))
     lines.append("")
     lines.extend(render.render_table(vt, width=width_of(args), indent="  "))
     if args.keep:
@@ -1808,7 +1824,7 @@ def cmd_check(args):
         lines.append("  filed as %s: qd show %s, qd web, qd export %s"
                      % (rid, rid, rid))
     emit(args, vt, lines)
-    return 0 if n[checkmod.PASS] == len(results) else 1
+    return 1 if hard else 0
 
 
 def keep_check(args, vt, t, nchecks):
@@ -1822,9 +1838,11 @@ def keep_check(args, vt, t, nchecks):
     rid = new_run_id(st, label)
     b = filing.Batch()
     vt.name = "check"
-    vt.notes = ["qd check %s --against %s" % (
+    vt.notes = ["qd check %s --against %s%s" % (
         run_label(t) or getattr(t, "source", ""),
-        os.path.abspath(args.against))]
+        os.path.abspath(args.against),
+        (" --waivers %s" % os.path.abspath(args.waivers))
+        if args.waivers else "")]
     added = add_tables(b, rid, label, [(os.path.abspath(args.against), vt)])
     if not added:
         b.cleanup()
@@ -4577,7 +4595,14 @@ def build_parser():
     sp.add_argument("ref", metavar="RUN")
     sp.add_argument("--against", required=True, metavar="FILE",
                     help="thresholds: req, column, op, limit [limit2, where, "
-                    "agg, unit, note] (README: qd check)")
+                    "agg, unit, note, severity] (README: qd check)")
+    sp.add_argument("--waivers", default=env("WAIVERS"), metavar="FILE",
+                    help="excuse failures: req, justification [expires, "
+                    "where, expect, granted_by] (QD_WAIVERS)")
+    sp.add_argument("--fail-level", default=env("FAIL_LEVEL", "info"),
+                    metavar="LEVEL", help="exit 1 only for a failure at or "
+                    "above this severity: info, low, medium, high, critical "
+                    "(QD_FAIL_LEVEL, info)")
     sp.add_argument("--each", action="store_true",
                     help="a row per host per check, not one per check")
     sp.add_argument("--keep", action="store_true",
@@ -4599,6 +4624,9 @@ def build_parser():
                     help="check each run against these thresholds, as qd "
                     "check --against does (default: the verdicts qd check "
                     "--keep filed, if any)")
+    sp.add_argument("--waivers", metavar="FILE",
+                    help="with --check: the waivers, as qd check --waivers "
+                    "reads them; copied into inputs/ (QD_WAIVERS)")
     sp.add_argument("--baseline", metavar="RUN",
                     help="compare every numeric column's median with this "
                     "run's, as qd compare does")

@@ -88,6 +88,7 @@ setup_env() {
     unset SLURM_JOB_PARTITION
     unset PROVOST_WORKSPACE PROVOST_HOME PROVOST_CONTEXT_COLUMNS PROVOST_QUIET
     unset QD_OPERATOR PROVOST_OPERATOR
+    unset QD_WAIVERS QD_FAIL_LEVEL
     # Every case files into a store of its own; QD_PROVOST_BATCH=0 from
     # the caller runs the suites on the one-capture-at-a-time path.
     export QD_STORE="$TEST_TMPDIR/store"
