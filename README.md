@@ -1035,11 +1035,13 @@ qd check latest --against limits.tsv          # one row per requirement
 qd check latest --against limits.tsv --each   # one row per host per requirement
 qd check latest --against limits.tsv --keep   # and file the verdicts (qd web, qd export)
 qd check latest --against limits.tsv --format csv -o trr.csv
+qd check latest --against limits.tsv --waivers waivers.tsv   # agreed deviations
+qd check latest --against limits.tsv --fail-level high       # exit 1 only for high and critical
 ```
 
 The thresholds file is TSV (or CSV) with a header. `req`, `column`, `op`
-and `limit` are required; `limit2`, `where`, `agg`, `unit` and `note`
-may be left out or blank:
+and `limit` are required; `limit2`, `where`, `agg`, `unit`, `note` and
+`severity` may be left out or blank:
 
 ```text
 req      column  op       limit  limit2  where      agg   unit
@@ -1050,8 +1052,21 @@ SYS-104  temp    between  20     45                 max
 ```
 
 - **`op`**: `<`, `<=`, `>`, `>=`, `==`, `!=`, `in` (a comma list of
-  words, without regard to case) or `between` (`limit` to `limit2`,
-  inclusive). `==` and `!=` compare numbers as numbers and words as words.
+  words, without regard to case), `between` (`limit` to `limit2`,
+  inclusive) or `within` (below). `==` and `!=` compare numbers as numbers
+  and words as words.
+- **`within`** holds a value to a reference give or take a tolerance, as
+  ReFrame's references do: `limit` is the reference and `limit2` the
+  tolerance, `+-10%` (or `±10%`), `-5%,+10%` (or `-5%;+10%` in a CSV),
+  or absolute, `+-3` or `-3,+5`. A percentage is of the reference; an
+  absolute tolerance is in the reference's unit, or in one of its family
+  (`within 0.2ms` give or take `+-50us`). It reads as `within 50 (-10%,
+  +10%)`, inclusive at both ends, and is scaled by unit as every other op
+  is.
+- **`severity`**: `critical`, `high`, `medium`, `low` or `info` (InSpec's
+  words; its `none` is `info`, and an impact from 0.0 to 1.0 maps onto
+  them as InSpec maps it: below 0.4 low, below 0.7 medium, below 0.9
+  high). It is a column of the verdict table when the file has it.
 - **`where`** narrows the rows, in `--where`'s grammar. `--where` on the
   command line narrows them for every check.
 - **`agg`**: `each` (the default: every row must pass) or one figure over
@@ -1074,13 +1089,60 @@ many of the rows did.
 
 The exit status is 0 when every check passed, and 1 when any failed or
 was not measured: a finding, as everywhere else in qd. A thresholds
-file qd cannot read (a missing column, an unknown `op` or `agg`, a
-`between` without `limit2`, a word where a number belongs, the same check
-twice) is refused with exit 2, naming the check.
+file qd cannot read (a missing column, an unknown `op`, `agg` or
+`severity`, a `between` or `within` without `limit2`, a word where a
+number belongs, the same check twice) is refused with exit 2, naming the
+check.
+
+**`--fail-level LEVEL`** (`QD_FAIL_LEVEL`, default `info`) makes the exit
+status 1 only for a failure at or above that severity; a lesser one is
+still a failure in the table, and the head says how many were let off.
+Two things are never let off: a check with **no** severity (it counts at
+every level, so a file without the column behaves as it always did), and
+**not measured**, whatever its severity.
+
+### Waivers
+
+At a test-readiness review, a requirement that fails under an agreed
+deviation -- a known firmware bug, one class of node excused -- is not a
+plain failure, and editing the thresholds would change the requirement
+and lose the record. **`--waivers FILE`** (`QD_WAIVERS`) names a second
+file, TSV or CSV like the first, as Chef InSpec's waiver file does:
+
+```text
+req      justification                 expires     where    expect  granted_by
+SYS-101  NIC firmware 2.1 bug, FSE-12  2026-12-31  host=n4          J. Smith
+SYS-104  thermal rework not done yet   2027-03-01           fail    QA board
+```
+
+`req` and `justification` are required; `expires` (YYYY-MM-DD, the last
+day it holds), `where` (only these rows, in `--where`'s grammar),
+`expect` and `granted_by` may be blank.
+
+- A check that **failed** under a waiver in force is **waived**, not
+  failed, and does not fail the run. Under `each` only the rows the
+  waiver's `where` picks are excused; any other failing row still fails
+  it. An aggregate is waived only when the waiver covers every row it was
+  taken over.
+- A check that passed stays a **pass**. With `expect fail`, it is an
+  **unexpected pass** instead, which fails the run (as ReFrame's `xfail`
+  does): the deviation is over, so the waiver should go.
+- **Not measured is never waived.** A waiver excuses a measured failure
+  only.
+- An **expired** waiver does nothing; the verdict stays a failure, and
+  the table shows the waiver with `(expired)` beside its date.
+- A waiver whose `req` no check has is refused with exit 2, so a typo
+  cannot quietly excuse nothing; so is a blank justification, a date qd
+  cannot read, or an `expect` other than `fail`.
+
+With waivers, the verdict table gains `justification`, `expires` and
+`granted_by`, and the head counts waived apart from passed. Without
+`--waivers` and without a `severity` column the output is what it was.
 
 `--keep` files the verdict table in the store as a run of kind `check`,
 named `check-<run>`, so `qd show`, `qd export` and `qd web` read it like
-any other dataset.
+any other dataset; with its severity and waiver columns, and the
+`--waivers` file named in its command.
 
 ---
 
@@ -1108,6 +1170,8 @@ evidence/
   data/RUN/captures/c0001.txt    every host's answer, exactly as provost keeps it
   data/baseline.csv, .json       medians against --baseline
   inputs/limits.tsv              the --check file, as given
+  inputs/waivers.tsv             the --waivers file, as given
+  data/waivers.csv, .json        every verdict a waiver touched
   verify.txt                     provost verify on the report's captures
 ```
 
@@ -1118,7 +1182,10 @@ evidence/
   anywhere). `manifest.json` lists every one of those commands.
 - **The summary**, in order: findings; the run (its `qd.runs` record,
   with who ran it, and the launcher and job for a run not over ssh); hosts asked, ok and not answering, with why; the
-  figures of every column; the checks; drift against the baseline; the
+  figures of every column; the checks; the waivers (`--waivers FILE`
+  with `--check`, or the waived verdicts `qd check --keep` filed), each
+  with its justification, expiry and who granted it, and waived counted
+  apart from passed; drift against the baseline; the
   outliers; the captures' `#%` keys, the run manifest provost reads
   (PV-020), and the ones `provost annotate` added later; `provost verify`'s
   verdict and the store's head commit; the files; how the report was made.

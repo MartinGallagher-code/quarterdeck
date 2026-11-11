@@ -2,8 +2,8 @@
 # SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 """qd report: an evidence package for a run or a campaign.
 
-    qd report RUN|campaign:NAME [--out DIR] [--check FILE] [--baseline RUN]
-              [--drift PCT] [--z Z] [--zip]
+    qd report RUN|campaign:NAME [--out DIR] [--check FILE] [--waivers FILE]
+              [--baseline RUN] [--drift PCT] [--z Z] [--zip]
 
 writes a directory an evaluator can read, check and attach without qd:
 
@@ -18,7 +18,9 @@ writes a directory an evaluator can read, check and attach without qd:
     data/baseline-hosts.csv, .json         `qd compare BASELINE RUN --format csv`
     data/parts.csv, .json                  a campaign: its parts, and their
                                            medians side by side
-    inputs/FILE                            the --check file, as given
+    inputs/FILE                            the --check file, as given, and
+                                           the --waivers file beside it
+    data/waivers.csv, .json                the failures waived, with why
     verify.txt                             `provost verify` on the captures
     manifest.json                          run records (with the operator),
                                            the captures' #% keys, versions,
@@ -58,7 +60,7 @@ import zipfile
 from . import VERSION
 from . import check as checkmod, compare as comparemod, filing, stats
 from . import store as storemod, table as tablemod, whoran
-from .common import PROG, QdError, die, plural, read_text
+from .common import PROG, QdError, die, env, plural, read_text
 from .store import shown_id
 from .table import Table
 
@@ -76,7 +78,8 @@ NOT_FIGURES = set(stats.BOOKKEEPING) | {"host", "addr", "error", "stderr",
                                         "capture"}
 # '#%' keys that are qd's own, said elsewhere in the report
 QD_KEYS = ("run", "host", "pass")
-VERDICT_ORDER = (checkmod.FAIL, checkmod.UNMEASURED, checkmod.PASS)
+VERDICT_ORDER = (checkmod.FAIL, checkmod.UNMEASURED, checkmod.UNEXPECTED,
+                 checkmod.WAIVED, checkmod.PASS)
 
 SAFE_ARG = re.compile(r"^[A-Za-z0-9_@%+=:,./-]+$")
 KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
@@ -523,6 +526,9 @@ class Report(object):
         self.runs = {}            # run id -> its manifest entry
         self.tables = {}          # run id -> [(info, Table, describe, base)]
         self.manifest = {}
+        self.waivers = None       # --waivers, read: [Waiver]
+        self.waivers_at = None    # its copy under inputs/
+        self.waived = []          # [run, req, column, verdict, why, ...]
 
     # -- commands that print the same figures ----------------------------
 
@@ -865,17 +871,19 @@ def check_tables(rep, e, checks, against):
     verdicts kept for it; None when there is neither."""
     if checks is not None:
         t = e.load()
-        results = checkmod.run(t, checks)
-        vt = Table(checkmod.SUMMARY_COLUMNS, checkmod.summary_rows(results),
-                   "check")
-        cmd = rep.qd("check %s --against %s" % (rep.ref(e), sh(against)),
-                     [e])
+        results = checkmod.run(t, checks, rep.waivers)
+        cols = checkmod.columns(checkmod.SUMMARY_COLUMNS, checks,
+                                rep.waivers)
+        vt = Table(cols, checkmod.summary_rows(results, cols), "check")
+        cmd = rep.qd("check %s --against %s%s" % (
+            rep.ref(e), sh(against), (" --waivers %s" % sh(rep.waivers_at))
+            if rep.waivers is not None else ""), [e])
         return vt, checkmod.counts(results), cmd, None
     k = kept_check(rep.st, e)
     if k is None:
         return None
     vt = k.load()
-    n = {checkmod.PASS: 0, checkmod.FAIL: 0, checkmod.UNMEASURED: 0}
+    n = dict((v, 0) for v in checkmod.VERDICTS)
     if vt.has("verdict"):
         for v in vt.values("verdict"):
             if v in n:
@@ -883,9 +891,11 @@ def check_tables(rep, e, checks, against):
     return vt, n, rep.qd("show %s" % rep.ref(k), [k]), k
 
 
-def counts_text(n):
-    return "%d pass, %d fail, %d not measured" % (
-        n[checkmod.PASS], n[checkmod.FAIL], n[checkmod.UNMEASURED])
+def counts_text(n, vt=None):
+    """qd check's counts; waived ones apart from passed, whenever the
+    verdicts were made under waivers."""
+    return checkmod.counts_text(n, vt is not None and
+                                vt.has("justification"))
 
 
 def write_check(rep, e, vt, n, kept):
@@ -894,10 +904,60 @@ def write_check(rep, e, vt, n, kept):
     rep.runs[e.id]["check"] = {
         "files": files, "pass": n[checkmod.PASS], "fail": n[checkmod.FAIL],
         "not_measured": n[checkmod.UNMEASURED],
+        "waived": n[checkmod.WAIVED],
+        "unexpected_pass": n[checkmod.UNEXPECTED],
         "from": ("kept: %s" % kept.id) if kept is not None else "--check"}
-    if n[checkmod.FAIL] or n[checkmod.UNMEASURED]:
-        rep.findings.append("%s: checks %s" % (shown_id(e), counts_text(n)))
+    if n[checkmod.FAIL] or n[checkmod.UNMEASURED] or \
+            n[checkmod.UNEXPECTED] or n[checkmod.WAIVED]:
+        rep.findings.append("%s: checks %s" % (shown_id(e),
+                                               counts_text(n, vt)))
+    if vt.has("justification"):
+        ix = [vt.index(c) for c in ("req", "column", "verdict",
+                                    "justification", "expires",
+                                    "granted_by")]
+        for r in vt.rows:
+            if r[ix[3]].strip():
+                rep.waived.append([shown_id(e)] + [r[i] for i in ix])
     return files
+
+
+WAIVED_COLUMNS = ["run", "req", "column", "verdict", "justification",
+                  "expires", "granted_by"]
+
+
+def waivers_section(rep):
+    """The waivers given, and every verdict a waiver touched: a failure
+    excused, an unexpected pass, or an expired waiver that excused
+    nothing.  Left out when there were neither."""
+    if rep.waivers is None and not rep.waived:
+        return
+    sec = rep.section("Waivers")
+    if rep.waivers is not None:
+        today = None
+        rows = [[w.req, w.justification, w.expires_text(today), w.where,
+                 w.expect, w.granted_by,
+                 "expired" if w.expired(today) else "in force"]
+                for w in rep.waivers]
+        wt = Table(["req", "justification", "expires", "where", "expect",
+                    "granted_by", "state"], rows, "waivers")
+        sec.text("The waivers given (%s): %d, %d expired. A waiver excuses "
+                 "a measured failure of its requirement, never a check "
+                 "that was not measured." % (
+                     rep.waivers_at, len(rows),
+                     sum(1 for r in rows if r[-1] == "expired")))
+        sec.table(wt)
+    else:
+        sec.text("The kept verdicts were made under waivers.")
+    if rep.waived:
+        vt = Table(WAIVED_COLUMNS, rep.waived, "waived")
+        files = rep.pkg.table("data/waivers", vt)
+        n = sum(1 for r in rep.waived if r[3] == checkmod.WAIVED)
+        sec.text("%s waived, apart from the passes; every verdict a "
+                 "waiver touched:" % plural(n, "check"))
+        sec.table(vt, rest=files[0])
+        rep.manifest.setdefault("checks", {})["waived"] = n
+    else:
+        sec.text("No verdict was touched by a waiver.")
 
 
 # ---------------------------------------------------------------------------
@@ -921,11 +981,11 @@ def checks_section(rep, sec, e, checks, against):
     if kept is not None:
         sec.text("The verdicts qd check --keep filed for this run as %s "
                  "(%s): %s." % (kept.id, kept.meta.get("created", ""),
-                                counts_text(n)))
+                                counts_text(n, vt)))
         for note in vt.notes[:2]:
             sec.text("They came from: " + note)
     else:
-        sec.text("Against %s: %s." % (against, counts_text(n)))
+        sec.text("Against %s: %s." % (against, counts_text(n, vt)))
     sec.table(vt, numeric=("observed",), rest=files[0])
     rep.say(sec, "checks", [cmd])
     return True
@@ -1367,11 +1427,22 @@ def make(args, where, argv=()):
     from . import stores
     st, ref = where(args.ref or "latest")
     subject = resolve(st, ref)
-    checks = against = None
+    checks = against = waivers = waivers_at = None
     if args.check:
         checks = checkmod.read_thresholds(args.check)
         against = "inputs/" + safe(os.path.basename(args.check),
                                    "thresholds.tsv")
+    if not getattr(args, "waivers", None) and args.check:
+        args.waivers = env("WAIVERS")
+    if getattr(args, "waivers", None):
+        if checks is None:
+            die("--waivers goes with --check: it excuses failures of the "
+                "thresholds it is checked against", 2)
+        waivers = checkmod.read_waivers(args.waivers, checks)
+        waivers_at = "inputs/" + safe(os.path.basename(args.waivers),
+                                      "waivers.tsv")
+        if waivers_at == against:
+            waivers_at = "inputs/waivers-" + against[len("inputs/"):]
     base = None
     if args.baseline:
         bst, bref = where(args.baseline)
@@ -1391,6 +1462,7 @@ def make(args, where, argv=()):
             parent, exc.strerror or exc))
     try:
         rep = Report(args, subject, pkg)
+        rep.waivers, rep.waivers_at = waivers, waivers_at
         rep.manifest.update({
             "kind": KIND, "report_version": REPORT_VERSION,
             "generated": storemod.now_iso(), "generated_by": whoran.local(),
@@ -1406,6 +1478,11 @@ def make(args, where, argv=()):
             rep.manifest["checks"] = {"thresholds": against,
                                       "given_as": args.check,
                                       "checks": len(checks)}
+            if waivers is not None:
+                pkg.copy(waivers_at, args.waivers)
+                rep.manifest["checks"].update({
+                    "waivers": waivers_at, "waivers_given_as": args.waivers,
+                    "waivers_count": len(waivers)})
         for e in subject.runs:
             rep.add_run(e)
         if subject.kind == "run":
@@ -1432,6 +1509,7 @@ def make(args, where, argv=()):
         else:
             for p, e in subject.latest:
                 part_sections(rep, e, p or e.id)
+        waivers_section(rep)
         keys_section(rep)
         verify_section(rep)
         if subject.kind != "run":

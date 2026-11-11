@@ -5,6 +5,37 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.15.0 — 2026-11-11
+
+Waivers with a justification and an expiry, severity with a fail level,
+and a tolerance form for `qd check` (QD-028).
+
+### Added
+- **`qd check --waivers FILE`** (`QD_WAIVERS`): a TSV or CSV of `req`,
+  `justification`, and optionally `expires` (YYYY-MM-DD), `where`,
+  `expect` and `granted_by`. A measured failure under a waiver in force is
+  **waived**, and does not fail the run; under `each` only the rows the
+  waiver's `where` picks. A pass stays a pass, or is an **unexpected
+  pass** under `expect fail`, which fails the run. An expired waiver does
+  nothing, and the table says it expired. **Not measured is never
+  waived.** A waiver for a `req` no check has is refused with exit 2.
+- **A `severity` column** in the thresholds file (`critical`, `high`,
+  `medium`, `low`, `info`, or an InSpec impact 0.0-1.0), and **`--fail-level
+  LEVEL`** (`QD_FAIL_LEVEL`, `info`): exit 1 only for a failure at or above
+  the level. A check with no severity, and not measured, always count.
+- **`op within`**: `limit` is the reference and `limit2` the tolerance,
+  `+-10%`, `-5%,+10%` or an absolute `+-3`, scaled by unit as every op is,
+  and shown as `within 50 (-10%, +10%)`.
+- The verdict table, `--each`, `--format csv` and `json`, and `--keep`
+  carry `severity` (when the file has it) and `justification`, `expires`
+  and `granted_by` (with `--waivers`). Without either, the output is
+  byte for byte what 0.14.0 printed.
+- **`qd report --waivers FILE`** (with `--check`): copied into `inputs/`
+  and hashed; a **Waivers** section lists the waivers given and every
+  verdict a waiver touched (`data/waivers.csv`), and the counts and the
+  manifest give waived apart from passed. Kept verdicts made under
+  waivers are shown the same way.
+
 ## 0.14.0 — 2026-11-11
 
 Stop a fan-out when too many hosts fail, rerun only the hosts that

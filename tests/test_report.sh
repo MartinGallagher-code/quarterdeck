@@ -375,6 +375,69 @@ for p, h in sums.items():
 PYEOF
 }
 
+t_waivers_in_the_report() {
+    seed
+    # QD-028: n4's 100 fails R1 under a waiver whose justification is
+    # hostile HTML and Markdown; R2 passes; an expired waiver on R3
+    printf 'req\tcolumn\top\tlimit\twhere\tseverity\n%s\n%s\n%s\n' \
+        'R1	mbps	>=	900	status=ok	high' \
+        'R2	rtt	<=	1000	status=ok	low' \
+        'R3	rtt	<=	500	status=ok	' > t.tsv
+    # shellcheck disable=SC2016  # the backticks are text, not a command
+    printf 'req\tjustification\texpires\twhere\tgranted_by\n%s\n%s\n' \
+        'R1	<script>alert(3)</script> a|b `c` *d*	2999-12-31	host=n4	QA <board>' \
+        'R3	lapsed	2000-01-01		' > w.tsv
+    qd_rc report "$RUN" --out rep --check t.tsv --waivers w.tsv > out
+    # the waivers file is kept beside the thresholds, and hashed
+    cmp w.tsv rep/inputs/w.tsv
+    assert_contains "$(cat rep/SHA256SUMS)" "  inputs/w.tsv"
+    sums_check rep
+    assert_eq "$(mf rep 'm["checks"]["waivers"]')" "inputs/w.tsv"
+    # waived is counted apart from passed
+    assert_eq "$(mf rep 'm["runs"][0]["check"]["waived"]')" "1"
+    assert_eq "$(mf rep 'm["runs"][0]["check"]["pass"]')" "1"
+    assert_eq "$(mf rep 'm["runs"][0]["check"]["fail"]')" "1"
+    md="$(cat rep/summary.md)"
+    assert_contains "$md" "1 pass, 1 fail, 0 not measured, 1 waived"
+    # the verdicts are qd check's with the same waivers
+    assert_eq "$(cat "rep/data/$RUN/check.csv")" \
+        "$(qd check "$RUN" --against t.tsv --waivers w.tsv --format csv 2>/dev/null || true)"
+    assert_contains "$(cat "rep/data/$RUN/check.csv")" ",high,"
+    # a section of its own: the waivers given, and the verdicts they touched
+    assert_contains "$md" "## Waivers"
+    assert_contains "$md" "1 check waived, apart from the passes"
+    assert_contains "$md" "2000-01-01 (expired)"
+    assert_contains "$(cat rep/data/waivers.csv)" "R3,rtt,fail,lapsed,2000-01-01 (expired)"
+    assert_contains "$md" "--waivers inputs/w.tsv"
+    # escaped, as every other string is
+    html="$(cat rep/summary.html)"
+    assert_contains "$html" "&lt;script&gt;alert(3)&lt;/script&gt;"
+    assert_contains "$html" "QA &lt;board&gt;"
+    assert_not_contains "$html" "<script>alert(3)"
+    # shellcheck disable=SC2016  # escaped backticks, as text
+    assert_contains "$md" '\<script\>alert(3)\</script\> a\|b \`c\` \*d\*'
+    if grep -Eq '(^|[^\\])<' rep/summary.md; then fail "a raw < in the Markdown"; fi
+    # --waivers wants --check
+    qd_rc report "$RUN" --out r2 --waivers w.tsv > out 2>&1
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat out)" "--waivers goes with --check"
+    assert_no_file r2
+}
+
+t_kept_waived_verdicts() {
+    seed
+    limits t.tsv 'R1|mbps|>=|900||status=ok||'
+    printf 'req\tjustification\nR1\tn4 is a 100M port\n' > w.tsv
+    qd_rc check "$RUN" --against t.tsv --waivers w.tsv --keep > /dev/null
+    qd_rc report "$RUN" --out rep > /dev/null
+    md="$(cat rep/summary.md)"
+    assert_contains "$md" "0 pass, 0 fail, 0 not measured, 1 waived"
+    assert_contains "$md" "## Waivers"
+    assert_contains "$md" "n4 is a 100M port"
+    assert_eq "$(mf rep 'm["runs"][0]["check"]["waived"]')" "1"
+    sums_check rep
+}
+
 run_test "a run's package, and its sums"         t_a_run_package_and_its_sums
 run_test "the figures are the commands'"         t_the_figures_are_the_commands
 run_test "the HTML runs nothing"                 t_the_html_runs_nothing
@@ -384,4 +447,6 @@ run_test "kept verdicts without --check"         t_kept_verdicts_without_check
 run_test "an import, table by table"             t_an_import_has_its_tables
 run_test "refusals write nothing"                t_refusals_write_nothing
 run_test "a campaign covers its parts"           t_a_campaign_covers_its_parts
+run_test "waivers: a section, inputs, counts"    t_waivers_in_the_report
+run_test "kept waived verdicts"                  t_kept_waived_verdicts
 finish
