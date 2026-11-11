@@ -15,6 +15,7 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
        qd show|stats|freq|hist|outliers|pivot|trend RUN ...
        qd diff [OLD] NEW                       what changed between two
        qd compare RUN --last N -c COL          N runs side by side
+       qd changes RUN -c COL [--last N]        where each host's level moved
        qd peers define|ls|show|rm              hosts that should agree, named
        qd baseline set|ls|show|rm              qualified baselines, for
                                                compare --baseline NAME
@@ -63,7 +64,8 @@ design_of_experiments (pip install doehelper) its designs.
 Exit status
   0   done, and every host answered
   1   a finding: a host that did not answer, a diff or a compare that
-      differs, a check that failed (qd report: any finding it records)
+      differs, a change qd changes found, a check that failed (qd
+      report: any finding it records)
   2   usage error, or something could not be read or written
 
 Full manual: https://github.com/MartinGallagher-code/quarterdeck#readme
@@ -2623,6 +2625,216 @@ def compare_report(res, args):
 
 
 # ---------------------------------------------------------------------------
+# changes: where in a series of runs each host's level moved
+# ---------------------------------------------------------------------------
+
+CHANGE_COLUMNS = ["status", "stretch", "first_run", "last_run", "runs",
+                  "median", "mad", "change_pct", "change_mads", "change",
+                  "reported", "best_to_latest_pct", "outliers", "missing"]
+
+
+def cmd_changes(args):
+    from . import changes as chmod, compare as comparemod
+    if not args.column:
+        die("changes follows one column: name it with -c COL")
+    if not 0 < args.p < 1:
+        die("--p wants a probability between 0 and 1, not %s" % args.p)
+    if args.min_change < 0:
+        die("--min-change wants a percentage, 0 or more")
+    refs, last, st = list(args.refs), args.last, None
+    if last is not None:
+        m = re.match(r"^([0-9]+)(?:@(.+))?$", last)
+        if not m or int(m.group(1)) < 1:
+            die("--last wants a count, or COUNT@STORE: %r" % last)
+        last = int(m.group(1))
+        if m.group(2):
+            st = named_store(args, m.group(2))
+            refs = [r if split_store(r)[1] else r + "@" + m.group(2)
+                    for r in refs] or ["latest@" + m.group(2)]
+    st = st or home_store(args)
+    where = lambda ref: ref_store(args, ref)  # noqa: E731
+    # one run named: every run like it so far, not compare's five
+    if last is None and len(refs) <= 1 and not args.group:
+        last = 10 ** 9
+    entries = comparemod.pick(st, refs, args.group, last, where)
+    tables = [e.load(args.table) for e in entries]
+    if args.where:
+        tables = [t.derive(rows=query.where(t, args.where)) for t in tables]
+    key = [k.strip() for k in args.key.split(",")] if args.key else None
+    res = comparemod.compare(tables, args.column, key, 5.0, args.agg, 0,
+                             peers_of(args))
+    direction = "higher" if args.higher else "lower" if args.lower else None
+    rows = res.peer_rows if res.peers is not None else res.keys
+    found = chmod.find([(k if isinstance(k, tuple) else (k,), vals)
+                        for k, vals, _ in rows], args.p, args.permutations,
+                       args.min_change, direction)
+    keycols = [res.peers.name] if res.peers is not None else list(res.key)
+    t = changes_table(res, found, keycols)
+    emit(args, t, changes_report(res, found, keycols, direction, args))
+    return 1 if any(changes_flagged(s, direction) for s in found) else 0
+
+
+def changes_flagged(s, direction):
+    """A finding: a change past the floor (with a direction, a regression)
+    or a slide from the best stretch to the latest."""
+    if direction is None:
+        return bool(s.changes()) or s.gap is not None
+    return any(x.word == "regression" for x in s.changes()) or \
+        s.gap is not None
+
+
+def _run_id(res, i):
+    return res.runs[i]["id"]
+
+
+def _pct_cell(d):
+    return ("%.1f" % d) if d not in (None, float("inf"), float("-inf")) \
+        else ""
+
+
+def changes_table(res, found, keycols):
+    """One row a stretch (one a series, with too few runs): the key, the
+    series' status, the stretch's runs, median, MAD and count, and the
+    step into it."""
+    from .compare import num
+    rows = []
+    for s in found:
+        miss = ";".join(_run_id(res, i) for i in s.missing)
+        outl = ";".join(_run_id(res, i) for i in s.outliers)
+        gap = _pct_cell(s.gap[2]) if s.gap is not None else ""
+        if s.too_few:
+            rows.append(list(s.key) + [s.status(), "", "", "",
+                                       str(len(s.xs)), "", "", "", "", "",
+                                       "", "", "", miss])
+            continue
+        for n, x in enumerate(s.stretches):
+            rows.append(list(s.key) + [
+                s.status(), str(n + 1), _run_id(res, x.first),
+                _run_id(res, x.last), str(x.n), num(x.median), num(x.mad),
+                _pct_cell(x.pct), ("%.1f" % x.mads) if x.mads is not None
+                else "", x.word, "yes" if x.reported else
+                ("no" if n else ""), gap, outl, miss])
+    return tablemod.Table(keycols + CHANGE_COLUMNS, rows, "changes")
+
+
+def changes_report(res, found, keycols, direction, args):
+    from .compare import num
+    from . import changes as chmod
+    w = width_of(args)
+    lim = None if args.limit == 0 else args.limit
+    first, latest = res.runs[0], res.runs[-1]
+    what = res.column + ((" (%s)" % res.unit) if res.unit else "")
+    lines = ["%s changes -- %s over %s, %s" % (
+        PROG, what, plural(len(res.runs), "run"),
+        "each peer group of %s (the median of its %ss)" % (
+            res.peers.name, ",".join(res.key)) if res.peers is not None
+        else "by " + ",".join(res.key)),
+        "  runs: %s (%s) .. %s (%s)" % (
+            first["id"], first["created"] or "?", latest["id"],
+            latest["created"] or "?"),
+        "  e-divisive means, permutation test: p %s, %d permutations, "
+        "seed %d; a change: a step of %s%% or more; the newest run or two "
+        "can lag" % (stats.fmt_num(args.p), args.permutations, chmod.SEED,
+                     stats.fmt_num(args.min_change))]
+    for n in res.notes:
+        lines.append("  note  %s" % n)
+
+    def name(s):
+        return ",".join(s.key)
+
+    def runs_of(x):
+        return _run_id(res, x.first) if x.first == x.last else \
+            "%s..%s" % (_run_id(res, x.first), _run_id(res, x.last))
+
+    changed = [s for s in found if s.changes()]
+    lines.append("")
+    lines.append("  %d of %s changed" % (
+        len(changed), plural(len(found), "peer group" if res.peers is not None
+                             else "key")))
+    if changed:
+        cols = [",".join(keycols), "change", "between", "and", "before",
+                "after", "pct", "MADs"]
+        rows = []
+        for s in changed:
+            prev = None
+            for x in s.stretches:
+                if prev is not None and x.reported:
+                    rows.append([name(s), x.word, _run_id(res, prev.last),
+                                 _run_id(res, x.first), num(prev.median),
+                                 num(x.median), "%+.1f%%" % x.pct,
+                                 ("%.1f" % x.mads) if x.mads is not None
+                                 else ""])
+                prev = x
+        shown = rows if lim is None else rows[:lim]
+        lines.extend(render.render_rows(cols, shown, numeric=[4, 5, 6, 7],
+                                        max_cell=48, width=w, indent="  "))
+        if len(rows) > len(shown):
+            lines.append("  ... %d more: --limit 0 lists every one"
+                         % (len(rows) - len(shown)))
+    slid = [s for s in found if s.gap is not None and
+            (len(s.gap[3]) > 1 or not s.gap[3][0].reported)]
+    if slid:
+        lines.append("")
+        lines.append("  %s from the %s stretch to the latest, step by step "
+                     "(asv's rule: small steps that add up)" % (
+                         plural(len(slid), "slide"),
+                         "best" if direction else "farthest"))
+        for s in slid[:lim]:
+            best, now, d, steps = s.gap
+            lines.append("    %s  %+.1f%%: %s (median %s) to %s (median %s), "
+                         "in %s: %s" % (
+                             name(s), d, runs_of(best), num(best.median),
+                             runs_of(now), num(now.median),
+                             plural(len(steps), "step"),
+                             ", ".join("%+.1f%% at %s" % (
+                                 x.pct, _run_id(res, x.first))
+                                 for x in steps)))
+    few = [s for s in found if s.too_few]
+    still = [s for s in found if s.status() == "no change"]
+    if still:
+        lines.append("")
+        lines.append("  no change: %s" % _names(still, name, lim))
+    if few:
+        lines.append("  too few runs (under %d measured): %s" % (
+            chmod.MIN_RUNS, _names(few, lambda s: "%s (%d)" % (
+                name(s), len(s.xs)), lim)))
+    outl = [s for s in found if s.outliers]
+    if outl:
+        lines.append("  outliers, not steps: %s" % _names(outl, lambda s: (
+            "%s in %s" % (name(s), ", ".join(_run_id(res, i)
+                                             for i in s.outliers))), lim))
+    gaps = [s for s in found if s.missing]
+    if gaps:
+        lines.append("  not measured, left out of the series: %s" % _names(
+            gaps, lambda s: "%s in %s" % (name(s), _few_runs(res, s.missing)),
+            lim))
+    tips = []
+    if changed:
+        s = changed[0]
+        x = s.changes()[0]
+        prev = s.stretches[s.stretches.index(x) - 1]
+        tips.append(("%s diff %s %s" % (PROG, _run_id(res, prev.last),
+                                        _run_id(res, x.first)),
+                     "what else changed between the two runs either side"))
+    tips.append(("%s changes ... --format csv" % PROG,
+                 "every stretch: its runs, median, MAD and the step into it"))
+    lines.extend(next_steps(tips))
+    return lines
+
+
+def _names(items, show, lim):
+    shown = [show(s) for s in (items if lim is None else items[:lim])]
+    more = len(items) - len(shown)
+    return ", ".join(shown) + ((" ... %d more" % more) if more else "")
+
+
+def _few_runs(res, idx):
+    ids = [_run_id(res, i) for i in idx]
+    return ", ".join(ids) if len(ids) <= 4 else "%s and %d more" % (
+        ", ".join(ids[:3]), len(ids) - 3)
+
+
+# ---------------------------------------------------------------------------
 # peers and baseline: peer groups, and what good looked like
 # ---------------------------------------------------------------------------
 
@@ -4157,6 +4369,8 @@ HINTS = [
     ("Who is far from the rest?", "qd outliers latest COLUMN"),
     ("Who is far from their own peers?",
      "qd peers define sku --by sku; qd outliers latest COLUMN --peers sku"),
+    ("When did it start to slide?",
+     "qd changes NAME -c COLUMN --higher-is-better"),
     ("Is a small slide real, or noise?",
      "qd baseline set gold NAME --last 5; qd compare NAME --last 5 "
      "--baseline gold"),
@@ -4779,6 +4993,50 @@ def build_parser():
                     help="changed keys to list (30; 0 for all)")
     add_format(sp)
     sp.set_defaults(fn=cmd_compare)
+
+    sp = verb("changes", "where each host's level moved over a series of "
+              "runs: change points and stable stretches")
+    sp.add_argument("refs", nargs="*", metavar="RUN",
+                    help="the runs, oldest first; one RUN (default latest) "
+                    "takes every run like it up to it, or --last N of them")
+    sp.add_argument("-c", "--column", metavar="COL",
+                    help="the column to follow (required)")
+    sp.add_argument("--last", metavar="N[@STORE]",
+                    help="the last N runs of the same thing (default every "
+                    "one), in --store or STORE")
+    sp.add_argument("--group", metavar="NAME",
+                    help="every run of a campaign or a design")
+    sp.add_argument("--peers", metavar="NAME",
+                    help="one series per peer group (its median per run), "
+                    "not per host")
+    sp.add_argument("--p", type=float, default=env_float("CHANGE_P", 0.05),
+                    metavar="P", help="a change point needs no more than P "
+                    "of the permutations to score as high (QD_CHANGE_P, "
+                    "0.05)")
+    sp.add_argument("--permutations", type=positive, default=100,
+                    metavar="N", help="shuffles per test (100)")
+    sp.add_argument("--min-change", type=float,
+                    default=env_float("MIN_CHANGE", 1.0), metavar="PCT",
+                    help="a step smaller than PCT %% is listed, not reported "
+                    "(QD_MIN_CHANGE, 1)")
+    g = sp.add_mutually_exclusive_group()
+    g.add_argument("--higher-is-better", dest="higher", action="store_true",
+                   help="a fall is a regression, a rise an improvement")
+    g.add_argument("--lower-is-better", dest="lower", action="store_true",
+                   help="a rise is a regression, a fall an improvement")
+    sp.add_argument("--key", metavar="COLS",
+                    help="one series per value of these (default host, as "
+                    "compare)")
+    sp.add_argument("--agg", default="median",
+                    help="how a key's repeated rows in a run reduce (median)")
+    sp.add_argument("--table", metavar="NAME",
+                    help="which table of each run (data)")
+    sp.add_argument("--where", action="append", metavar="EXPR",
+                    help="applied to every run")
+    sp.add_argument("--limit", type=nonneg, default=30,
+                    help="changes and names to list (30; 0 for all)")
+    add_format(sp)
+    sp.set_defaults(fn=cmd_changes)
 
     sp = verb("peers", "peer groups: hosts that should measure alike, "
               "named and kept (define, ls, show, rm)")

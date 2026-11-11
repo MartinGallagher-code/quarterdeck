@@ -935,6 +935,73 @@ with `diff`. `qd web` shows the same comparison on its Compare tab. Runs
 from other stores go in as `RUN@STORE` (see *Runs from different stores
 side by side*); `--last N@STORE` takes the last N from that store.
 
+### Where a slow slide started: `qd changes`
+
+```bash
+qd changes iperf -c mbps                         # every run of iperf so far
+qd changes iperf -c mbps --last 60 --higher-is-better
+qd changes iperf -c mbps --peers sku             # one series per peer group
+qd changes --group burnin -c temp_c --format csv
+```
+
+`compare` holds runs against a fixed reference. A node whose bandwidth
+slips 2% a month never crosses a 5% drift from last week's run, and a
+baseline set last quarter shows the gap but not when it opened.
+`qd changes` finds *where* in a series each host's level moved -- "between
+run 14 and run 15" -- so it can be lined up with whatever changed then (a
+firmware update, a facts run: `qd diff` the two runs either side).
+
+It takes the runs `compare` would (one `RUN` means every run like it up to
+that one, `--last N` the last N, `--group` a campaign's or a design's), and
+reduces each the same way: a host's rows in a run to their median
+(`--agg`), and with `--peers NAME` a peer group to the median of its hosts.
+Each host (or group) then has one value per run, and a run where it was
+not measured is **left out of its series**, never counted as zero, and
+named. Fewer than five measured runs says **too few runs**, not "no
+change".
+
+The statistic is **e-divisive means** (Matteson and James, 2014) with a
+permutation test, as MongoDB runs it on its performance CI (Daly et al.,
+ICPE 2020; their `signal-processing-algorithms` 2.1.6, ported in the
+standard library, its own published test values reproduced in
+`tests/changes_unit.py`). Every split of a stretch is scored by how far
+apart the two sides' values are against how far apart each side's are
+among themselves; the best split is a change point when no more than `--p`
+(0.05) of `--permutations` (100) shuffles of that stretch score as high;
+then the stretches either side are searched again. The shuffles come from
+Python's own `random` with a fixed seed, so the same runs always give the
+same answer, on Python 3.6 as on 3.13. With no change at all, about one
+series in sixteen shows a change point by chance (p 0.05 over 100
+permutations is at most 5 of 101); the tests hold it there.
+
+What it reports, for each host:
+
+| | |
+|---|---|
+| **changes** | each step between stable stretches, by the run ids either side, with the median before and after, the step in percent of the level before, and in MADs (of the noisier stretch either side). A step smaller than `--min-change` percent (1, `QD_MIN_CHANGE`) is listed in the CSV but not reported. |
+| **stretches** | (`--format csv` or `json`, one row each) the first and last run, the count, median and MAD |
+| **slides** | asv's rule: the gap from the best stretch to the latest, and every step that explains it -- so a slide made of steps each under the floor is still reported once they add up past it. "Best" needs `--higher-is-better` or `--lower-is-better`; without, it is the stretch farthest from the latest. |
+| **outliers** | a run that jumps and comes straight back is not a step (Conbench's rule): a stretch of one run between two is dropped and the run named, and so is one run alone at either end |
+| **gaps** | the runs a host was not measured in |
+
+With a direction a step is a **regression** or an **improvement**;
+without, it **rose** or **fell**. The exit status is 1 when anything
+changed (with a direction, a regression) or slid, as with `compare`.
+
+**Lag.** The newest run can never be a change point by itself (one run is
+an outlier until a second agrees), so a change shows a run or two after it
+happens. That is the price of not crying wolf at every slow run.
+
+**Speed.** On an Apple M4, one host's series of 100 runs takes 0.02 to
+0.08 s (Python 3.9; half that on 3.13), and 500 runs 0.1 s with no change,
+0.3 s with one and 0.5 s with three, so a thousand hosts of 500 runs is a
+few minutes. (`tests/changes_unit.py` holds 100 runs under a second.)
+
+The statistic is qd's for the same reason the Mann-Whitney test is
+(next section): design_of_experiments needs numpy, scipy and Python 3.9.
+Not yet: marking a change point as understood, and saying which facts
+changed at it.
+
 ---
 
 ## Peer groups and qualified baselines: `qd peers`, `qd baseline`
@@ -1880,7 +1947,7 @@ The numbers, and how they were measured, are in
 | | |
 |---|---|
 | 0 | done, and every host answered |
-| 1 | a finding: a host that did not answer, a diff or compare that differs, a check that failed or was not measured, nothing to bin, a join that found no telemetry in any window, a report that records any of these |
+| 1 | a finding: a host that did not answer, a diff or compare that differs, a change or a slide `qd changes` found, a check that failed or was not measured, nothing to bin, a join that found no telemetry in any window, a report that records any of these |
 | 2 | a usage error, or something could not be read or written |
 | other | `qd do` passes on the tool's own |
 
