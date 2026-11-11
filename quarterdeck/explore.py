@@ -69,7 +69,8 @@ TEST_KEYS = {
 }
 
 GOOD = ("ok", "pass", "tested", "reporting")
-BAD = ("failed", "fail", "unreachable", "timeout", "push-failed", "no-data")
+BAD = ("failed", "fail", "unreachable", "timeout", "push-failed", "no-data",
+       "not-run")
 WARN = ("warn", "silent", "skipped")
 
 

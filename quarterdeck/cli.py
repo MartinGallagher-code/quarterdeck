@@ -218,6 +218,12 @@ def manifest_argv():
 
 
 def collect(args):
+    if getattr(args, "rerun", None):
+        if args.servers or args.server or args.layout or args.select:
+            die("--rerun is the host list -- the hosts that were not ok in "
+                "the run it names -- so it takes no -s, -S or --layout")
+        hs = rerun_hosts(args)
+        return hs[:args.first] if args.first is not None else hs
     if getattr(args, "via", None) == "srun" and not (
             args.servers or args.server or args.layout or args.select
             or env("SERVERS")):
@@ -230,6 +236,49 @@ def collect(args):
         servers=args.servers, inline=args.server, layout=args.layout,
         selectors=args.select, first=args.first,
         manifest_argv=manifest_argv() if args.layout else None)
+
+
+def rerun_hosts(args):
+    """--rerun RUN (QD-027): the hosts whose last pass in RUN ended in
+    anything but ok -- unreachable, timed out, failed, not-run -- with
+    their addresses and attributes, in RUN's order.  The last try counts
+    (--retries): a host that answered on its second try is ok.  Sets
+    args._rerun_of, which the new run's qd.runs row carries."""
+    hs, seen, ids = [], set(), []
+    for ref in args.rerun:
+        st, r = ref_store(args, ref)
+        e = st.resolve(r)
+        if not isinstance(e, storemod.Run) or e.meta.get("kind") != "run":
+            die("--rerun %s: %s is not a run on the fleet (qd run, qd probe, "
+                "a campaign's part or a design point): nothing to rerun"
+                % (ref, shown_id(e)))
+        ids.append(e.id)
+        rows = e.store.host_rows(e.id)
+        last = max([int(h.get("pass") or 1) for h in rows] or [1])
+        final, order = {}, []
+        for h in rows:
+            if int(h.get("pass") or 1) != last:
+                continue
+            name = h.get("host", "")
+            if name not in final:
+                order.append(name)
+            if name not in final or int(h.get("attempt") or 1) >= int(
+                    final[name].get("attempt") or 1):
+                final[name] = h
+        for name in order:
+            h = final[name]
+            if h.get("status") == fleet.OK or name in seen:
+                continue
+            seen.add(name)
+            addr = h.get("addr") or ""
+            hs.append(hostmod.parse_host_token(
+                "%s=%s" % (name, addr) if addr else name,
+                storemod.split_attrs(h.get("attrs"))))
+    args._rerun_of = ids
+    if not hs:
+        die("nothing to rerun: every host in %s answered ok"
+            % ", ".join(ids), 0)
+    return hs
 
 
 def strip_dashes(cmd):
@@ -392,11 +441,16 @@ def host_row(rid, r):
     # ts to the millisecond: with duration_s it is the host's own window,
     # which `qd join` lines telemetry up against (a whole second, before
     # 0.12.0, left the window up to a second short)
+    # a host qd never tried (not-run) has no rc, start, duration or
+    # bytes: blank, never zero
+    ran = r.outcome != fleet.NOT_RUN
     return [rid, h.name, addr if (h.addr != h.name or h.port) else "",
-            str(r.pass_no), "%.3f" % r.started, r.outcome, str(r.rc),
-            "%.2f" % r.duration, str(len(r.stdout.encode("utf-8"))),
+            str(r.pass_no), "" if r.started is None else "%.3f" % r.started,
+            r.outcome, "" if r.rc is None else str(r.rc),
+            "" if r.duration is None else "%.2f" % r.duration,
+            str(len(r.stdout.encode("utf-8"))) if ran else "",
             r.error(), storemod.join_attrs(h.attrs),
-            r.stderr[:STDERR_KEEP]]
+            r.stderr[:STDERR_KEEP], str(r.attempt)]
 
 
 def filed(st, rid, notes, batch, cleanup=True):
@@ -480,14 +534,17 @@ class Job(object):
     """One fan-out, done and filed: what `qd run`, a probe, a campaign's
     part and a design point each are."""
 
-    def __init__(self, results, interrupted, entry, table):
+    def __init__(self, results, interrupted, entry, table, stopped=None):
         self.results = results
         self.interrupted = interrupted
         self.entry = entry
         self.table = table
+        # why --max-fail stopped the fan-out, or None (QD-027)
+        self.stopped = stopped
         self.passes = max(r.pass_no for r in results)
         self.last = [r for r in results if r.pass_no == self.passes]
-        self.rc = 0 if all(r.outcome == fleet.OK for r in self.last) else 1
+        self.rc = 0 if all(r.outcome == fleet.OK for r in self.last) \
+            and not stopped else 1
 
 
 def via_of(args):
@@ -578,8 +635,9 @@ def check_transport(runner, pushing, stdin=False):
     check_ssh_setup(runner)
 
 
-def dry_run_lines(runner, hs, command, push=(), stdin=None, jobs=1):
-    if runner.batched:
+def dry_run_lines(runner, hs, command, push=(), stdin=None, jobs=1,
+                  one_by_one=False):
+    if runner.batched and not one_by_one:
         # one call for every host, as it would run
         feed = ("%s/%s" % (runner.work_dir, launch.STDIN_NAME)) if stdin \
             else None
@@ -601,10 +659,11 @@ def add_answers(b, rid, label, results, passes, context=()):
     # in the rows -- provost keeps the last -- so it is carried as attr_
     set_here = set(k for k, _ in context)
     n = 0
-    for r in results:
+    for r in tries(results):
         if r.stdout.strip():
             pairs = [("run", rid), ("host", r.host.name)] + (
-                [("pass", str(r.pass_no))] if passes > 1 else []) + \
+                [("pass", str(r.pass_no))] if passes > 1 else []) + (
+                [("attempt", str(r.attempt))] if r.attempt > 1 else []) + \
                 list(context) + [(("attr_" + k) if k in set_here else k, v)
                                  for k, v in r.host.attrs]
             b.add(ds, filing.prologue(pairs) + filing.body(r.stdout))
@@ -612,17 +671,29 @@ def add_answers(b, rid, label, results, passes, context=()):
     return n
 
 
+def tries(results):
+    """Every try at every host, in order: --retries (QD-027) keeps each
+    one, so a flaky host is seen and not hidden by its last success."""
+    out = []
+    for r in results:
+        out.extend(r.attempts())
+    return out
+
+
 def add_own_tables(b, rid, label, command, created, took, hs, results,
-                   interrupted, passes, every, ncap, extra=None):
+                   interrupted, passes, every, ncap, extra=None,
+                   stopped=None):
     """A run's qd.hosts rows and qd.runs row into a batch, after every
     answer in it."""
     last = [r for r in results if r.pass_no == passes]
     b.add_own(storemod.HOSTS, filing.own_tsv(
-        storemod.HOST_COLUMNS, [host_row(rid, r) for r in results]))
+        storemod.HOST_COLUMNS, [host_row(rid, r) for r in tries(results)]))
     counts = outcome_counts(last)
     fields = dict(extra or {})
-    notes = [n for n in (("interrupted after %s" % plural(
-        passes, "pass", "passes")) if interrupted else None,
+    notes = [n for n in (interrupted_note(last, passes) if interrupted
+        else None,
+        ("stopped: %s" % stopped) if stopped else None,
+        retried_note(results),
         left_running_note(results),
         fields.pop("policy", None), fields.pop("notes", None)) if n]
     b.add_own(storemod.RUNS, filing.own_tsv(storemod.RUN_COLUMNS, [run_row(
@@ -631,9 +702,35 @@ def add_own_tables(b, rid, label, command, created, took, hs, results,
         failed=counts.get(fleet.FAILED, 0),
         timeout=counts.get(fleet.TIMEOUT, 0),
         unreachable=counts.get(fleet.UNREACHABLE, 0),
-        push_failed=counts.get(fleet.PUSH_FAILED, 0), passes=passes,
+        push_failed=counts.get(fleet.PUSH_FAILED, 0),
+        not_run=counts.get(fleet.NOT_RUN, 0), passes=passes,
         every=every, captures=ncap,
         notes="; ".join(notes) or None, **fields)]))
+
+
+def interrupted_note(last, passes):
+    """What Ctrl-C left: the pass it came in, or the passes before it."""
+    skipped = sum(1 for r in last if r.outcome == fleet.NOT_RUN)
+    if skipped:
+        return ("interrupted (Ctrl-C)%s: kept the hosts that had answered; "
+                "%s not-run" % (" in pass %d" % passes if passes > 1 else "",
+                                plural(skipped, "host")))
+    return "interrupted (Ctrl-C) after %s" % plural(passes, "pass", "passes")
+
+
+def retried_note(results):
+    """The hosts --retries tried more than once, or None."""
+    again = [r for r in results if r.attempt > 1]
+    if not again:
+        return None
+    names = []
+    for r in again:
+        if r.host.name not in names:
+            names.append(r.host.name)
+    shown = ", ".join(names[:8]) + (
+        " and %d more" % (len(names) - 8) if len(names) > 8 else "")
+    return "tried again (--retries) on %s: %s; every try is a row" % (
+        plural(len(names), "host"), shown)
 
 
 def left_running_note(results):
@@ -655,6 +752,53 @@ def say_filing(ncap):
     if ncap > 8 and sys.stderr.isatty():
         sys.stderr.write("%s: filing %s through provost ...\n"
                          % (PROG, plural(ncap, "answer")))
+
+
+def failing_of(args):
+    """(stop, retry) from --max-fail, --max-fail-on, --retries,
+    --retry-delay and --retry-failed (QD-027): a fleet.MaxFail or None,
+    and with_retries' (retries, delay, failed).  Read once per command;
+    a bad value is refused before any host is contacted."""
+    got = getattr(args, "_failing", None)
+    if got is not None:
+        return got[0], got[1]
+    try:
+        stop = fleet.MaxFail.parse(getattr(args, "max_fail", None),
+                                   getattr(args, "max_fail_on", None)
+                                   or "any")
+    except ValueError as exc:
+        die("%s (QD_MAX_FAIL, QD_MAX_FAIL_ON)" % exc)
+    retries = getattr(args, "retries", None) or 0
+    delay = getattr(args, "retry_delay", None) or 0.0
+    failed = bool(getattr(args, "retry_failed", False))
+    if failed and not retries:
+        die("--retry-failed says which hosts --retries tries again: give "
+            "--retries N too")
+    args._failing = (stop, (retries, delay, failed))
+    return args._failing
+
+
+def failing_plan(args, stop, retry):
+    """--dry-run's word on what the fan-out would do when hosts fail."""
+    lines = []
+    if stop is not None:
+        lines.append("plan: " + stop.plan())
+    retries, delay, failed = retry
+    if retries:
+        lines.append(
+            "plan: --retries %d: a host that %s is tried again, up to %s, "
+            "%s apart; every try is a row" % (
+                retries, "did not answer ok" if failed
+                else "was unreachable or timed out",
+                plural(retries, "more time", "more times"),
+                ("%gs" % delay) if delay else "no time"))
+    if lines and getattr(args, "via", "ssh") in ("pdsh", "clush"):
+        lines.append("plan: host by host, not one %s call, so qd can stop "
+                     "or try again between hosts" % args.via)
+    if getattr(args, "_rerun_of", None):
+        lines.append("plan: --rerun: the hosts that were not ok in %s"
+                     % ", ".join(args._rerun_of))
+    return lines
 
 
 def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
@@ -680,10 +824,17 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
     if pol.active:
         extra = dict(extra or {})
         extra["policy"] = pol.notes()
+    stop, retry = failing_of(args)
+    if getattr(args, "_rerun_of", None):
+        extra = dict(extra or {})
+        extra["rerun_of"] = ",".join(args._rerun_of)
     runner = new_runner(args, hs)
     if args.dry_run:
         check_ssh_setup(runner)
-        dry_run_lines(runner, hs, command, push, stdin, args.jobs)
+        for ln in failing_plan(args, stop, retry):
+            warn(ln)
+        dry_run_lines(runner, hs, command, push, stdin, args.jobs,
+                      one_by_one=stop is not None or bool(retry[0]))
         return None
     check_transport(runner, bool(push), bool(stdin))
     context = list(context) + runner.context()
@@ -704,19 +855,26 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
             return runner.run_many(hosts, command, list(push) or None,
                                    not args.keep_remote, k, stdin,
                                    args.jobs, label)
+    stop, retry = failing_of(args)
+    if many is not None and (stop is not None or retry[0]):
+        many = None          # --max-fail and --retries go host by host
     results, interrupted = fleet.run_passes(
-        hs, lambda h, k: runner.run_one(h, command, list(push) or None,
+        hs, fleet.with_retries(
+            lambda h, k: runner.run_one(h, command, list(push) or None,
                                         not args.keep_remote, k, stdin),
-        args.jobs, count, args.every or 0, gate=gate, many=many)
+            *retry),
+        args.jobs, count, args.every or 0, gate=gate, many=many, stop=stop)
     if not results:
-        die("interrupted before any pass finished; nothing was kept", 130)
+        die("interrupted before any pass started; nothing was kept", 130)
+    stopped = stop.why if stop is not None else None
     if push and args.keep_remote:
         warn("the pushed files are left on each host in %s"
              % runner.work_dir)
     took = round(time.time() - t0, 2)
     passes = max(r.pass_no for r in results)
     if st is None:
-        return Job(results, interrupted, None, unfiled_table(results, passes))
+        return Job(results, interrupted, None, unfiled_table(results, passes),
+                   stopped)
     # a part of a campaign or a design point carries its part in its id:
     # two workers on one campaign finish parts in the same second
     part = (extra or {}).get("part")
@@ -724,11 +882,11 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
     b = filing.Batch()
     ncap = add_answers(b, rid, label, results, passes, context)
     add_own_tables(b, rid, label, command, created, took, hs, results,
-                   interrupted, passes, args.every, ncap, extra)
+                   interrupted, passes, args.every, ncap, extra, stopped)
     say_filing(ncap)
     notes = file_batch(prov, b, "answers")
     entry = filed(st, rid, notes, b)
-    return Job(results, interrupted, entry, entry.load("data"))
+    return Job(results, interrupted, entry, entry.load("data"), stopped)
 
 
 def fleet_runs_together(args, hs, specs, extra=None):
@@ -746,6 +904,10 @@ def fleet_runs_together(args, hs, specs, extra=None):
     if pol.active:
         extra = dict(extra or {})
         extra["policy"] = pol.notes()
+    stop, retry = failing_of(args)
+    if getattr(args, "_rerun_of", None):
+        extra = dict(extra or {})
+        extra["rerun_of"] = ",".join(args._rerun_of)
     runners = [new_runner(args, hs) for _ in specs]
     check_transport(runners[0], False, any(s for _, _, s in specs))
     ctx = runners[0].context()
@@ -762,18 +924,25 @@ def fleet_runs_together(args, hs, specs, extra=None):
         _, command, stdin = specs[i]
         return runners[i].run_one(h, command, None, True, k, stdin)
 
+    def skip(task, k, why):
+        return fleet.not_run(task[1], k, why)
+
     gate = gate_of(args)
-    if runners[0].batched and not (gate is not None and gate.active()):
+    interrupted = False
+    if runners[0].batched and not (gate is not None and gate.active()) \
+            and stop is None and not retry[0]:
         each = run_together(args, hs, specs, runners)
     else:
-        results, interrupted = fleet.run_passes(tasks, one, args.jobs,
-                                                gate=gate)
+        results, interrupted = fleet.run_passes(
+            tasks, fleet.with_retries(one, *retry), args.jobs, gate=gate,
+            stop=stop, skip=skip)
         if not results:
             die("interrupted before any host answered; nothing was kept",
                 130)
         each = [[] for _ in specs]
         for (i, _), r in zip(tasks, results):
             each[i].append(r)
+    stopped = stop.why if stop is not None else None
     b = filing.Batch()
     rids, ncaps = [], []
     for (label, _, _), rs in zip(specs, each):
@@ -781,14 +950,16 @@ def fleet_runs_together(args, hs, specs, extra=None):
         ncaps.append(add_answers(b, rids[-1], label, rs, 1, ctx))
     for (label, command, _), rs, rid, ncap in zip(specs, each, rids, ncaps):
         # a run took as long as its slowest host
-        took = round(max(r.started + r.duration for r in rs) - t0, 2)
+        took = round(max([r.started + r.duration for r in rs
+                          if r.started is not None] or [t0]) - t0, 2)
         add_own_tables(b, rid, label, command, created, took, hs, rs,
-                       False, 1, None, ncap, extra)
+                       interrupted, 1, None, ncap, extra, stopped)
     say_filing(sum(ncaps))
     notes = file_batch(prov, b, "answers")
     entries = [filed(st, rid, notes, b, cleanup=False) for rid in rids]
     b.cleanup()
-    return [Job(rs, False, e, e.load("data")) for rs, e in zip(each, entries)]
+    return [Job(rs, interrupted, e, e.load("data"), stopped)
+            for rs, e in zip(each, entries)]
 
 
 def run_together(args, hs, specs, runners):
@@ -810,13 +981,19 @@ def run_together(args, hs, specs, runners):
 
 def unfiled_table(results, passes):
     """--no-store: what came back, with nothing parsed and nothing kept."""
-    cols = ["host"] + (["pass"] if passes > 1 else []) + [
+    every = tries(results)
+    many = any(r.attempt > 1 for r in every)
+    cols = ["host"] + (["pass"] if passes > 1 else []) + (
+        ["attempt"] if many else []) + [
         "status", "rc", "duration_s", "error", "stdout"]
     rows = []
-    for r in results:
+    for r in every:
         rows.append([r.host.name] + ([str(r.pass_no)] if passes > 1
                                      else []) +
-                    [r.outcome, str(r.rc), "%.2f" % r.duration, r.error(),
+                    ([str(r.attempt)] if many else []) +
+                    [r.outcome, "" if r.rc is None else str(r.rc),
+                     "" if r.duration is None else "%.2f" % r.duration,
+                     r.error(),
                      r.stdout.rstrip("\n")])
     return tablemod.Table(cols, rows, "data")
 
@@ -840,7 +1017,8 @@ def report_run(args, command, hs, job, title=None):
     parts = ["%d ok" % counts.get(fleet.OK, 0)] + [
         "%d %s" % (counts[k], k) for k in (fleet.FAILED, fleet.TIMEOUT,
                                            fleet.UNREACHABLE,
-                                           fleet.PUSH_FAILED)
+                                           fleet.PUSH_FAILED,
+                                           fleet.NOT_RUN)
         if counts.get(k)]
     dcols = data_columns(t)
     if entry is None:
@@ -856,9 +1034,14 @@ def report_run(args, command, hs, job, title=None):
         command if len(command) < 60 else command[:57] + "...",
         plural(len(hs), "host"), ", ".join(parts),
         (", %d passes" % passes) if passes > 1 else "", shape)]
+    if job.stopped:
+        lines.append("  STOPPED  %s; no new host was started, and the %s "
+                     "not started are not-run rows (qd run --rerun %s)" % (
+                         job.stopped, plural(counts.get(fleet.NOT_RUN, 0),
+                                             "host"),
+                         entry.id if entry is not None else "RUN"))
     if interrupted:
-        lines.append("  interrupted: kept the %s that finished"
-                     % plural(passes, "pass", "passes"))
+        lines.append("  %s" % interrupted_note(last, passes))
     stray = left_running_note(job.results)
     if stray:
         lines.append("  NOT STOPPED  the command %s" % stray)
@@ -875,15 +1058,24 @@ def report_run(args, command, hs, job, title=None):
         sys.stdout.write(render.page(lines))
         return
     bad = [r for r in last if r.outcome != fleet.OK]
+    tried = [r for r in bad if r.outcome != fleet.NOT_RUN]
     if bad:
         lines.append("")
         lines.append("  DID NOT ANSWER")
-        w = max(len(r.host.name) for r in bad)
-        for r in bad:
+    if tried:
+        w = max(len(r.host.name) for r in tried)
+        for r in tried:
             what = r.outcome if r.outcome != fleet.FAILED else \
                 "failed (exit %d)" % r.rc
+            if r.attempt > 1:
+                what += " (try %d)" % r.attempt
             lines.append("    %-*s  %-16s %s" % (w, r.host.name, what,
                                                  r.error()))
+    skipped = [r.host.name for r in bad if r.outcome == fleet.NOT_RUN]
+    if skipped:
+        lines.append("    not-run: %s%s" % (", ".join(skipped[:12]), (
+            " and %d more" % (len(skipped) - 12)) if len(skipped) > 12
+            else ""))
     ok_rows = [row for row in t.rows if row[t.index("status")] == fleet.OK]
     if args.preview and ok_rows:
         show = ["host"] + (["pass"] if passes > 1 else []) + (
@@ -907,6 +1099,10 @@ def run_next_steps(t, dcols, entry, bad, passes):
         tips.append(("%s show %s --where status!=ok" % (PROG, ref),
                      "the %s that did not answer, with why"
                      % plural(len(bad), "host")))
+        if entry is not None:
+            tips.append(("%s run --rerun %s -- ..." % (PROG, ref),
+                         "the same again on only those %s"
+                         % plural(len(bad), "host")))
         tips.append(("reachable hosts.txt -i",
                      "binnacle: comment dead entries out of the list"))
     ok = t.derive(rows=query.where(t, ["status=ok"]))
@@ -3300,6 +3496,10 @@ def cmd_campaign(args):
     from . import campaign as camp
     st = store_of(args)
     what = args.action
+    if getattr(args, "rerun", None) and what != "new":
+        die("--rerun picks a run's hosts for a new run or a new campaign; "
+            "a campaign's own parts run again with `%s campaign retry`"
+            % PROG)
     if what == "ls":
         cs = camp.load_all(st)
         if not cs:
@@ -3987,6 +4187,10 @@ def add_hosts(p):
     g.add_argument("--first", type=positive, metavar="N",
                    help="only the first N hosts -- the canary before the "
                    "fleet")
+    g.add_argument("--rerun", action="append", metavar="RUN",
+                   help="the hosts that were not ok in RUN (latest, an id, "
+                   "a name): unreachable, timed out, failed or not-run, "
+                   "with their attributes; repeatable")
 
 
 def add_query(p, sort=True):
@@ -4085,11 +4289,48 @@ def add_ssh(sp):
 
 
 def add_passes(sp):
+    add_failing(sp)
     g = sp.add_argument_group("what comes back")
     g.add_argument("--every", type=seconds, metavar="S",
                    help="repeat: a pass every S seconds")
     g.add_argument("--count", type=nonneg, default=None, metavar="N",
                    help="passes to run (1; 0 with --every runs until Ctrl-C)")
+    return g
+
+
+def nonneg_seconds(text):
+    try:
+        v = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("%r is not a number of seconds"
+                                         % text)
+    if v < 0:
+        raise argparse.ArgumentTypeError("wants 0 or more seconds")
+    return v
+
+
+def add_failing(sp):
+    """When hosts fail (QD-027): stop starting more, or try them again."""
+    g = sp.add_argument_group("when hosts fail")
+    g.add_argument("--max-fail", default=env("MAX_FAIL"), metavar="N|P%",
+                   help="start no new host once more than N hosts, or P%% "
+                   "of those started, are not ok; the rest are not-run "
+                   "rows and the run exits 1 (QD_MAX_FAIL)")
+    g.add_argument("--max-fail-on", default=env("MAX_FAIL_ON", "any"),
+                   choices=["any", "unreachable"],
+                   help="what --max-fail counts: any status but ok "
+                   "(default), or only unreachable, timeout and push-failed "
+                   "(QD_MAX_FAIL_ON)")
+    g.add_argument("--retries", type=nonneg, default=env_int("RETRIES", 0),
+                   metavar="N",
+                   help="try an unreachable or timed-out host up to N more "
+                   "times in the run; every try is a row (QD_RETRIES, 0)")
+    g.add_argument("--retry-delay", type=nonneg_seconds,
+                   default=env_float("RETRY_DELAY", 0.0), metavar="S",
+                   help="seconds between tries (QD_RETRY_DELAY, 0)")
+    g.add_argument("--retry-failed", action="store_true",
+                   help="--retries also tries a command that ran and "
+                   "failed (non-zero exit) again")
     return g
 
 

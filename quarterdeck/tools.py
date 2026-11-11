@@ -358,7 +358,9 @@ SKIP = ("addr", "rc", "duration_s", "pass", "ts", "timestamp", "time",
         "run", "at", "test_start", "filename", "digest", "is_baseline",
         "group_id", "slot", "path", "room", "row", "rack", "role")
 STATUS_VERDICT = {"ok": "PASS", "failed": "FAIL", "timeout": "FAIL",
-                  "unreachable": "FAIL", "push-failed": "FAIL"}
+                  "unreachable": "FAIL", "push-failed": "FAIL",
+                  # never tried (QD-027): not a pass, not a failure
+                  "not-run": "WARN"}
 UNITS = (("_pct", "%"), ("_percent", "%"), ("_us", "us"), ("_ms", "ms"),
          ("_s", "s"), ("_mbps", "Mb/s"), ("_gbps", "Gb/s"), ("_pps", "pps"),
          ("_kb", "kB"), ("_mb", "MB"), ("_gb", "GB"), ("_bytes", "B"),

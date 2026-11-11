@@ -200,6 +200,24 @@ t_binnacle_scripts_run_on_the_hosts() {
     fi
 }
 
+# QD-027: --max-fail and --retries are the fan-out's, so a probe has them,
+# and probes run together share one stop
+t_probes_stop_and_retry_like_a_run() {
+    seed
+    fake_host_unreachable c
+    printf 'a rack=r1\nb rack=r2\nc rack=r2\nd rack=r2\n' > hosts.txt
+    fake_host d
+    qdf_rc probe os packages -s hosts.txt -j 1 --max-fail 0 -q > out
+    assert_status "$QD_RC" 1
+    assert_contains "$(qd show os --cols host,status --format csv)" "d,not-run"
+    assert_contains "$(qd show packages --cols host,status --format csv)" "a,not-run"
+    qdf_rc probe os -s hosts.txt --retries 1 -q > /dev/null
+    out="$(qd show os --cols host,attempt,status --format csv)"
+    assert_contains "$out" "c,1,unreachable"
+    assert_contains "$out" "c,2,unreachable"
+    assert_contains "$(qdf probe os -s hosts.txt --max-fail 1 --dry-run 2>&1)" "plan: --max-fail 1"
+}
+
 run_test "the catalogue lists itself"                t_the_catalogue_lists_itself
 run_test "command probes: a run each, named"         t_command_probes_file_a_run_each
 run_test "a group expands to its probes"             t_a_group_expands
@@ -209,4 +227,5 @@ run_test "reach reads reachable's CSV"              t_reach_reads_reachables_csv
 run_test "a fleet tool: run here, read back"         t_a_fleet_tool_is_run_here_and_read_back
 run_test "several probes run together"             t_probes_run_together
 run_test "binnacle's scripts run on the hosts"       t_binnacle_scripts_run_on_the_hosts
+run_test "probes stop and retry like a run"         t_probes_stop_and_retry_like_a_run
 finish

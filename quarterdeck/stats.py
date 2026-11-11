@@ -21,7 +21,7 @@ from .table import Table, normalize_units, to_num
 SEVERITY = {"pass": 0, "ok": 0, "tested": 0, "reporting": 0,
             "warn": 1, "skipped": 1, "silent": 2,
             "fail": 3, "failed": 3, "timeout": 3, "push-failed": 3,
-            "no-data": 3, "unreachable": 4}
+            "no-data": 3, "not-run": 3, "unreachable": 4}
 
 BOOKKEEPING = ("rc", "duration_s", "pass", "ts", "line_no", "n", "#",
                "capture", "bytes")
