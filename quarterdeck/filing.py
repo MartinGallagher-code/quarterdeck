@@ -92,6 +92,19 @@ def table_tsv(t):
     return "\n".join(lines) + "\n"
 
 
+def provost_operator(who):
+    """QD_OPERATOR as provost 2.18.0 on takes PROVOST_OPERATOR: one line of
+    printable text, at most 512 characters, or it refuses to file anything
+    (its spec: the Operator: trailer).  qd's own qd.runs row keeps the
+    free text as given; provost's record gets each run of control
+    characters as a space, cut to 512 bytes."""
+    who = re.sub(u"[\x00-\x1f\x7f-\x9f]+", " ", who or "").strip()
+    b = who.encode("utf-8")
+    if len(b) > 512:
+        who = b[:512].decode("utf-8", "ignore").strip()
+    return who
+
+
 def prologue(pairs, extra=()):
     words = " ".join("%s=%s" % (k, re.sub(r"\s+", "_", v)) for k, v in pairs
                      if v != "" and storemod.KEY_RE.match(k))
@@ -168,7 +181,7 @@ class Provost(object):
         # a PROVOST_OPERATOR the caller set is theirs to keep
         if not e.get("PROVOST_OPERATOR"):
             from .whoran import operator
-            who = operator()
+            who = provost_operator(operator())
             if who:
                 e["PROVOST_OPERATOR"] = who
         return e

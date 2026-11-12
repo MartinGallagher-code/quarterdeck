@@ -180,6 +180,13 @@ EOF
     PROVOST_OPERATOR=svc QD_PROVOST="$FAKE_BIN/provost-logged" \
         QD_OPERATOR=ann qdf run -s hosts.txt -- cat kernel > /dev/null
     assert_eq "$(sort -u "$TEST_TMPDIR/provost-op")" "svc"
+    # provost 2.18.0 on refuses a control character in it: a tab and a
+    # line break reach provost as spaces, and qd's own row keeps them
+    : > "$TEST_TMPDIR/provost-op"
+    QD_PROVOST="$FAKE_BIN/provost-logged" \
+        QD_OPERATOR="$(printf 'Jane\tDoe\nlab 2')" \
+        qdf run -s hosts.txt -- cat kernel > /dev/null
+    assert_eq "$(sort -u "$TEST_TMPDIR/provost-op")" "Jane Doe lab 2"
 }
 
 # qd 0.6.4 wrote qd.runs without the five columns: run qd with them cut

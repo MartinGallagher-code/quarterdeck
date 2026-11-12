@@ -27,6 +27,13 @@ format spec (its `docs/store-format.md`, PV-022), checked against provost
 - **`meta.tsv` values are unescaped**: provost writes a tab in a value as
   `\t` and a newline as `\n`; qd now turns them back.
 
+### Fixed
+- **A `QD_OPERATOR` with a tab or a line break no longer stops filing**
+  under provost 2.18.0 and later, which refuses a control character in
+  `PROVOST_OPERATOR` (its `Operator:` trailer, PV-027). provost is given
+  each run of control characters as a space, cut to 512 bytes; qd's own
+  `qd.runs` row keeps the text as given. The new store-check job found it.
+
 ### Added
 - **Truncated captures** (provost 2.15.0 on: an input over
   `PROVOST_MAX_INPUT` is parsed from its head, and kept whole outside git
