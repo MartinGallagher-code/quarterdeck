@@ -50,7 +50,7 @@ usage() { sed -n '5,25p' run_tests.sh | sed 's/^# \{0,1\}//'; }
 # raised by the share of cases QD-027 added, an estimate; changes (QD-030)
 # timed here at 54 s and raised for CI, an estimate.  A run's last
 # line, `seconds:`, gives every suite's, to measure them again from.
-TIMES="doe:236 peers:231 web:225 via:224 run:205 xstore:146 compare:132 probe:112 operator:98 report:87 campaign:86 rm:81 do:78 remote:77 view:74 changes:60 pacing:54 store:41 stop:40 policy:37 read:35 join:30 ssh:25 export:24 runner:18 split:15 diff:14 check:12 analyze:6 cleanup:3"
+TIMES="doe:236 peers:231 web:225 via:224 run:205 xstore:146 compare:132 probe:112 operator:98 report:87 campaign:86 rm:81 do:78 remote:105 view:74 changes:60 pacing:54 store:41 stop:40 policy:37 read:35 join:30 ssh:25 export:24 runner:18 split:15 diff:14 check:12 analyze:6 cleanup:3"
 UNLISTED=30
 
 # With --shard K/N, a suite listed here is split into that many parts (or

@@ -48,6 +48,15 @@ t_a_remote_store_reads_and_refreshes() {
     assert_eq "$(ssh_calls)" "$((n + 1))"
     # the copy is git's alone: nothing of qd's in the store's files
     assert_eq "$(git -C "$(COPY wr01)" status --porcelain)" ""
+    # a SHA-1 store's copy is refreshed where it is, never made again
+    assert_eq "$(git -C "$(COPY wr01)" rev-parse --show-object-format)" "sha1"
+    touch "$(COPY wr01)/.git/kept"
+    printf 'host,load\nh03,0.1\n' > l3.csv
+    there import l3.csv --name third > /dev/null
+    QD_REMOTE_REFRESH=0 qd log --store wr01 > out 2> err
+    assert_contains "$(cat out)" "third"
+    assert_eq "$(cat err)" ""
+    assert_file_exists "$(COPY wr01)/.git/kept"
 }
 
 # refused before anything is done: no host contacted, nothing fetched
@@ -183,6 +192,116 @@ t_rename_and_rm_a_remote_store() {
     assert_dir_exists "$FAKE_ROOT/wr01/store/datasets"
 }
 
+# git's words for a copy in one object format and a store in the other
+t_a_mismatched_format_is_explained() {
+    seed
+    cat > "$FAKE_BIN/ssh-mismatch" <<'EOF2'
+#!/bin/bash
+echo "fatal: mismatched algorithms: client sha1; server sha256" >&2
+exit 128
+EOF2
+    chmod +x "$FAKE_BIN/ssh-mismatch"
+    QD_SSH="$FAKE_BIN/ssh-mismatch" qd_rc store new m --remote wr01:/srv/store 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "/srv/store on wr01 is in git's SHA-256 object format and the copy here is SHA-1"
+    assert_contains "$(cat err)" "the copy has to be made again"
+    assert_eq "$(ls -A "$XDG_CACHE_HOME/quarterdeck/remotes")" ""
+}
+
+# a git too old for SHA-256 (2.29) is named when a copy cannot be made
+t_an_old_git_is_named() {
+    seed
+    real="$(command -v git)"
+    mkdir -p oldgit
+    cat > oldgit/git <<EOF2
+#!/bin/bash
+[ "\$1" = --version ] && { echo "git version 2.25.1"; exit 0; }
+exec "$real" "\$@"
+EOF2
+    chmod +x oldgit/git
+    # what an old git might make of a SHA-256 store's advertisement
+    cat > "$FAKE_BIN/ssh-old" <<'EOF2'
+#!/bin/bash
+echo "fatal: protocol error: unexpected capabilities^{}" >&2
+exit 128
+EOF2
+    chmod +x "$FAKE_BIN/ssh-old"
+    PATH="$PWD/oldgit:$PATH" QD_SSH="$FAKE_BIN/ssh-old" qd_rc store new p --remote wr01:store 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "cannot fetch wr01:store: fatal: protocol error"
+    assert_contains "$(cat err)" "this git is 2.25"
+    assert_contains "$(cat err)" "needs git 2.29 or newer here"
+}
+
+# Why a SHA-256 case cannot run here, or nothing: a git that keeps sha256
+# (2.29 on) and a provost whose init takes --object-format (2.18.0 on).
+sha256_why_not() {
+    local v
+    v="$(git --version | sed -n 's/^git version \([0-9]*\)\.\([0-9]*\).*/\1 \2/p')"
+    # shellcheck disable=SC2086  # "MAJOR MINOR"
+    set -- $v
+    if [ -z "${1:-}" ] || [ "$1" -lt 2 ] || { [ "$1" -eq 2 ] && [ "$2" -lt 29 ]; }; then
+        echo "git here is $(git --version | sed 's/^git version //'); SHA-256 needs 2.29 or newer"
+        return
+    fi
+    # shellcheck disable=SC2086  # QD_PROVOST may be a command line
+    if ! $PROVOST_CMD init --help 2>&1 | grep -q -- --object-format; then
+        echo "this provost's init has no --object-format (provost 2.18.0 on)"
+    fi
+}
+
+# a store on wr01 made SHA-256, by provost itself
+sha256_store() {
+    rm -rf "$FAKE_ROOT/wr01/store"
+    # shellcheck disable=SC2086  # QD_PROVOST may be a command line
+    PROVOST_WORKSPACE="$FAKE_ROOT/wr01/store" $PROVOST_CMD init \
+        --object-format sha256 > /dev/null
+    assert_eq "$(git -C "$FAKE_ROOT/wr01/store" rev-parse --show-object-format)" "sha256"
+}
+
+t_a_sha256_store_reads_and_refreshes() {
+    install_fake_ssh
+    fake_host wr01
+    export QD_SSH="$FAKE_BIN/ssh"
+    unset QD_STORE
+    sha256_store
+    printf 'host,load\nh01,0.5\n' > load.csv
+    there import load.csv --name load > /dev/null
+    qd store new wr01 --remote wr01:store > out
+    assert_contains "$(cat out)" "fetched now: 1 run"
+    assert_eq "$(git -C "$(COPY wr01)" rev-parse --show-object-format)" "sha256"
+    assert_eq "$(git -C "$(COPY wr01)" rev-parse --is-shallow-repository)" "true"
+    assert_contains "$(qd show latest --store wr01 --format csv)" "h01,0.5"
+    # refreshed in place, as a SHA-1 store's copy is
+    touch "$(COPY wr01)/.git/kept"
+    printf 'host,load\nh02,0.9\n' > l2.csv
+    there import l2.csv --name later > /dev/null
+    QD_REMOTE_REFRESH=0 qd log --store wr01 > out 2> err
+    assert_contains "$(cat out)" "later"
+    assert_eq "$(cat err)" ""
+    assert_file_exists "$(COPY wr01)/.git/kept"
+}
+
+# a SHA-1 store remade SHA-256: its copy is made again, and said
+t_a_store_remade_sha256_remakes_its_copy() {
+    seed
+    qd store new wr01 --remote wr01:store > /dev/null
+    assert_eq "$(git -C "$(COPY wr01)" rev-parse --show-object-format)" "sha1"
+    touch "$(COPY wr01)/.git/kept"
+    sha256_store
+    printf 'host,load\nh09,0.7\n' > l9.csv
+    there import l9.csv --name remade > /dev/null
+    QD_REMOTE_REFRESH=0 qd log --store wr01 > out 2> err
+    assert_contains "$(cat err)" "wr01:store is now in git's SHA-256 object format and its copy here was SHA-1: making the copy again"
+    assert_contains "$(cat out)" "remade"
+    assert_eq "$(git -C "$(COPY wr01)" rev-parse --show-object-format)" "sha256"
+    assert_no_file "$(COPY wr01)/.git/kept"
+    # nothing left beside it, and the next refresh is a plain one
+    assert_eq "$(ls -A "$XDG_CACHE_HOME/quarterdeck/remotes")" "wr01"
+    QD_REMOTE_REFRESH=0 qd log --store wr01 > /dev/null 2> err
+    assert_eq "$(cat err)" ""
+}
+
 web_get() {
     "$PY" - "$URL" "$1" <<'EOF'
 import sys, urllib.request
@@ -224,4 +343,22 @@ run_test "what cannot be a remote store"             t_what_cannot_be_a_remote_s
 run_test "another user's store, explained"           t_another_users_store_is_explained
 run_test "rename and rm a remote store"              t_rename_and_rm_a_remote_store
 run_test "the web page reads a remote store"         t_the_web_page_reads_a_remote_store
+run_test "a mismatched object format, explained"     t_a_mismatched_format_is_explained
+run_test "an old git is named"                       t_an_old_git_is_named
+
+# QD_TEST_SHA256=require (CI's store-check job) fails these rather than
+# skipping them where git or provost cannot make a SHA-256 store
+why="$(sha256_why_not)"
+for c in "a SHA-256 store reads, and refreshes:t_a_sha256_store_reads_and_refreshes" \
+         "a store remade SHA-256 remakes its copy:t_a_store_remade_sha256_remakes_its_copy"; do
+    name="${c%%:t_*}"
+    fn="t_${c##*:t_}"
+    if [ -z "$why" ]; then
+        run_test "$name" "$fn"
+    elif [ "${QD_TEST_SHA256:-}" = require ]; then
+        run_test "$name" fail "QD_TEST_SHA256=require, but $why"
+    else
+        printf '  skip %s: %s\n' "$name" "$why"
+    fi
+done
 finish

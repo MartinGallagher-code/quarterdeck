@@ -5,6 +5,39 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.18.1 — 2026-11-11
+
+A remote store made in git's SHA-256 object format is read (QD-032,
+following provost's PV-027).
+
+### Fixed
+- **A remote SHA-256 store reads.** A copy was made with `git init`, in
+  SHA-1, and git refused the fetch from a store made by `provost init
+  --object-format sha256` ("mismatched algorithms"). A copy now takes the
+  store's object format, and refreshes in place as a SHA-1 store's does.
+- **A store remade in the other object format gets a new copy**, said on
+  stderr ("is now in git's SHA-256 object format and its copy here was
+  SHA-1: making the copy again"), and the old copy is kept until the new
+  one is in place. A SHA-1 store's existing copy is refreshed where it is,
+  as before.
+- **`why_not()` says a mismatch in words**: the store's format, the
+  copy's, and that the copy has to be made again; and where this git is
+  older than 2.29, which cannot keep a SHA-256 store, a failed copy says
+  so.
+
+### Tests
+- `tests/test_remote.sh`: a SHA-256 store made by `provost init
+  --object-format sha256`, read and refreshed; a SHA-1 store remade
+  SHA-256; the mismatch and an old git explained. The SHA-256 cases skip
+  where git is older than 2.29 or provost's `init` has no
+  `--object-format`, and are required in CI's store-check job
+  (`QD_TEST_SHA256=require`).
+
+### Known
+- A remote store's copy holds what is in the store's git and nothing
+  else, so the inputs provost keeps beside it for truncated captures
+  (QD-031) are never in it.
+
 ## 0.18.0 — 2026-11-11
 
 qd's reading of provost's store brought in line with provost's store
