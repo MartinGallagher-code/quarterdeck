@@ -3552,25 +3552,39 @@ def cmd_store(args):
         if not stores.NAME_RE.match(name):
             name = "store"
         m = stores.export(path, name, words[-1])
-        out("%s store export: %s -> %s  (%s, %s, %s, store format %d, "
+        kept = len(m.get("artifacts") or {})
+        out("%s store export: %s -> %s  (%s, %s, %s%s, store format %d, "
             "%s bytes)" % (PROG, name, words[-1],
                            plural(m["runs"], "run"),
                            plural(m["captures"], "capture"),
                            plural(len(m["files"]), "file"),
+                           (", " + plural(kept, "kept input")) if kept
+                           else "",
                            m["store_format"],
                            "{:,}".format(os.path.getsize(words[-1]))))
+        for cid in m.get("artifacts_missing") or []:
+            warn("store export: %s was truncated, and its whole input is "
+                 "not beside the store (%s): the archive has only the part "
+                 "provost parsed" % (cid, storemod.Store(path)
+                                     .kept_input(cid)[1]))
         return 0
     if act == "import":
         want(1, "import FILE [--as NAME]")
         if not os.path.isfile(words[0]):
             die("no such file: %s" % words[0])
         name, dest, m = stores.import_(words[0], args.as_name)
+        kept = len(m.get("artifacts") or {})
         out("%s store import: %s = %s  (%s, %s, store format %d, exported "
             "%s by qd %s)" % (PROG, name, storemod.tilde(dest),
                               plural(m.get("runs", 0), "run"),
                               plural(len(m["files"]), "file"),
                               m["store_format"], m.get("exported", "?"),
                               m.get("qd", "?")))
+        if kept:
+            out("  %s, kept whole beside it: %s" % (
+                plural(kept, "truncated capture's input", "truncated "
+                       "captures' inputs"),
+                storemod.tilde(dest + ".artifacts")))
         out("  %s store use %s   to make it the store commands use"
             % (PROG, name))
         return 0

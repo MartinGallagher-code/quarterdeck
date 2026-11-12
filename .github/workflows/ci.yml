@@ -148,6 +148,52 @@ jobs:
       - name: Run the test suite
         run: bash tests/run_tests.sh --shard ${{ matrix.shard }}/3
 
+  store-check:
+    # provost's store format is a spec (its docs/store-format.md, PV-022),
+    # and `provost store check DIR` (2.16.0 on) checks a store against it.
+    # Here the whole suite files with that provost, and every store a case
+    # leaves is checked once the case passes (QD_STORE_CHECK=require,
+    # tests/test_helper.bash): a filing that breaks the format fails here,
+    # not in somebody's store.  PyPI's newest provost is 2.3.0, which has
+    # no `store check`, so this takes provost from its repository, pinned
+    # to the commit of its 2.19.0 (move PROVOST_REF on to take a newer
+    # one).  It also runs the suite against the newest provost.  QD-031.
+    name: store check (provost 2.19.0, ${{ matrix.shard }}/3)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+
+    env:
+      PROVOST_REF: 90e44bf001905959e7b4de2ebe3ce6edf5a8c2b2
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch provost at PROVOST_REF, and binnacle and doe
+        run: |
+          git init -q "$RUNNER_TEMP/provost"
+          git -C "$RUNNER_TEMP/provost" fetch -q --depth 1 \
+            https://github.com/MartinGallagher-code/provost.git "$PROVOST_REF"
+          git -C "$RUNNER_TEMP/provost" checkout -q FETCH_HEAD
+          "$RUNNER_TEMP/provost/provost" --version | head -n 1
+          python -m pip install binnacle doehelper
+
+      - name: Run the test suite, every store checked
+        run: |
+          export QD_PROVOST="$RUNNER_TEMP/provost/provost"
+          export QD_STORE_CHECK=require
+          bash tests/run_tests.sh --shard ${{ matrix.shard }}/3
+
   ssh:
     # tests/test_ssh.sh logs in to a real sshd of its own on loopback,
     # started as the runner's user, where one is installed, and skips those

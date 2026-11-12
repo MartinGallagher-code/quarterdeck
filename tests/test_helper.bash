@@ -23,6 +23,15 @@
 #   stand_in_doe            a doe that designs and analyses as the real one
 #   path_without CMD...     this PATH without those commands
 #   nojq_path               this PATH without jq, for provost's own readers
+#   no_store_check DIR...   leave these stores out of QD_STORE_CHECK
+#   has_store_check         whether that provost has `store check`
+#
+# QD_STORE_CHECK=1 runs `provost store check` (provost 2.16.0 on) on every
+# store a case leaves, once the case has passed, and fails the case on what
+# it finds: a filing that breaks provost's store format (its
+# docs/store-format.md) fails here, not in somebody's store.  With a
+# provost that has no `store check`, 1 checks nothing and `require` fails
+# every case (CI's store-check job sets require).  QD-031.
 #
 # The harness is binnacle's (tests/test_helper.bash there), trimmed to what
 # these suites use: every case runs in a subshell, so one failed assertion
@@ -144,6 +153,7 @@ run_test() {
         trap teardown_env EXIT
         set -e
         "$@" 2>&1
+        store_check 2>&1
     )"
     rc=$?
     if [ $rc -eq 0 ]; then
@@ -166,6 +176,54 @@ finish() {
 }
 
 qd() { "$PY" "$QD_DIR/qd" "$@"; }
+
+# shellcheck disable=SC2086  # QD_PROVOST may be a command line
+has_store_check() { $PROVOST_CMD store check --help > /dev/null 2>&1; }
+
+# A store a case made by hand, or broke on purpose: not provost's to judge.
+no_store_check() {
+    local d
+    for d in "$@"; do
+        (cd "$d" 2>/dev/null && pwd -P) >> "$TEST_TMPDIR/.no-store-check" ||
+            printf '%s\n' "$d" >> "$TEST_TMPDIR/.no-store-check"
+    done
+}
+
+# `provost store check` on every store under the case's directory (each
+# directory with a .store_format), but the copies of remote stores in the
+# cache (QD-032's) and those no_store_check named; see QD_STORE_CHECK above.
+store_check() {
+    case "${QD_STORE_CHECK:-0}" in
+        0 | "") return 0 ;;
+        1 | require) ;;
+        *) echo "QD_STORE_CHECK is 0, 1 or require: $QD_STORE_CHECK"; return 1 ;;
+    esac
+    if ! has_store_check; then
+        [ "$QD_STORE_CHECK" = require ] || return 0
+        echo "QD_STORE_CHECK=require: $PROVOST_CMD has no \`store check\` (provost 2.16.0 on)"
+        return 1
+    fi
+    local f d real out bad=0 cache
+    cache="$(cd "${XDG_CACHE_HOME:-/nonexistent}" 2>/dev/null && pwd -P)" || cache=""
+    while IFS= read -r f; do
+        d="${f%/.store_format}"
+        real="$(cd "$d" && pwd -P)" || real="$d"
+        if [ -n "$cache" ]; then
+            case "$real/" in "$cache"/*) continue ;; esac
+        fi
+        if [ -f "$TEST_TMPDIR/.no-store-check" ] &&
+            grep -qxF "$real" "$TEST_TMPDIR/.no-store-check"; then
+            continue
+        fi
+        # shellcheck disable=SC2086  # QD_PROVOST may be a command line
+        if ! out="$($PROVOST_CMD store check "$d" 2>&1)"; then
+            printf 'provost store check %s failed:\n%s\n' "$d" "$out"
+            bad=1
+        fi
+    done < <(find "$TEST_TMPDIR" -name .store_format -type f \
+                  -not -path '*/.git/*' 2>/dev/null | sort)
+    return "$bad"
+}
 
 # provost on the case's store, as qd files into it
 # shellcheck disable=SC2086  # QD_PROVOST may be a command line

@@ -5,6 +5,63 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.18.0 — 2026-11-11
+
+qd's reading of provost's store brought in line with provost's store
+format spec (its `docs/store-format.md`, PV-022), checked against provost
+2.19.0 (QD-031).
+
+### Changed
+- **A live store of a format qd does not know is refused**, as an archive
+  of one already was: `.store_format` above 4 stops every read with "is a
+  store in format N; this qd reads formats 1, 2, 3, 4". The formats and
+  how a store's is read now live in `quarterdeck/store.py`, for the live
+  store and the archive alike.
+- **Below format 4 a row's capture comes from `provenance.tsv`**, not from
+  column 2: in a format-3 store a reconcile could leave a data value there
+  (provost's PV-015). `qd show ds:NAME` and qd's own tables read it so.
+- **A quoted `#%` value reads as provost reads it**: `cc="gcc 13.2"` is
+  one value, with `\"` and `\\` inside, a tab in it a space, and an
+  unterminated quote an ordinary word (a port of provost's
+  `_prologue_kv`). qd read `cc="gcc` before.
+- **`meta.tsv` values are unescaped**: provost writes a tab in a value as
+  `\t` and a newline as `\n`; qd now turns them back.
+
+### Added
+- **Truncated captures** (provost 2.15.0 on: an input over
+  `PROVOST_MAX_INPUT` is parsed from its head, and kept whole outside git
+  by its sha256). A raw answer from one is labelled *truncated*, with how
+  many bytes were parsed of how many, and where the whole input is kept
+  -- at `raw_artifact`, or, when that is gone, by `raw_sha256` in
+  `PROVOST_ARTIFACT_DIR` or `STORE.artifacts` -- or, in words, that it is
+  not there or no longer hashes right. `qd split` compares hosts by the
+  whole input where it is kept.
+- **`qd store export` carries the kept inputs** under `artifacts/` (an
+  archive with any is version 2; one with none stays version 1, readable
+  by an older qd), and `qd store import` checks each against its sha256
+  and puts it beside the new store, as `NAME.artifacts`. An export whose
+  truncated capture has lost its kept input says so. provost's own
+  `export` leaves them out; its `archive` carries them, as this does.
+
+### Tests
+- `tests/test_store.sh`: quoted prologue values, checked against
+  provost's own `_prologue_kv` where the provost under test is its script;
+  a format-3 store's captures from `provenance.tsv` and a format-4
+  store's by place; a store in format 9 refused by `show`, `log` and
+  `store export`; escaped `meta.tsv` values; a truncated capture made by
+  hand (its label, its kept input found where it was and after the store
+  moved, carried by an export and put beside an import, a changed one
+  refused); and, with a provost that has `store check`, a real one filed
+  under `PROVOST_MAX_INPUT=600`.
+- `QD_STORE_CHECK=1` (or `require`) in `tests/test_helper.bash` runs
+  `provost store check` on every store a passing case leaves, and fails
+  the case on what it finds; `no_store_check DIR` leaves out a store a
+  case made by hand. `tests/check.sh` sets it for the batch run.
+- CI: a new **store check** job runs the whole suite, in three shares,
+  with provost 2.19.0 fetched from its repository by commit (PyPI's
+  newest is 2.3.0, which has no `store check`) and
+  `QD_STORE_CHECK=require`.
+
 ## 0.17.0 — 2026-11-11
 
 `qd changes` finds where in a series of runs each host's level moved, so a

@@ -17,8 +17,10 @@
 # and said so, never failed; the summary at the end names every one.
 # Exit status: 0 when nothing failed, 1 when something did, 2 on bad usage.
 #
-# Left to CI: the suite under a real Python 3.6, under each of 3.9-3.13,
-# under PyPI's provost 2.1.0, and the installed wheel's smoke test.
+# The batch run checks every store a case leaves with `provost store check`
+# (QD_STORE_CHECK=1), where this provost has one.  Left to CI: the suite
+# under a real Python 3.6, under each of 3.9-3.13, under PyPI's provost
+# 2.1.0, and the installed wheel's smoke test.
 
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
@@ -112,7 +114,10 @@ elif [ -z "$provost" ]; then
 else
     # shellcheck disable=SC2086  # QD_PROVOST may be a command line
     if $provost batch --help > /dev/null 2>&1; then
-        step "test suite (provost batch)" bash tests/run_tests.sh
+        # every store a case leaves checked by `provost store check`,
+        # where this provost has one (2.16.0 on), as CI's store-check job
+        # does
+        step "test suite (provost batch)" env QD_STORE_CHECK=1 bash tests/run_tests.sh
         step "test suite (one capture at a time)" env QD_PROVOST_BATCH=0 bash tests/run_tests.sh
     else
         step "test suite (one capture at a time)" bash tests/run_tests.sh

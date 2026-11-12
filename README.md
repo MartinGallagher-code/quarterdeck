@@ -129,6 +129,17 @@ beside the rows provost parsed out of its answer, and a row for a host
 that printed nothing. Whichever store it is, `provost ls` there lists what
 qd filed.
 
+qd reads the store's files itself, as provost's store format spec
+([`docs/store-format.md`](https://github.com/MartinGallagher-code/provost/blob/main/docs/store-format.md))
+says a reader must: it refuses a store whose `.store_format` is newer than
+the formats it knows (1 to 4), takes a row's capture from `provenance.tsv`
+below format 4, reads a quoted `#%` value (`cc="gcc 13.2"`) as provost
+does, and turns `\t` and `\n` in a `meta.tsv` value back into a tab and a
+newline. A capture whose input was over provost's size cap is shown as
+what it is: the raw answer is labelled *truncated*, with the part parsed
+and where the whole input is kept (or that it is not to be found), and
+`qd split` compares hosts by the whole input where it is kept.
+
 ### Who ran it
 
 Every run says who ran it and from where, so a fan-out is attributable
@@ -202,6 +213,14 @@ versions, the store format, the run count and a sha256 for every file. The
 export takes provost's own store lock, so it refuses while a run is filing,
 and no run starts filing until the archive is written. (A run that finishes
 during a long export waits up to provost's lock timeout, 30 s.)
+
+An input over provost's size cap (`PROVOST_MAX_INPUT`, provost 2.15.0 on)
+is filed truncated: the store holds the part provost parsed, and the whole
+input is kept outside its git history, beside it, as `STORE.artifacts/SHA256`.
+An export carries those kept inputs too, under `artifacts/` (provost's own
+`export` does not), and an import puts them beside the new store, as
+`NAME.artifacts`. An archive with any is version 2, which a qd before
+0.18.0 refuses by its version; one with none is version 1, as before.
 
 An import checks the manifest, every checksum, that nothing is missing or
 added, and that this qd reads the store format. It refuses a member that
@@ -2052,13 +2071,18 @@ CI's order, and ends with a summary:
 | licensing headers | `reuse lint` |
 | the wheel builds and its metadata is valid | `python -m build`, `twine check` |
 | the whole suite, with provost's `batch` and with `QD_PROVOST_BATCH=0` | `tests/run_tests.sh` |
+| every store the batch run's cases leave is one provost's spec allows | `provost store check` (provost 2.16.0 on), with `QD_STORE_CHECK=1` |
 
 A check whose tool is missing is skipped and named in the summary, never
 failed. `--quick` leaves out the two slow ones (the suites and the wheel).
 What only CI does: the suite under a real Python 3.6 (in a container),
 under each of 3.9 to 3.13, under PyPI's provost 2.1.0 (`pip install
 "provost==2.1.0"` into a second venv and point `QD_PROVOST` at it to try it
-here), and the installed wheel's smoke test.
+here), the installed wheel's smoke test, and the suite under provost
+2.19.0 from its repository with `QD_STORE_CHECK=require`: every store a
+case leaves must pass `provost store check` (PyPI's newest provost, 2.3.0,
+has no `store check`). A case that makes a store by hand, or breaks one on
+purpose, names it to `no_store_check` in `tests/test_helper.bash`.
 
 While changing something, run less:
 

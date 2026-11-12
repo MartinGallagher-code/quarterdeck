@@ -232,7 +232,7 @@ def by_answers(hosts, entry):
         if status != "ok":
             key = ("failed", status)
         else:
-            text = entry.store.output(cap) if cap else ""
+            text = entry.store.whole_output(cap) if cap else ""
             norm = "\n".join(ln.rstrip() for ln in (text or "").strip()
                              .splitlines())
             key = ("ok", hashlib.sha1(norm.encode("utf-8")).hexdigest())

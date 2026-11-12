@@ -7,7 +7,9 @@ qd keeps nothing of its own.  What it brings back is filed by provost
 
     datasets/NAME.tsv            '#', 'capture', context columns, 'n', data
     captures/cNNNN/meta.tsv      what a capture was: dataset, row_ids, ...
-    captures/cNNNN/output.txt    the input exactly as provost was given it
+    captures/cNNNN/output.txt    the input as provost stored it (CRs out,
+                                 secrets scrubbed; for a truncated capture
+                                 only the head it parsed)
     captures/cNNNN/context.txt   its '#%' prologue
     provenance.tsv               '#' -> dataset, capture
 
@@ -26,6 +28,14 @@ gap.  `qd do` and `qd import` file their tables the same way, each capture
 opening with '#% run=RUN' and a 'qd-table' line that names the table.
 Any other provost dataset reads too: `ds:NAME`, or a bare NAME no run has.
 
+The layout and what a reader must do with it are provost's spec, its
+docs/store-format.md: a .store_format this qd does not know is refused,
+a row's capture is read from provenance.tsv below format 4, a quoted '#%'
+value is read as provost reads it, meta.tsv values are unescaped, and a
+truncated capture's whole input is found beside the store by its sha256.
+qd reads no git refs, so the capture-* tags (annotated and signed in a
+store provost signs) and the Operator: trailers are not its concern.
+
 Which store: --store NAME|DIR, QD_STORE, provost's explicit choice
 (PROVOST_WORKSPACE, the nearest controlled directory above this one), the
 active named store, provost's default (PROVOST_HOME, ~/.provost) -- see
@@ -34,6 +44,8 @@ stores.py.  Whichever it is, `provost ls` there lists what qd filed and
 """
 
 import binascii
+import hashlib
+import io
 import json
 import os
 import re
@@ -94,6 +106,16 @@ def unescape(text):
     return _UNESC_RE.sub(lambda m: _UNESC[m.group(0)], text or "")
 
 
+_META_UNESC = {"\\t": "\t", "\\n": "\n"}
+_META_UNESC_RE = re.compile(r"\\[tn]")
+
+
+def unescape_meta(text):
+    """A meta.tsv value as provost was given it: its _meta_safe writes a
+    tab as \\t and a newline as \\n, and nothing else."""
+    return _META_UNESC_RE.sub(lambda m: _META_UNESC[m.group(0)], text or "")
+
+
 def now_iso(t=None):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t or time.time()))
 
@@ -108,17 +130,58 @@ def cname(n):
     return "c%04d" % n
 
 
+_QUOTED_RE = re.compile(r'([A-Za-z_][A-Za-z0-9_.-]*)="')
+_WORD_RE = re.compile(r"[^ \t]+")
+
+
+def prologue_words(line):
+    """[(key, value)]: the key=value words of one '#%' line, in order, as
+    provost's _prologue_kv reads them (its store format spec): words part
+    at spaces and tabs; a value may be double-quoted to hold spaces
+    (key="gcc 13.2"), a backslash inside taking the character after it
+    as it is (\\" and \\\\); an unterminated quote, or one not followed by
+    a space, is an ordinary word; a word that is not key=value is passed
+    over; a tab in a value becomes a space."""
+    out = []
+    rest = line[2:] if line.startswith("#%") else line
+    while True:
+        rest = rest.lstrip(" \t")
+        if not rest:
+            break
+        m = _QUOTED_RE.match(rest)
+        if m:
+            i, v, closed = m.end(), [], False
+            while i < len(rest):
+                c = rest[i]
+                if c == "\\" and i + 1 < len(rest):
+                    v.append(rest[i + 1])
+                    i += 2
+                    continue
+                if c == '"':
+                    i += 1
+                    closed = True
+                    break
+                v.append(c)
+                i += 1
+            if closed and (i == len(rest) or rest[i] in " \t"):
+                out.append((m.group(1), "".join(v).replace("\t", " ")))
+                rest = rest[i:]
+                continue
+        w = _WORD_RE.match(rest).group(0)
+        rest = rest[len(w):]
+        k, sep, v = w.partition("=")
+        if sep and KEY_RE.match(k):
+            out.append((k, v))
+    return out
+
+
 def parse_context(text):
     """The key=value words of a '#%' prologue, as provost reads them for
     --context-columns: the last value of a repeated key wins."""
     out = {}
     for ln in text.splitlines():
-        if not ln.startswith("#%"):
-            continue
-        for w in ln[2:].split():
-            k, sep, v = w.partition("=")
-            if sep and KEY_RE.match(k):
-                out[k] = v
+        if ln.startswith("#%"):
+            out.update(prologue_words(ln))
     return out
 
 
@@ -232,11 +295,36 @@ def provost_columns(columns, context=(), rows=None):
     return out
 
 
+# The store formats qd reads (provost's docs/store-format.md): a store
+# records its own in .store_format (none means 1), and one qd does not know
+# is refused, live or archived -- a newer provost wrote it.  provost moves
+# an older store up to its own format the next time it files into it.
+STORE_FORMATS = (1, 2, 3, 4)
+
+
+def store_format(root):
+    """A store's format, from its .store_format: 1 when there is none (or
+    it is not a number, which `provost store check` reports)."""
+    try:
+        with io.open(os.path.join(root, ".store_format"),
+                     encoding="utf-8") as fh:
+            v = fh.read().strip()
+    except (OSError, UnicodeDecodeError):
+        return 1
+    return int(v) if v.isdigit() else 1
+
+
+def known_formats():
+    return ", ".join(str(f) for f in STORE_FORMATS)
+
+
 def capture_column(columns):
     """The index of provost's capture column, or None in a store older
     than it (format 3 on: always the second).  Found by place, not by
     name: a dataset whose data has a column called capture holds provost's
-    as `_capture` (provost's store format 4), and the data's is data."""
+    as `_capture` (provost's store format 4), and the data's is data.
+    Format 3 has it, but a row's capture is read from provenance.tsv
+    there (Store.row_capture: PV-015 could leave data in it)."""
     if len(columns) > 1 and columns[0] == "#" and \
             re.match(r"^_*capture$", columns[1]):
         return 1
@@ -360,12 +448,14 @@ class Store(object):
         self._prov = None
         self._runs = None
         self._hosts = None
+        self._format = None
+        self._kept = {}
         self._stamp = self.stamp()
 
     def stamp(self):
         """What moves whenever provost files something."""
         out = []
-        for p in ("datasets", os.path.join(".git", "index"),
+        for p in ("datasets", ".store_format", os.path.join(".git", "index"),
                   os.path.join(".git", "HEAD")):
             try:
                 out.append(os.path.getmtime(os.path.join(self.root, p)))
@@ -387,6 +477,19 @@ class Store(object):
     def shown(self):
         return tilde(self.root)
 
+    def format(self):
+        """The store's format (.store_format), refused when it is one this
+        qd does not know: provost's spec says a reader must, since a newer
+        format can mean something an older reader would get wrong."""
+        if self._format is None:
+            fmt = store_format(self.root)
+            if fmt not in STORE_FORMATS:
+                die("%s is a store in format %d; this qd reads formats %s "
+                    "(a newer provost wrote it: upgrade qd)"
+                    % (self.shown(), fmt, known_formats()))
+            self._format = fmt
+        return self._format
+
     def provost(self, words):
         """`provost WORDS` as typed to reach this store: with
         PROVOST_WORKSPACE in front when provost would not find it on its
@@ -404,6 +507,7 @@ class Store(object):
     # -- datasets -----------------------------------------------------------
 
     def dataset_names(self):
+        self.format()
         try:
             names = os.listdir(self.path("datasets"))
         except OSError:
@@ -420,6 +524,7 @@ class Store(object):
             if not self.has_dataset(name):
                 die("no dataset %r in %s (provost ls lists them)"
                     % (name, self.shown()))
+            self.format()
             self._tables[name] = read_dataset(
                 self.path("datasets", name + ".tsv"), name)
         return self._tables[name]
@@ -443,8 +548,10 @@ class Store(object):
         return self._index[name]
 
     def provenance(self):
-        """'#' -> capture, for a store older than the capture column."""
+        """'#' -> capture: what a row's capture is read from in a store
+        older than format 4 (see row_capture)."""
         if self._prov is None:
+            self.format()
             self._prov = {}
             p = self.path("provenance.tsv")
             if os.path.isfile(p):
@@ -455,29 +562,43 @@ class Store(object):
         return self._prov
 
     def row_capture(self, t, row):
+        """The capture a dataset row came from: column 2, by place, in a
+        format-4 store; provenance.tsv below that -- format 1 and 2 have no
+        capture column, and in format 3 a reconcile could leave a data
+        value in it (provost's PV-015; the spec says to prefer
+        provenance.tsv there)."""
         i = capture_column(t.columns)
-        if i is not None:
-            return row[i]
+        col = row[i] if i is not None and i < len(row) else ""
+        if i is not None and self.format() >= 4:
+            return col
         if "#" in t.columns and row[t.columns.index("#")].isdigit():
-            return self.provenance().get(int(row[t.columns.index("#")]), "")
-        return ""
+            return self.provenance().get(int(row[t.columns.index("#")]),
+                                         col)
+        return col
 
     # -- captures -----------------------------------------------------------
 
     def meta(self, cid):
+        """A capture's meta.tsv as {key: value}, each value with provost's
+        \\t and \\n turned back into a tab and a newline (_meta_safe
+        writes them so; it does not escape a backslash, so a value that
+        held a backslash and a t cannot be told from one that held a
+        tab)."""
         if cid not in self._meta:
+            self.format()
             m = {}
             p = self.path("captures", cid, "meta.tsv")
             if os.path.isfile(p):
-                for ln in read_text(p).splitlines():
+                for ln in read_text(p).split("\n"):
                     k, sep, v = ln.partition("\t")
                     if sep:
-                        m[k] = v
+                        m[k] = unescape_meta(v)
             self._meta[cid] = m
         return self._meta[cid]
 
     def context_text(self, cid):
         if cid not in self._ctx_text:
+            self.format()
             p = self.path("captures", cid, "context.txt")
             self._ctx_text[cid] = read_text(p) if os.path.isfile(p) else ""
         return self._ctx_text[cid]
@@ -488,17 +609,94 @@ class Store(object):
         return self._ctx[cid]
 
     def output(self, cid):
-        """A capture's input as provost was given it, less its prologue."""
+        """A capture's input as provost stored it (output.txt), less its
+        prologue: carriage returns removed and secrets scrubbed, and, for
+        a truncated capture (truncated(cid)), only the head provost
+        parsed -- whole_output() reads the whole input where it is kept."""
         if not re.match(r"^c\d+$", cid or ""):
             return None
+        self.format()
         p = self.path("captures", cid, "output.txt")
         if not os.path.isfile(p):
             return None
-        lines = read_text(p).split("\n")
-        i = 0
-        while i < len(lines) and lines[i].startswith("#%"):
-            i += 1
-        return "\n".join(lines[i:])
+        return _less_prologue(read_text(p))
+
+    def truncated(self, cid):
+        """Whether the capture's input was over provost's size cap
+        (PROVOST_MAX_INPUT, provost 2.15.0 on): output.txt then holds only
+        the part provost parsed, and the whole input is kept outside git,
+        by its sha256 (raw_sha256), beside the store."""
+        return self.meta(cid).get("truncated") == "1"
+
+    def artifact_dirs(self):
+        """Where provost keeps inputs over its size cap, as its spec says:
+        PROVOST_ARTIFACT_DIR when set, else STORE.artifacts beside the
+        store."""
+        out = []
+        v = os.environ.get("PROVOST_ARTIFACT_DIR")
+        if v:
+            out.append(os.path.abspath(os.path.expanduser(v)))
+        out.append(self.root.rstrip(os.sep) + ".artifacts")
+        return out
+
+    def kept_input(self, cid):
+        """(path, problem) for a truncated capture's whole input: the path
+        meta.tsv's raw_artifact names, or, when that is gone (the store and
+        its artifacts moved together), the file named by raw_sha256 in the
+        artifact directory as it is now.  The path is None when it is not
+        found, or does not hash to raw_sha256; problem says which, in
+        words.  (None, "") for a capture that was not truncated."""
+        if not self.truncated(cid):
+            return None, ""
+        if cid in self._kept:
+            return self._kept[cid]
+        m = self.meta(cid)
+        sha = m.get("raw_sha256", "")
+        found = None
+        if not re.match(r"^[0-9a-f]{64}$", sha):
+            got = (None, "its meta.tsv records no raw_sha256")
+        else:
+            places = [m.get("raw_artifact") or ""] + \
+                [os.path.join(d, sha) for d in self.artifact_dirs()]
+            for p in places:
+                if p and os.path.isfile(p):
+                    found = p
+                    break
+            if found is None:
+                got = (None, "the whole input (sha256 %s) is not in %s"
+                       % (sha[:12], " or ".join(
+                           tilde(d) for d in self.artifact_dirs())))
+            elif _file_sha256(found) != sha:
+                got = (None, "the whole input kept at %s no longer hashes "
+                       "to its raw_sha256" % tilde(found))
+            else:
+                got = (found, "")
+        self._kept[cid] = got
+        return got
+
+    def whole_output(self, cid):
+        """output(), but a truncated capture's whole input where it is
+        kept (less its prologue), and its parsed head where it is not."""
+        path, _ = self.kept_input(cid)
+        if path:
+            return _less_prologue(read_text(path))
+        return self.output(cid)
+
+    def truncation_note(self, cid):
+        """What a reader of output() must know of a truncated capture, in
+        words; "" for one that was not."""
+        if not self.truncated(cid):
+            return ""
+        m = self.meta(cid)
+        size = ""
+        if m.get("parsed_bytes", "").isdigit():
+            whole = m.get("raw_bytes") or m.get("input_bytes") or ""
+            size = ", %s of %s bytes" % (
+                m["parsed_bytes"], whole if whole.isdigit() else "?")
+        path, problem = self.kept_input(cid)
+        return "truncated: only the head provost parsed%s; %s" % (
+            size, ("the whole input is kept at %s" % tilde(path))
+            if path else problem)
 
     def capture_rows(self, cid):
         """[(dataset, Table)]: the rows a capture filed, dataset by dataset
@@ -525,14 +723,13 @@ class Store(object):
         out = []
         for ds in self.family(name):
             t = self.dataset(ds)
-            ci = capture_column(t.columns)
             for r in t.rows:
                 d = dict(zip(t.columns, r))
                 for c in TEXT_COLUMNS:
                     if c in d:
                         d[c] = unescape(d[c])
                 d["_rowid"] = int(d["#"]) if d.get("#", "").isdigit() else 0
-                d["_capture"] = (r[ci] if ci is not None else "") or \
+                d["_capture"] = self.row_capture(t, r) or \
                     self.provenance().get(d["_rowid"], "")
                 out.append(d)
         out.sort(key=lambda d: d["_rowid"])
@@ -805,7 +1002,8 @@ class Run(object):
         tabs = self.tables
         if not tabs:
             die("%s holds no tables: nothing it filed is in the store any "
-                "more (provost rm, or a store restored to before it)"
+                "more (provost rm, prune or archive --purge -- disposals.tsv"
+                " names those two -- or a store restored to before it)"
                 % self.id)
         return self.load_info(_pick(tabs, name, self.id))
 
@@ -1074,9 +1272,30 @@ class Dataset(object):
 
 def source_label(store, cid):
     n = first_row(store.meta(cid))
-    return "raw answer: capture %s%s" % (
+    note = store.truncation_note(cid)
+    return "raw answer: capture %s%s%s" % (
         cid, (", " + store.provost("source %d" % n)) if n is not None
-        else "")
+        else "", (" -- " + note) if note else "")
+
+
+def _less_prologue(text):
+    """A stored input less its leading '#%' lines."""
+    lines = text.split("\n")
+    i = 0
+    while i < len(lines) and lines[i].startswith("#%"):
+        i += 1
+    return "\n".join(lines[i:])
+
+
+def _file_sha256(path):
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        return ""
+    return h.hexdigest()
 
 
 def split_ref(ref):
