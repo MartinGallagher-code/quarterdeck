@@ -248,6 +248,11 @@ straight away.
   at most once every `QD_REMOTE_REFRESH` seconds (30). `qd web` fetches the
   same way while the page is open, so new runs show without a restart, and
   its store picker lists the remote store with its host.
+- **SHA-256 stores:** a store made in git's SHA-256 object format
+  (`provost init --object-format sha256`) is read the same way; its copy
+  is made in that format too, which needs git 2.29 or newer here. A store
+  remade in the other format since its copy was made gets a new copy, said
+  on stderr; the old copy is read until the new one is in place.
 - **An unreachable host:** qd reads the last copy and says how old it is.
   It does not try that host again until `QD_REMOTE_REFRESH` has passed.
 - **Writing is refused:** nothing files into a copy, because the copy would
@@ -2045,6 +2050,11 @@ it as a bastion, `--reuse`'s one login per host, a master opened
 beforehand carrying a run once the key is withdrawn (the MFA setup), and
 a certificate login. Where there is no sshd those cases are skipped and
 named; `QD_TEST_SSHD=require`, as in CI's ssh job, fails them instead.
+`tests/test_remote.sh` reads a store made in git's SHA-256 object format
+(`provost init --object-format sha256`); where git is older than 2.29 or
+provost's `init` has no `--object-format` those cases are skipped and
+named, and `QD_TEST_SHA256=require`, as in CI's store-check job, fails
+them instead.
 Kerberos is not tested: it needs a KDC. `qd doctor`'s reading of `klist`
 is, with stand-ins.
 

@@ -36,7 +36,9 @@ The copy is shallow -- the store as it is now, no history, which no read
 needs -- and lives in ~/.cache/quarterdeck/remotes/NAME.  Before a command
 reads it, what is new is fetched over the ssh `qd run` uses (QD_SSH,
 QD_SSH_USER), at most every QD_REMOTE_REFRESH seconds; a host that cannot
-be reached leaves the last copy, said with its age.  Nothing files into a copy: it would
+be reached leaves the last copy, said with its age.  The copy is in the
+store's git object format, sha1 or sha256 (git 2.29 on), and a store
+remade in the other one gets a new copy.  Nothing files into a copy: it would
 part from the store it is a copy of.
 """
 
@@ -342,11 +344,60 @@ def _git(args, cwd=None):
     return p.returncode, p.stderr.decode("utf-8", "replace")
 
 
+# git's words when a copy and its store are in different object formats
+MISMATCH_RE = re.compile(r"mismatched algorithms: client (\w+); server (\w+)")
+# the first git that can keep a repository in the sha256 object format
+SHA256_GIT = (2, 29)
+
+
+def mismatched(err):
+    """(the copy's object format, the store's), when that is why git
+    refused a fetch, else None."""
+    m = MISMATCH_RE.search(err.lower())
+    return (m.group(1), m.group(2)) if m else None
+
+
+def _fmt_name(fmt):
+    return {"sha1": "SHA-1", "sha256": "SHA-256"}.get(fmt, fmt)
+
+
+def git_version():
+    """This machine's git as a tuple of ints, or None."""
+    try:
+        p = subprocess.run(["git", "--version"], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(r"(\d+)\.(\d+)", p.stdout.decode("utf-8", "replace"))
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _old_git(fmt=None):
+    """What to add to a failure when this git cannot keep a SHA-256
+    store's copy, or ''."""
+    if fmt not in (None, "sha256"):
+        return ""
+    v = git_version()
+    if v is None or v >= SHA256_GIT:
+        return ""
+    return (" (this git is %d.%d; a store in git's SHA-256 object format, "
+            "which provost init --object-format sha256 makes, needs git "
+            "%d.%d or newer here)" % (v + SHA256_GIT))
+
+
 def why_not(err, spec):
     """What a failed fetch means, in words."""
     host, _, path = spec.partition(":")
     host = host.split("@")[-1]
     low = err.lower()
+    formats = mismatched(err)
+    if formats:
+        return ("%s on %s is in git's %s object format and the copy here "
+                "is %s: git cannot fetch from one into the other, and the "
+                "copy has to be made again%s"
+                % (path, host, _fmt_name(formats[1]), _fmt_name(formats[0]),
+                   _old_git(formats[1])))
     if "dubious ownership" in low or "safe.directory" in low:
         return ("git on %s will not read %s: it belongs to another user. "
                 "On %s, as the user ssh logs in as: git config --global "
@@ -371,8 +422,8 @@ def why_not(err, spec):
              "could not read from remote repository" not in ln.lower() and
              "correct access rights" not in ln.lower() and
              ln.lower() != "and the repository exists."]
-    return "cannot fetch %s: %s" % (spec, lines[-1] if lines else
-                                     "git failed")
+    return "cannot fetch %s: %s%s" % (spec, lines[-1] if lines else
+                                       "git failed", _old_git())
 
 
 def _fetch_into(repo, spec):
@@ -416,42 +467,91 @@ def _tidy(repo):
              cwd=repo)
 
 
-def fetch(spec, path):
-    """Bring the copy at `path` up to date with the store at `spec`, making
-    it the first time.  -> None, or why it could not be."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fresh = not os.path.isdir(os.path.join(path, ".git"))
-    repo = path
-    if fresh:
-        # made beside it and renamed into place: never a half copy
-        repo = tempfile.mkdtemp(prefix=".copy.", dir=os.path.dirname(path))
-        rc, err = _git(["init", "--quiet", repo])
+def _make(spec, path, fmt=None):
+    """A fresh copy, made beside `path` and renamed into place over
+    whatever was there: never a half copy.  `fmt` is the store's git object
+    format when a fetch has said it (None: git's own default, sha1).
+    -> None, or why it could not be."""
+    repo = tempfile.mkdtemp(prefix=".copy.", dir=os.path.dirname(path))
+    try:
+        args = ["init", "--quiet"]
+        if fmt and fmt != "sha1":
+            args.append("--object-format=%s" % fmt)
+        rc, err = _git(args + [repo])
+        if rc != 0:
+            return "cannot make a copy in %s: %s%s" % (
+                repo, err.strip(), _old_git(fmt))
         # no reflog, and every fetch kept as a pack: _tidy can count them
         for k, v in (("core.logAllRefUpdates", "false"),
                      ("fetch.unpackLimit", "1")):
-            if rc == 0:
-                rc, err = _git(["config", k, v], cwd=repo)
-        if rc != 0:
+            rc, err = _git(["config", k, v], cwd=repo)
+            if rc != 0:
+                return "cannot make a copy in %s: %s" % (repo, err.strip())
+        err = _fetch_into(repo, spec)
+        if err is not None:
+            have = mismatched(err)
+            if have and fmt is None:
+                # the store is in another object format (sha256): a copy
+                # takes the store's, and a fetch is how git says which
+                shutil.rmtree(repo, ignore_errors=True)
+                return _make(spec, path, have[1])
+            return why_not(err, spec)
+        _touch(repo, FETCHED)
+        _place(repo, path)
+        repo = None
+        return None
+    finally:
+        if repo:
             shutil.rmtree(repo, ignore_errors=True)
-            return "cannot make a copy in %s: %s" % (repo, err.strip())
-    else:
-        _touch(path, TRIED)
-    err = _fetch_into(repo, spec)
-    if err is not None:
-        if fresh:
-            shutil.rmtree(repo, ignore_errors=True)
-        return why_not(err, spec)
-    _touch(repo, FETCHED)
-    _tidy(repo)
-    if fresh:
-        if os.path.isdir(path) and not os.listdir(path):
-            os.rmdir(path)
+
+
+def _place(repo, path):
+    """The copy at `repo` into `path`, the old copy there, if any, thrown
+    away only once the new one is in place."""
+    old = None
+    if os.path.isdir(os.path.join(path, ".git")):
+        old = tempfile.mkdtemp(prefix=".old.", dir=os.path.dirname(path))
+        os.rmdir(old)
         try:
-            os.rename(repo, path)
+            os.rename(path, old)
         except OSError:
-            # another command made it first: that copy is as good
-            shutil.rmtree(repo, ignore_errors=True)
-    return None
+            old = None
+    elif os.path.isdir(path) and not os.listdir(path):
+        os.rmdir(path)
+    try:
+        os.rename(repo, path)
+    except OSError:
+        # another command made it first: that copy is as good
+        shutil.rmtree(repo, ignore_errors=True)
+    if old:
+        shutil.rmtree(old, ignore_errors=True)
+
+
+def fetch(spec, path):
+    """Bring the copy at `path` up to date with the store at `spec`, making
+    it the first time.  -> None, or why it could not be.
+
+    A copy is in the store's git object format (sha1, or sha256 for a store
+    made by provost init --object-format sha256), and git will not fetch
+    across formats.  A store remade in the other format is a different
+    store as far as its copy is concerned: the copy is made again, said on
+    stderr, and the old one is kept until the new one is in place."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if not os.path.isdir(os.path.join(path, ".git")):
+        return _make(spec, path)
+    _touch(path, TRIED)
+    err = _fetch_into(path, spec)
+    if err is None:
+        _touch(path, FETCHED)
+        _tidy(path)
+        return None
+    have = mismatched(err)
+    if not have:
+        return why_not(err, spec)
+    warn("%s is now in git's %s object format and its copy here was %s: "
+         "making the copy again" % (spec, _fmt_name(have[1]),
+                                    _fmt_name(have[0])))
+    return _make(spec, path, have[1])
 
 
 def ready(path, name, cfg=None):

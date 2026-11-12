@@ -158,6 +158,9 @@ jobs:
     # no `store check`, so this takes provost from its repository, pinned
     # to the commit of its 2.19.0 (move PROVOST_REF on to take a newer
     # one).  It also runs the suite against the newest provost.  QD-031.
+    # Its git and provost can make a store in git's SHA-256 object format,
+    # so test_remote.sh's SHA-256 cases are required here, not skipped
+    # (QD_TEST_SHA256=require, QD-032): an old git fails them, saying so.
     name: store check (provost 2.19.0, ${{ matrix.shard }}/3)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -192,6 +195,8 @@ jobs:
         run: |
           export QD_PROVOST="$RUNNER_TEMP/provost/provost"
           export QD_STORE_CHECK=require
+          export QD_TEST_SHA256=require
+          git --version
           bash tests/run_tests.sh --shard ${{ matrix.shard }}/3
 
   ssh:
