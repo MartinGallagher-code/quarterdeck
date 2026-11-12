@@ -20,7 +20,9 @@ TESTS="$QD_DIR/tests"
 # TIMES and PARTS in the copy become FAKE_TIMES and FAKE_PARTS (none).
 fake_tree() {
     local s name rc
-    unset QD_TEST_ONLY QD_TEST_JOBS
+    # the copy's suites run the real helper with a fake provost, which has
+    # no `store check`: QD_STORE_CHECK=require would fail every case
+    unset QD_TEST_ONLY QD_TEST_JOBS QD_STORE_CHECK
     mkdir -p t
     sed -e "s/^TIMES=.*/TIMES=\"${FAKE_TIMES:-}\"/" \
         -e "s/^PARTS=.*/PARTS=\"${FAKE_PARTS:-}\"/" \

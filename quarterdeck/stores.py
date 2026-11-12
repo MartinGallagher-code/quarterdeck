@@ -60,11 +60,15 @@ from . import store as storemod
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 ARCHIVE_KIND = "quarterdeck store"
 ARCHIVE_VERSION = 1
+# an archive that carries kept inputs (artifacts/) is version 2, which a qd
+# before QD-031 refuses in words rather than as a member it does not know;
+# one that carries none stays version 1, for any qd to read
+ARCHIVE_VERSIONS = (1, 2)
+SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 TOP = "quarterdeck-store"
-# the store formats qd reads (store.py): provost moves older ones up to its
-# own the next time it files into the store.  4 changed data, not layout:
-# column 2 holds the capture id in every row (qd finds it by place)
-STORE_FORMATS = (1, 2, 3, 4)
+# the store formats qd reads: store.py says which, for a live store and an
+# archive alike
+STORE_FORMATS = storemod.STORE_FORMATS
 # provost's runtime files, never part of a store's content: its .gitignore
 SKIP = re.compile(r"^(\.lock(\..*)?(/.*)?|datasets/\.(recon|stage|rm|rmprov)"
                   r"\..*|captures/[^/]+/\.meta\.tmp|context/[^/]*\.tmp)$")
@@ -548,14 +552,7 @@ def let_go(lock, owner):
 # export and import
 # ---------------------------------------------------------------------------
 
-def store_format(root):
-    try:
-        with io.open(os.path.join(root, ".store_format"),
-                     encoding="utf-8") as fh:
-            v = fh.read().strip()
-    except OSError:
-        return 1
-    return int(v) if v.isdigit() else 1
+store_format = storemod.store_format
 
 
 def _walk(root):
@@ -612,18 +609,40 @@ def provost_version():
     return lines[0] if lines else ""
 
 
+def kept_inputs(root):
+    """{sha256: path} of the inputs provost kept beside the store for its
+    truncated captures (store.py's kept_input), and [cid] of those whose
+    kept input is not there or no longer hashes to its raw_sha256."""
+    st = storemod.Store(root)
+    found, missing = {}, []
+    for cid in st.capture_ids():
+        if not st.truncated(cid):
+            continue
+        path, _ = st.kept_input(cid)
+        if path:
+            found[st.meta(cid)["raw_sha256"]] = path
+        else:
+            missing.append(cid)
+    return found, missing
+
+
 def export(root, name, dest):
-    """The store at root as one archive at dest.  -> the manifest"""
+    """The store at root as one archive at dest, with the inputs provost
+    kept beside it for truncated captures, which are outside its git
+    history and so in no copy of it but this.  -> the manifest"""
     if not is_store(root):
         die("nothing has been filed into %s yet: there is no store there to "
             "export" % storemod.tilde(root) if os.path.isdir(root) else
             "no store at %s" % storemod.tilde(root))
+    storemod.Store(root).format()       # one this qd does not know: refused
     lock, owner = hold_lock(root, "export it")
     tmp = None
     try:
         dirs, files = _walk(root)
+        kept, lost = kept_inputs(root)
         manifest = {
-            "kind": ARCHIVE_KIND, "archive_version": ARCHIVE_VERSION,
+            "kind": ARCHIVE_KIND,
+            "archive_version": 2 if kept else ARCHIVE_VERSION,
             "name": name, "exported": storemod.now_iso(),
             "qd": VERSION, "provost": provost_version(),
             "store_format": store_format(root),
@@ -635,6 +654,12 @@ def export(root, name, dest):
                                "bytes": os.path.getsize(
                                    os.path.join(root, f))})
                           for f in files)}
+        if kept:
+            manifest["artifacts"] = dict(
+                (sha, {"bytes": os.path.getsize(p)})
+                for sha, p in kept.items())
+        if lost:
+            manifest["artifacts_missing"] = lost
         body = json.dumps(manifest, indent=1, sort_keys=True).encode("utf-8")
         d = os.path.dirname(os.path.abspath(dest)) or "."
         fd, tmp = tempfile.mkstemp(prefix=".qd-export.", dir=d)
@@ -649,6 +674,9 @@ def export(root, name, dest):
                         recursive=False, filter=_plain)
             for rel in files:
                 tar.add(os.path.join(root, rel), TOP + "/store/" + rel,
+                        recursive=False, filter=_plain)
+            for sha in sorted(kept):
+                tar.add(kept[sha], TOP + "/artifacts/" + sha,
                         recursive=False, filter=_plain)
         os.replace(tmp, dest)
         tmp = None
@@ -684,10 +712,11 @@ def read_manifest(path):
     if not isinstance(m, dict) or m.get("kind") != ARCHIVE_KIND:
         die("%s is not a qd store archive (its manifest says %r)"
             % (path, m.get("kind") if isinstance(m, dict) else m))
-    if m.get("archive_version") != ARCHIVE_VERSION:
-        die("%s is archive version %r; this qd reads version %d -- an "
-            "archive from a newer qd" % (path, m.get("archive_version"),
-                                         ARCHIVE_VERSION))
+    if m.get("archive_version") not in ARCHIVE_VERSIONS:
+        die("%s is archive version %r; this qd reads versions %s -- an "
+            "archive from a newer qd" % (
+                path, m.get("archive_version"),
+                ", ".join(str(v) for v in ARCHIVE_VERSIONS)))
     fmt = m.get("store_format")
     if not isinstance(fmt, int) or fmt not in STORE_FORMATS:
         die("%s holds a store in format %r; this qd reads formats %s (a "
@@ -696,7 +725,33 @@ def read_manifest(path):
     if not isinstance(m.get("files"), dict) or not isinstance(
             m.get("dirs"), list):
         die("%s: its manifest lists no files" % path)
+    arts = m.setdefault("artifacts", {})
+    if not isinstance(arts, dict) or any(not SHA_RE.match(k)
+                                         for k in arts):
+        die("%s: its manifest's artifacts are not sha256 names" % path)
     return m
+
+
+def _extract(tar, info, full):
+    """One archive member written to full.  -> its sha256"""
+    h = hashlib.sha256()
+    src = tar.extractfile(info)
+    with open(full, "wb") as out:
+        for chunk in iter(lambda: src.read(1 << 20), b""):
+            h.update(chunk)
+            out.write(chunk)
+    return h.hexdigest()
+
+
+def _put_artifacts(src, dest):
+    """The kept inputs an import brought, into the imported store's
+    artifact directory (STORE.artifacts): each file is named by its own
+    sha256, so one already there is the same bytes and is left as it is."""
+    os.makedirs(dest, exist_ok=True)
+    for sha in os.listdir(src):
+        to = os.path.join(dest, sha)
+        if not os.path.exists(to):
+            shutil.move(os.path.join(src, sha), to)
 
 
 def _member_rel(name):
@@ -729,18 +784,36 @@ def import_(path, as_name=None):
             "(--as NAME, or move it away)" % storemod.tilde(dest))
     os.makedirs(root, exist_ok=True)
     work = tempfile.mkdtemp(prefix=".import-%s." % name, dir=root)
+    # the kept inputs, apart from the store: provost keeps them beside it,
+    # as DEST.artifacts, never in it
+    arts = os.path.join(work, ".artifacts")
+    store_work = os.path.join(work, "store")
     try:
-        seen = set()
+        seen, seen_arts = set(), set()
+        os.makedirs(store_work)
         with tarfile.open(path, "r:*") as tar:
             for info in tar:
                 if info.name == TOP + "/manifest.json":
+                    continue
+                if info.name.startswith(TOP + "/artifacts/"):
+                    sha = info.name[len(TOP + "/artifacts/"):]
+                    if not info.isfile() or sha not in m["artifacts"]:
+                        die("%s holds %r, which its manifest does not list:"
+                            " refused" % (path, info.name))
+                    os.makedirs(arts, exist_ok=True)
+                    full = os.path.join(arts, sha)
+                    if _extract(tar, info, full) != sha:
+                        die("%s: the kept input %s does not match its "
+                            "sha256: the archive is damaged" % (path, sha))
+                    os.chmod(full, 0o444)
+                    seen_arts.add(sha)
                     continue
                 rel = _member_rel(info.name)
                 if rel is None:
                     die("%s holds %r, which no qd export writes: refused"
                         % (path, info.name))
                 if info.isdir():
-                    os.makedirs(os.path.join(work, rel), exist_ok=True)
+                    os.makedirs(os.path.join(store_work, rel), exist_ok=True)
                     continue
                 if not info.isfile():
                     die("%s holds %s as a link or device, which no qd export"
@@ -749,21 +822,17 @@ def import_(path, as_name=None):
                 if want is None:
                     die("%s holds %s, which its manifest does not list: "
                         "refused" % (path, rel))
-                full = os.path.join(work, rel)
+                full = os.path.join(store_work, rel)
                 os.makedirs(os.path.dirname(full), exist_ok=True)
-                h = hashlib.sha256()
-                src = tar.extractfile(info)
-                with open(full, "wb") as out:
-                    for chunk in iter(lambda: src.read(1 << 20), b""):
-                        h.update(chunk)
-                        out.write(chunk)
+                got = _extract(tar, info, full)
                 os.chmod(full, (info.mode & 0o755) | 0o600)
-                if h.hexdigest() != want.get("sha256"):
+                if got != want.get("sha256"):
                     die("%s: %s does not match its checksum: the archive is "
                         "damaged (or changed since it was written)"
                         % (path, rel))
                 seen.add(rel)
-        missing = sorted(set(m["files"]) - seen)
+        missing = sorted(set(m["files"]) - seen) + \
+            sorted("artifacts/" + a for a in set(m["artifacts"]) - seen_arts)
         if missing:
             die("%s is missing %d of its files (%s%s): the archive is cut "
                 "short" % (path, len(missing), ", ".join(missing[:3]),
@@ -771,22 +840,22 @@ def import_(path, as_name=None):
         for rel in m["dirs"]:
             if _member_rel(TOP + "/store/" + rel) is None:
                 die("%s lists %r as a directory: refused" % (path, rel))
-            os.makedirs(os.path.join(work, rel), exist_ok=True)
-        if store_format(work) != m["store_format"]:
+            os.makedirs(os.path.join(store_work, rel), exist_ok=True)
+        if store_format(store_work) != m["store_format"]:
             die("%s: the store inside is format %d, its manifest says %d"
-                % (path, store_format(work), m["store_format"]))
-        runs = run_count(work) or 0
+                % (path, store_format(store_work), m["store_format"]))
+        runs = run_count(store_work) or 0
         if runs != m.get("runs"):
             die("%s: the store inside holds %d runs, its manifest says %r"
                 % (path, runs, m.get("runs")))
+        if seen_arts:
+            _put_artifacts(arts, dest + ".artifacts")
         try:
-            os.rename(work, dest)
+            os.rename(store_work, dest)
         except OSError as exc:
             die("cannot put the store at %s: %s" % (dest, exc))
-        work = None
     finally:
-        if work:
-            shutil.rmtree(work, ignore_errors=True)
+        shutil.rmtree(work, ignore_errors=True)
     cfg = load()
     cfg["stores"][name] = dest
     save(cfg)
