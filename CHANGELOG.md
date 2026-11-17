@@ -5,6 +5,25 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.25.2 — 2026-11-18
+
+`qd hints` is tested: it prints every hint, and every command it
+suggests still parses (QD-045).
+
+### Tests
+- **`qd hints` had no test.** `tests/test_help.sh` now runs it and checks
+  that it prints one line a hint, and `tests/help_unit.py hints` takes
+  every `qd` command out of `HINTS` (31 of them, in 27 hints) and parses
+  each with qd's own parser, as `qd` would: a renamed flag or verb fails
+  the suite instead of leaving a hint that no longer works. How a hint is
+  read: notes in parentheses are not commands; commands are split at
+  `->`, `;` and `or`; `...` and words in capitals stand for values;
+  `campaign` and `doe` are cut at `--`, as `main()` cuts them. It is also
+  run with a flag and a verb misspelt, so it is shown to fail. Every hint
+  parsed as it was: nothing in `qd hints` changed.
+
+0.25.1 is in the same pull request and is not published on its own.
+
 ## 0.25.1 — 2026-11-18
 
 `qd --help` lists `qd store`, and a test keeps it listing every command
