@@ -3,6 +3,9 @@
 """Pacing a campaign: caps per power domain, a ramp, maintenance windows.
 
     --max-per pdu=4     no more than 4 hosts sharing a pdu value at once
+    --max-watts pdu=7200   no more than 7200 W drawn per pdu value at once
+                        (each host's draw its `watts` attribute, else
+                        --watts W); --max-watts 30000 for all of them
     --ramp 6/min        no more than 6 host starts a minute, evenly spaced
     --window "Mon-Fri 18:00-06:00"   start parts only inside these hours
 
@@ -82,15 +85,105 @@ def caps_text(caps):
     return ",".join("%s=%d" % c for c in caps)
 
 
+def _watts(text):
+    """A draw or a budget in watts: 450, 450W, 7.2kW; None when it is
+    not one."""
+    t = (text or "").strip().lower().replace(" ", "")
+    m = re.match(r"^(\d+(?:\.\d+)?)(w|kw)?$", t)
+    if not m:
+        return None
+    v = float(m.group(1)) * (1000.0 if m.group(2) == "kw" else 1.0)
+    return v if v > 0 else None
+
+
+def parse_power(specs):
+    """[(attr, watts)] from ["pdu=7200", "rack=12kW", "30000"]: a budget
+    per value of attr, or with no attr ("") one for every host a worker
+    runs."""
+    out = []
+    for spec in specs or []:
+        for part in spec.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            k, sep, v = part.rpartition("=")
+            k = k.strip()
+            if sep and not re.match(r"^[A-Za-z_][\w.-]*$", k):
+                k = None
+            w = _watts(v)
+            if k is None or w is None:
+                die("--max-watts wants [ATTR=]WATTS, e.g. pdu=7200, "
+                    "rack=12kW or 30000; got %r" % part)
+            out.append((k, w))
+    names = [k for k, _ in out]
+    if len(set(names)) != len(names):
+        die("--max-watts names %s twice" % (", ".join(
+            sorted(set(k or "(all)" for k in names if names.count(k) > 1)))))
+    return out
+
+
+def parse_draw(text):
+    """--watts: the draw of a host with no `watts` attribute; None."""
+    if not text:
+        return None
+    w = _watts(text)
+    if w is None:
+        die("--watts wants a host's draw in watts, e.g. 450 or 0.6kW; got "
+            "%r" % text)
+    return w
+
+
+def host_watts(host, default=None):
+    """A host's draw: its `watts` attribute, else the default; None when
+    neither says (an unknown draw is not zero)."""
+    v = dict(getattr(host, "attrs", ()) or ()).get("watts")
+    if v is not None and str(v).strip():
+        return _watts(str(v))
+    return default
+
+
+def check_power(hosts, power, default):
+    """Refuse, before anything starts, a budget no host can be run under:
+    a host whose draw is unknown, or more than a budget it falls under."""
+    if not power:
+        return
+    unknown = [h.name for h in hosts if host_watts(h, default) is None]
+    if unknown:
+        die("--max-watts needs every host's draw: %s %s no watts attribute "
+            "(host watts=450 in the host list) and no --watts W was given; "
+            "an unknown draw is not zero" % (
+                ", ".join(unknown[:5]) + (" ..." if len(unknown) > 5 else ""),
+                "has" if len(unknown) == 1 else "have"))
+    for h in hosts:
+        w = host_watts(h, default)
+        for a, limit in power:
+            if w > limit:
+                die("%s draws %sW, more than the %sW budget %s: it could "
+                    "never start" % (h.name, _fmt(w), _fmt(limit),
+                                     "per " + a if a else "for all hosts"))
+
+
+def _fmt(v):
+    return ("%d" % v) if v == int(v) else ("%.1f" % v)
+
+
+def power_text(power):
+    return ",".join(("%s=%sW" % (a, _fmt(w))) if a else ("%sW" % _fmt(w))
+                    for a, w in power)
+
+
 class Gate(object):
     """Which waiting host may start now.  `pick` is pure: given what is
     running and the time, it says which host goes next, or how long to
     wait -- the fan-out supplies the clock and does the waiting."""
 
-    def __init__(self, caps=(), spacing=None):
+    def __init__(self, caps=(), spacing=None, power=(), draw=None):
         self.caps = list(caps)
         self.spacing = spacing
+        self.power = list(power)    # [(attr or "", watts)]
+        self.draw = draw            # watts of a host with no attribute
         self.running = {}           # (attr, value) -> count
+        self.watts = {}             # (attr, value) -> watts drawn
         self.last_start = None
 
     def _keys(self, host):
@@ -99,10 +192,22 @@ class Gate(object):
         # that lack it: unlabelled is not unlimited
         return [(a, attrs.get(a, "")) for a, _ in self.caps]
 
+    def _power_keys(self, host):
+        attrs = dict(getattr(host, "attrs", ()) or ())
+        return [(a, attrs.get(a, "") if a else "") for a, _ in self.power]
+
     def fits(self, host):
         for (a, n), key in zip(self.caps, self._keys(host)):
             if self.running.get(key, 0) >= n:
                 return False
+        if self.power:
+            w = host_watts(host, self.draw) or 0.0
+            for (a, limit), key in zip(self.power, self._power_keys(host)):
+                # one host alone may use a whole budget (check_power has
+                # refused one that is larger than it)
+                if self.watts.get(key, 0.0) and \
+                        self.watts.get(key, 0.0) + w > limit + 1e-9:
+                    return False
         return True
 
     def pick(self, waiting, now):
@@ -120,14 +225,22 @@ class Gate(object):
     def start(self, host, now):
         for key in self._keys(host):
             self.running[key] = self.running.get(key, 0) + 1
+        if self.power:
+            w = host_watts(host, self.draw) or 0.0
+            for key in self._power_keys(host):
+                self.watts[key] = self.watts.get(key, 0.0) + w
         self.last_start = now
 
     def end(self, host):
         for key in self._keys(host):
             self.running[key] -= 1
+        if self.power:
+            w = host_watts(host, self.draw) or 0.0
+            for key in self._power_keys(host):
+                self.watts[key] -= w
 
     def active(self):
-        return bool(self.caps or self.spacing)
+        return bool(self.caps or self.spacing or self.power)
 
 
 def gated_fan_out(hosts, fn, jobs, gate, clock=time.monotonic,
@@ -309,6 +422,13 @@ def next_open(windows, t):
     """When the next window opens after t (None: no windows)."""
     times = [x for x in (w.opens_after(t) for w in windows) if x]
     return min(times) if times else None
+
+
+def window_opened(windows, t):
+    """When the window holding t opened (the earliest, where they
+    overlap)."""
+    opens = [o for w in windows for o, c in w.spans(t) if o <= t < c]
+    return min(opens) if opens else None
 
 
 def window_closes(windows, t):
