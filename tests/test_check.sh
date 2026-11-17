@@ -582,6 +582,214 @@ t_junit_real_reader() {
     assert_eq "$(pv show junit | tail -n +2 | grep -c 'R[123]')" "3"
 }
 
+# QD-033: limits relative to a baseline -- an earlier run, or a qualified
+# baseline from qd baseline set
+
+# a run of four hosts' mbps, imported under a name
+runof() {
+    local name=$1
+    shift
+    printf 'host,rack,mbps\na,r1,%s\nb,r1,%s\nc,r2,%s\nd,r2,%s\n' "$@" > "$name.csv"
+    qd import "$name.csv" --name "$name" > /dev/null
+}
+
+# the verdict of one host under --each, from v.csv: verdict|observed|limit|baseline|drift
+row_verdict() {
+    "$PY" -c '
+import csv, sys
+for r in csv.DictReader(open(sys.argv[1])):
+    if r["req"] == sys.argv[2] and r["row"] == sys.argv[3]:
+        print("|".join((r["verdict"], r["observed"], r["limit"],
+                        r["baseline"], r["drift_pct"])))
+' v.csv "$1" "$2"
+}
+
+t_baseline_a_drifted_host_fails() {
+    runof before 1000 1000 900 800
+    # b drifted 8% against a 5% limit; the rest moved less
+    runof after 980 920 890 800
+    limits t.tsv 'D1|mbps|>=|baseline-5%||||'
+    qd_rc check after --against t.tsv --baseline before --each --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(row_verdict D1 a)" "pass|980|>= baseline-5% (>= 950)|1000|-2.0"
+    assert_eq "$(row_verdict D1 b)" "fail|920|>= baseline-5% (>= 950)|1000|-8.0"
+    assert_eq "$(row_verdict D1 c)" "pass|890|>= baseline-5% (>= 855)|900|-1.1"
+    assert_eq "$(row_verdict D1 d)" "pass|800|>= baseline-5% (>= 760)|800|0.0"
+    qd_rc check after --against t.tsv --baseline before > out
+    assert_status "$QD_RC" 1
+    assert_contains "$(cat out)" "0 pass, 1 fail, 0 not measured"
+    assert_contains "$(cat out)" "held to run 20"
+    assert_contains "$(cat out)" "1 of 4 failed: b"
+    qd_rc check after --against t.tsv --baseline before --format csv -o v.csv
+    assert_contains "$(cat v.csv)" "decided on medians, no rank test"
+    # an absolute difference, a tolerance and an aggregate: b's 80 down
+    # is past 50; the median, 905 against the baseline's 950, moved 4.7%:
+    # within 5%, and below 950 less 2%
+    limits t2.tsv 'A1|mbps|>=|baseline-50||||' 'W1|mbps|within|baseline|+-5%||median|' \
+        'G1|mbps|>=|baseline-2%|||median|'
+    qd_rc check after --against t2.tsv --baseline before --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(verdict A1)" "fail|920|4/4"
+    assert_eq "$(verdict W1)" "pass|905|4/4"
+    assert_eq "$(verdict G1)" "fail|905|4/4"
+    assert_contains "$(cat v.csv)" "within baseline (-5%, +5%) (between 902.5 and 997.5)"
+    assert_contains "$(cat v.csv)" ">= baseline-2% (>= 931)"
+    assert_contains "$(cat v.csv)" ",950,-4.7"
+    # the same run against itself: nothing moved, every check passes
+    qd_rc check after --against t2.tsv --baseline after > out
+    assert_status "$QD_RC" 0
+    assert_contains "$(cat out)" "3 pass, 0 fail, 0 not measured"
+    qd_rc check after --against t.tsv --baseline after > out
+    assert_status "$QD_RC" 0
+    # a file as the baseline reads the same as the run it was imported from
+    qd_rc check after --against t.tsv --baseline before.csv --each --format csv -o v.csv
+    assert_eq "$(row_verdict D1 b)" "fail|920|>= baseline-5% (>= 950)|1000|-8.0"
+}
+
+t_baseline_a_host_it_lacks_is_not_measured() {
+    printf 'host,mbps\na,1000\nb,1000\nc,900\n' > before.csv
+    printf 'host,mbps\na,990\nb,1000\nc,900\nnew,2000\n' > after.csv
+    limits t.tsv 'D1|mbps|>=|baseline-5%||||'
+    qd_rc check after.csv --against t.tsv --baseline before.csv --each --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(row_verdict D1 new | cut -d'|' -f1-3)" \
+        "not measured|2000|>= baseline-5% (not in the baseline)"
+    qd_rc check after.csv --against t.tsv --baseline before.csv --format csv -o v.csv
+    assert_eq "$(verdict D1)" "not measured||3/4"
+    assert_contains "$(cat v.csv)" "1 not in run before.csv: new"
+    # a column the baseline lacks is not measured either
+    printf 'host,other\na,1\n' > nocol.csv
+    qd_rc check after.csv --against t.tsv --baseline nocol.csv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_contains "$(verdict D1)" "not measured"
+    assert_contains "$(cat v.csv)" "has no column mbps"
+    # an aggregate over hosts the baseline does not all hold compares
+    # different populations: not measured
+    limits g.tsv 'G1|mbps|>=|baseline-5%|||median|'
+    qd_rc check after.csv --against g.tsv --baseline before.csv --format csv -o v.csv
+    assert_eq "$(verdict G1 | cut -d'|' -f1)" "not measured"
+    assert_contains "$(cat v.csv)" "so the median would be over other hosts"
+    # with no baseline at all, a relative limit is not measured, never a pass
+    qd_rc check after.csv --against t.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(verdict D1)" "not measured||0/4"
+    assert_contains "$(cat v.csv)" "give one with --baseline"
+}
+
+t_baseline_where_and_units() {
+    printf 'host,rack,rtt\na,r1,200us\nb,r1,300us\nc,r2,1ms\n' > before.csv
+    printf 'host,rack,rtt\na,r1,0.25ms\nb,r1,300us\nc,r2,5ms\n' > after.csv
+    # only rack r1 is held: c's slide is not this check's; a's 50us rise
+    # is past +40us, and the offset is read in the cells' own unit
+    limits t.tsv 'L1|rtt|<=|baseline+40us||rack=r1||' 'L2|rtt|<=|baseline+10%||rack=r1|max|'
+    qd_rc check after.csv --against t.tsv --baseline before.csv --each --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(row_verdict L1 a | cut -d'|' -f1-4)" "fail|250|<= baseline+40us (<= 240)|200"
+    assert_eq "$(row_verdict L1 b | cut -d'|' -f1)" "pass"
+    assert_eq "$(row_verdict L1 c)" ""
+    qd_rc check after.csv --against t.tsv --baseline before.csv --format csv -o v.csv
+    # the max over r1 is 300us in both (shown in ms, the cells'
+    # commonest unit): the same population, no drift
+    assert_eq "$(verdict L2)" "pass|0.3|2/2"
+    # a unit the column is not in is refused, not guessed
+    limits u.tsv 'U1|rtt|<=|baseline+5GB||||'
+    qd_rc check after.csv --against u.tsv --baseline before.csv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_contains "$(cat v.csv)" "the limit's unit does not fit rtt's"
+}
+
+t_baseline_old_files_and_bad_limits() {
+    # a limit of words is still words: == baseline is the word baseline
+    printf 'host,s\na,baseline\nb,other\n' > d.csv
+    limits t.tsv 'S1|s|==|baseline|||'
+    qd_rc check d.csv --against t.tsv --format csv -o v.csv
+    assert_eq "$(verdict S1 | cut -d'|' -f1)" "fail"
+    assert_contains "$(cat v.csv)" "1 of 2 failed: b"
+    for lim in 'baseline*2' 'baseline-' 'baseline-x%' 'baselin-5%'; do
+        limits b.tsv "B1|v|>=|$lim||||"
+        qd_rc check d.csv --against b.tsv 2> err
+        assert_status "$QD_RC" 2
+    done
+    limits b.tsv 'B1|v|>=|baseline*2||||'
+    qd_rc check d.csv --against b.tsv 2> err
+    assert_contains "$(cat err)" "baseline, baseline+N, baseline-N or baseline-N%"
+    limits b.tsv 'B1|v|within|baseline|5||||'
+    qd_rc check d.csv --against b.tsv 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "within needs a tolerance"
+    # without --baseline the verdict table is the one it always was
+    data
+    limits t.tsv 'R1|mbps|>=|900||status=ok||'
+    assert_eq "$(qd check d.csv --against t.tsv --format csv 2>/dev/null | head -1 || true)" \
+        "req,column,agg,where,observed,limit,unit,measured,verdict,note"
+}
+
+t_baseline_waivers_severity_junit_keep() {
+    runof before 1000 1000 900 800
+    runof after 980 920 890 800
+    printf 'req\tcolumn\top\tlimit\tseverity\nD1\tmbps\t>=\tbaseline-5%%\tlow\n' > t.tsv
+    # a low failure under --fail-level high is shown, not failing the run
+    qd_rc check after --against t.tsv --baseline before --fail-level high > out
+    assert_status "$QD_RC" 0
+    assert_contains "$(cat out)" "below --fail-level high"
+    # a waiver excuses the measured failure, as it does a fixed limit's
+    printf 'req\tjustification\twhere\nD1\tb is being reseated\thost=b\n' > w.tsv
+    qd_rc check after --against t.tsv --baseline before --waivers w.tsv --each --format csv -o v.csv
+    assert_status "$QD_RC" 0
+    assert_eq "$(row_verdict D1 b | cut -d'|' -f1)" "waived"
+    qd_rc check after --against t.tsv --baseline before --each --format junit -o v.xml
+    assert_status "$QD_RC" 1
+    out="$(junit v.xml)"
+    assert_contains "$out" "testsuite tests=4 failures=1 errors=0 skipped=0"
+    assert_contains "$out" "|failure|"
+    qd_rc check after --against t.tsv --baseline before --keep > out
+    assert_status "$QD_RC" 1
+    assert_contains "$(cat out)" "filed as"
+    csv="$(qd show latest --format csv)"
+    assert_contains "$csv" "D1,mbps,each,,920,>= baseline-5%,,4/4,fail"
+    qd_rc check after --against t.tsv --baseline before --each --format ndjson -o v.nd
+    assert_contains "$(cat v.nd)" '"baseline": 1000'
+}
+
+# a qualified baseline: one run of it gives what that run gives; five
+# runs and five samples a host put the rank test in charge
+t_baseline_qualified() {
+    runof before 1000 1000 900 800
+    qd baseline set gold before -c mbps > /dev/null
+    runof after 980 920 890 800
+    limits t.tsv 'D1|mbps|>=|baseline-5%||||'
+    qd_rc check after --against t.tsv --baseline gold --each --format csv -o g.csv
+    assert_status "$QD_RC" 1
+    qd_rc check after --against t.tsv --baseline before --each --format csv -o r.csv
+    assert_eq "$(cut -d, -f1-9 g.csv)" "$(cut -d, -f1-9 r.csv)"
+    qd_rc check after --against t.tsv --baseline gold > out
+    assert_contains "$(cat out)" "held to baseline gold (1 run)"
+
+    for v in 100.0 100.2 99.9 100.1 99.8; do
+        printf 'host,v\na,%s\nb,%s\n' "$v" "$v" > q.csv
+        qd import q.csv --name quiet > /dev/null
+    done
+    qd baseline set good quiet --last 5 -c v > /dev/null
+    # a: five samples, every one 8% down -- a change; b: a median 7% down
+    # but samples either side of the baseline -- past the limit, not
+    # significant, so not failed
+    printf 'host,v\na,92\na,92.1\na,91.9\na,92.2\na,91.8\nb,80\nb,85\nb,93\nb,110\nb,120\n' > now.csv
+    limits q.tsv 'Q1|v|>=|baseline-5%||||'
+    qd_rc check now.csv --against q.tsv --baseline good --each --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(row_verdict Q1 a | cut -d'|' -f1-2)" "fail|92"
+    assert_eq "$(row_verdict Q1 b | cut -d'|' -f1-2)" "pass|93"
+    qd_rc check now.csv --against q.tsv --baseline good --format csv -o v.csv
+    assert_contains "$(cat v.csv)" "past the limit but not significant"
+    assert_contains "$(cat v.csv)" "the rank test decided each host"
+    # one sample a host: too few for the test, the medians decide
+    printf 'host,v\na,92\nb,93\n' > one.csv
+    qd_rc check one.csv --against q.tsv --baseline good --each --format csv -o v.csv
+    assert_eq "$(row_verdict Q1 b | cut -d'|' -f1)" "fail"
+    qd_rc check one.csv --against q.tsv --baseline good --format csv -o v.csv
+    assert_contains "$(cat v.csv)" "decided on medians (the rank test wants 3 values"
+}
+
 run_test "pass, fail and the exit status"       t_pass_fail_and_exit_status
 run_test "blank is never a pass"                t_blank_is_never_a_pass
 run_test "every op"                             t_every_op
@@ -601,4 +809,10 @@ run_test "junit: one testcase per outcome"   t_junit_one_case_per_outcome
 run_test "junit: --each, per host per check" t_junit_each_host
 run_test "junit: hostile strings parse"      t_junit_hostile_strings
 run_test "junit: provost reads it back"      t_junit_real_reader
+run_test "baseline: a drifted host fails"      t_baseline_a_drifted_host_fails
+run_test "baseline: a host it lacks is not measured" t_baseline_a_host_it_lacks_is_not_measured
+run_test "baseline: where and units"           t_baseline_where_and_units
+run_test "baseline: old files, bad limits"     t_baseline_old_files_and_bad_limits
+run_test "baseline: waivers, severity, junit, keep" t_baseline_waivers_severity_junit_keep
+run_test "baseline: a qualified baseline"      t_baseline_qualified
 finish
