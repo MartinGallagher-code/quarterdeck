@@ -1866,15 +1866,17 @@ def cmd_check(args):
         if args.waivers else None
     t = load(args)
     s = subset(args, t)
-    results = checkmod.run(s, checks, waivers)
+    ref = check_reference(args, checkmod)
+    results = checkmod.run(s, checks, waivers, ref=ref)
     n = checkmod.counts(results)
     e = getattr(t, "entry", None)
     if args.each:
-        cols = checkmod.columns(checkmod.EACH_COLUMNS, checks, waivers)
+        cols = checkmod.columns(checkmod.EACH_COLUMNS, checks, waivers, ref)
         vt = tablemod.Table(cols, checkmod.each_rows(results, cols),
                             "check")
     else:
-        cols = checkmod.columns(checkmod.SUMMARY_COLUMNS, checks, waivers)
+        cols = checkmod.columns(checkmod.SUMMARY_COLUMNS, checks, waivers,
+                                ref)
         vt = tablemod.Table(cols, checkmod.summary_rows(results, cols),
                             "check")
     head = "%s check -- %s against %s (%s): %s" % (
@@ -1890,6 +1892,9 @@ def cmd_check(args):
         lines.append("  waivers %s: %d, %d expired" % (
             args.waivers, len(waivers),
             sum(1 for w in waivers if w.expired())))
+    if ref is not None:
+        lines.append("  limits relative to the baseline are held to %s"
+                     % ref.describe())
     hard, soft = checkmod.failing(results, level)
     if soft:
         lines.append("  %s below --fail-level %s (%s): shown, not failing "
@@ -1916,6 +1921,21 @@ def cmd_check(args):
     return 1 if hard else 0
 
 
+def check_reference(args, checkmod):
+    """--baseline: a qualified baseline by its name, else an earlier run
+    or a file, narrowed by the command's own --where as the run is."""
+    ref = getattr(args, "baseline", None)
+    if not ref:
+        return None
+    name = qualified_name(args)
+    if name:
+        from . import baseline as blmod
+        return checkmod.Reference(name, bl=blmod.load(home_store(args),
+                                                      name))
+    bt = load(args, ref)
+    return checkmod.Reference(source_name(bt), table=subset(args, bt))
+
+
 def keep_check(args, vt, t, nchecks):
     """File a verdict table in the store as a run of its own, kind check,
     so qd web shows it and qd export writes it like any other."""
@@ -1927,11 +1947,12 @@ def keep_check(args, vt, t, nchecks):
     rid = new_run_id(st, label)
     b = filing.Batch()
     vt.name = "check"
-    vt.notes = ["qd check %s --against %s%s" % (
+    vt.notes = ["qd check %s --against %s%s%s" % (
         run_label(t) or getattr(t, "source", ""),
         os.path.abspath(args.against),
         (" --waivers %s" % os.path.abspath(args.waivers))
-        if args.waivers else "")]
+        if args.waivers else "",
+        (" --baseline %s" % args.baseline) if args.baseline else "")]
     added = add_tables(b, rid, label, [(os.path.abspath(args.against), vt)])
     if not added:
         b.cleanup()
@@ -4930,6 +4951,11 @@ def build_parser():
                     metavar="LEVEL", help="exit 1 only for a failure at or "
                     "above this severity: info, low, medium, high, critical "
                     "(QD_FAIL_LEVEL, info)")
+    sp.add_argument("--baseline", metavar="RUN|NAME",
+                    help="what a limit written baseline, baseline-5%%, "
+                    "baseline+2 is held to: an earlier run, or a qualified "
+                    "baseline from qd baseline set (host by host under "
+                    "each)")
     sp.add_argument("--each", action="store_true",
                     help="a row per host per check, not one per check")
     sp.add_argument("--keep", action="store_true",

@@ -30,6 +30,29 @@ A firmware probe, and the host that differs from its rack-mates by value
 ### Changed
 - `qd outliers`' column is optional with `--categorical`; without it a
   column is still required, as before.
+## 0.19.0 — 2026-11-17
+
+`qd check` judges a run against an earlier run, not only against fixed
+limits (QD-033): the regression watcher, inside the gate.
+
+### Added
+- **`qd check --baseline RUN|NAME`**: a thresholds row can give its
+  limit relative to the baseline -- `baseline-5%`, `baseline+2`,
+  `baseline+40us`, `within baseline +-5%`, either side of `between` --
+  held to an earlier run (or a file) or a qualified baseline from `qd
+  baseline set`. Under `each` every host is held to its own value in the
+  baseline; an aggregate is taken over the same hosts through the same
+  `where`. A host or column the baseline lacks is not measured, never a
+  pass, and so is a relative limit with no `--baseline`.
+- Against a qualified baseline of three runs or more, with three values
+  or more for a host in the run, a crossed limit fails only when the
+  Mann-Whitney U test (Holm-adjusted, as `qd compare --baseline NAME`
+  makes it) finds the change significant; otherwise the medians decide,
+  and the note says which.
+- The verdict table gains `baseline` and `drift_pct` with `--baseline`;
+  waivers, severities, `--fail-level`, `--keep`, junit and every format
+  treat a relative verdict as they treat a fixed one. A thresholds file
+  with no relative limit reads and reports as it did.
 
 ## 0.18.1 — 2026-11-11
 
