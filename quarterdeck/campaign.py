@@ -35,7 +35,7 @@ from . import filing, store as storemod, tools
 
 CAMPAIGNS = "qd.campaigns"
 COLUMNS = ("campaign", "part", "host", "attrs", "command", "split", "pool",
-           "created", "max_per", "ramp", "window")
+           "created", "max_per", "ramp", "window", "max_watts", "watts")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -87,6 +87,9 @@ class Campaign(object):
         self.max_per = rows[0].get("max_per", "")
         self.ramp = rows[0].get("ramp", "")
         self.window = rows[0].get("window", "")
+        # its power budget (QD-035); none before 0.21.0
+        self.max_watts = rows[0].get("max_watts", "")
+        self.watts = rows[0].get("watts", "")
         from .hosts import parse_host_token
         seen = {}
         for r in rows:
@@ -144,7 +147,9 @@ def define(st, prov, name, groups, command, split_how, pool, pacing=None):
                          storemod.join_attrs(h.attrs), command,
                          split_how, pool, created,
                          pacing.get("max_per", ""), pacing.get("ramp", ""),
-                         pacing.get("window", "")])
+                         pacing.get("window", ""),
+                         pacing.get("max_watts", ""),
+                         pacing.get("watts", "")])
     # the pool first -- one item per part, muster's to hand out -- so a
     # campaign is only defined once muster has taken it: a definition with
     # no pool (muster not installed, the pool already there) would hold the

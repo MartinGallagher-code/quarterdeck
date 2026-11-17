@@ -3967,6 +3967,7 @@ def cmd_campaign(args):
         pool = os.path.abspath(args.pool) if args.pool else \
             camp.default_pool(args.name)
         pace = campaign_pacing(args)
+        check_campaign_power(pace, [h for _, m in groups for h in m])
         camp.define(st, prov, args.name, groups, command, how, pool, pace)
         lines = ["%s campaign -- %s: %s, %s, %s" % (
             PROG, args.name, plural(len(groups), "part"),
@@ -3987,7 +3988,8 @@ def cmd_campaign(args):
             PROG, c.name, plural(len(c.parts), "part"), c.split),
             "  command  %s" % c.command] + pacing_lines(
                 {"max_per": c.max_per, "ramp": c.ramp,
-                 "window": c.window}) + [
+                 "window": c.window, "max_watts": c.max_watts,
+                 "watts": c.watts}) + [
             "  PROGRESS   " + camp.progress(c, summ), ""]
         t = tablemod.Table(camp.STATUS_COLUMNS, rows, "parts")
         lines.extend(render.render_table(t, width=width_of(args),
@@ -4016,9 +4018,14 @@ def cmd_campaign(args):
             (": " + ", ".join(parts)) if parts else
             " (none had failures)"))
         return 0
+    if what == "estimate":
+        return campaign_estimate(args, st, c)
     if what != "run":
-        die("unknown campaign action %r (new, run, status, retry, ls)" % what)
+        die("unknown campaign action %r (new, run, status, retry, ls, "
+            "estimate)" % what)
     if args.dry_run:
+        # the time it would take first (QD-035), then what each part runs
+        campaign_estimate(args, st, c, head_only=True)
         # what a run would do, part by part -- nothing taken from the pool,
         # so nothing is marked done
         states, _ = camp.pool_states(c, quiet=True)
@@ -4036,11 +4043,10 @@ def cmd_campaign(args):
         return 0
     filing.Provost(st).require("keep the parts")
     pace = campaign_pacing(args, c)
+    check_campaign_power(pace, [h for _, hs in c.parts for h in hs])
     windows = pacing.parse_windows([pace["window"]] if pace["window"]
                                    else [])
-    args._gate = pacing.Gate(pacing.parse_caps([pace["max_per"]]
-                                               if pace["max_per"] else []),
-                             pacing.parse_ramp(pace["ramp"]))
+    args._gate = campaign_gate(pace)
     for ln in pacing_lines(pace):
         out(ln.strip())
     done, worst = 0, 0
@@ -4083,6 +4089,140 @@ def cmd_campaign(args):
     return worst
 
 
+def campaign_estimate(args, st, c, head_only=False):
+    """campaign estimate NAME: wall time, windows, and the load on the
+    fleet, from the store's history and the campaign's own pacing
+    (QD-035).  head_only: the summary lines only, at the top of a
+    dry run."""
+    import json
+    from . import estimate as est
+    pace = campaign_pacing(args, c)
+    check_campaign_power(pace, [h for _, hs in c.parts for h in hs])
+    caps = pacing.parse_caps([pace["max_per"]] if pace["max_per"] else [])
+    power = pacing.parse_power([pace["max_watts"]] if pace["max_watts"]
+                               else [])
+    draw = pacing.parse_draw(pace["watts"])
+    spacing = pacing.parse_ramp(pace["ramp"])
+    windows = pacing.parse_windows([pace["window"]] if pace["window"]
+                                   else [])
+    workers = getattr(args, "workers", None) or 1
+    start = local_now()
+    if getattr(args, "start", None):
+        try:
+            start = datetime.datetime.strptime(args.start, "%Y-%m-%dT%H:%M")
+        except ValueError:
+            die("--start wants YYYY-mm-ddTHH:MM, got %r" % args.start)
+    hist, runs = est.history(st, c)
+    times = est.part_times(c, hist, runs, getattr(args, "assume", None))
+    sims = dict((w, est.simulate(c, times, w, args.jobs, workers, caps,
+                                 power, draw, spacing, windows, start))
+                for w in ("mid", "lo", "hi"))
+    mid = sims["mid"]
+    unknown = [pt.part for pt in times if pt.source == est.UNKNOWN]
+    load = est.peaks(mid.intervals, caps, power, draw)
+    data = {
+        "campaign": c.name, "parts": len(c.parts),
+        "hosts": sum(len(hs) for _, hs in c.parts),
+        "workers": workers, "jobs": args.jobs, "start": start.isoformat(),
+        "wall_s": mid.wall, "wall_p10_s": sims["lo"].wall,
+        "wall_p90_s": sims["hi"].wall,
+        "end": mid.end.isoformat() if mid.end else None,
+        "unknown_parts": unknown,
+        "windows": [{"opens": o.isoformat(), "closes": cl.isoformat()}
+                    for o, cl in mid.windows],
+        "overruns": [{"part": p, "past_close_s": s}
+                     for p, s in mid.overruns],
+        "peaks": [{"what": w, "value": v, "peak": pk, "limit": lim}
+                  for w, v, pk, lim in load],
+        "durations": [{"part": pt.part, "source": pt.source,
+                       "values": pt.n, "runs": pt.runs,
+                       "median_s": est._median(list(pt.mid.values())),
+                       "p10_s": est._median(list(pt.lo.values())),
+                       "p90_s": est._median(list(pt.hi.values()))}
+                      for pt in times],
+    }
+    if getattr(args, "json", False) or (args.format or "").lower() == "json":
+        if not head_only:
+            sys.stdout.write(json.dumps(data, indent=2, sort_keys=True) +
+                             "\n")
+            return 0
+    lines = ["%s campaign estimate -- %s: %s, %s, %s, %s at a time each"
+             % (PROG, c.name, plural(len(c.parts), "part"),
+                plural(data["hosts"], "host"), plural(workers, "worker"),
+                args.jobs)]
+    if unknown:
+        lines.append("  wall time  unknown: no history of this command for "
+                     "%s, and no --assume SECONDS" % (
+                         plural(len(unknown), "part") + " (" +
+                         ", ".join(unknown[:5]) +
+                         (" ..." if len(unknown) > 5 else "") + ")"))
+    elif mid.wall is None:
+        lines.append("  wall time  never: no window ever opens")
+    else:
+        lines.append("  wall time  %s (p10-p90 %s - %s), from %s to %s" % (
+            est_dur(mid.wall), est_dur(sims["lo"].wall),
+            est_dur(sims["hi"].wall), start.strftime("%a %Y-%m-%d %H:%M"),
+            mid.end.strftime("%a %Y-%m-%d %H:%M")))
+        if windows:
+            lines.append("  windows    %s: %s" % (
+                plural(len(mid.windows), "window"), "; ".join(
+                    "%s until %s" % (o.strftime("%a %m-%d %H:%M"),
+                                     cl.strftime("%a %m-%d %H:%M"))
+                    for o, cl in mid.windows)))
+            for p, sec in mid.overruns:
+                lines.append("             part %s runs %s past its window's "
+                             "close (a window gates a part's start, not its "
+                             "end)" % (p, est_dur(sec)))
+        for w, v, pk, lim in load:
+            lines.append("  at once    %s %s at most%s, of %s allowed" % (
+                pacing._fmt(pk), w, (" (%s)" % v) if v else "",
+                pacing._fmt(lim)))
+    if head_only:
+        for ln in lines:
+            out("# " + ln.strip())
+        return 0
+    lines.append("")
+    dt = tablemod.Table(
+        ["part", "hosts", "source", "values", "median_s", "p10_s", "p90_s",
+         "starts", "ends", "worker"],
+        [[pt.part, str(len(hs)), pt.source, str(pt.n),
+          num_or_blank(est._median(list(pt.mid.values()))),
+          num_or_blank(est._median(list(pt.lo.values()))),
+          num_or_blank(est._median(list(pt.hi.values())))] +
+         (([p[2].strftime("%m-%d %H:%M"), p[3].strftime("%m-%d %H:%M"),
+            str(p[1] + 1)]) if p else ["", "", ""])
+         for (part, hs), pt, p in zip(
+             c.parts, times, mid.parts if mid.parts else
+             [None] * len(c.parts))], "estimate")
+    lines.extend(render.render_table(dt, width=width_of(args), indent="  "))
+    lines.append("")
+    lines.append("  a host's duration: the median of its own earlier runs of "
+                 "this command, else the fleet's, else --assume; caps and "
+                 "power budgets are per worker, as in a run")
+    if windows:
+        lines.append("  a run stops when its window closes; the estimate "
+                     "assumes `campaign run` is started again when the "
+                     "next one opens")
+    emit(args, dt, lines)
+    return 1 if unknown else 0
+
+
+def est_dur(sec):
+    if sec is None:
+        return "unknown"
+    sec = int(round(sec))
+    d, r = divmod(sec, 86400)
+    h, r = divmod(r, 3600)
+    m, s = divmod(r, 60)
+    if d:
+        return "%dd %dh %02dm" % (d, h, m)
+    if h:
+        return "%dh %02dm" % (h, m)
+    if m:
+        return "%dm %02ds" % (m, s)
+    return "%ds" % s
+
+
 def gate_of(args):
     """The pacing a fan-out runs under: a campaign's (caps, ramp), and
     --rate, which spaces new connections whatever the verb.  Where both
@@ -4110,19 +4250,44 @@ def local_now():
     return datetime.datetime.now().replace(second=0, microsecond=0)
 
 
+def campaign_gate(pace):
+    """The Gate a campaign's hosts start through: its caps, its power
+    budget and its ramp.  `campaign run` and `campaign estimate` both
+    make theirs here, so they cannot pace differently."""
+    return pacing.Gate(
+        pacing.parse_caps([pace["max_per"]] if pace["max_per"] else []),
+        pacing.parse_ramp(pace["ramp"]),
+        pacing.parse_power([pace["max_watts"]] if pace.get("max_watts")
+                           else []),
+        pacing.parse_draw(pace.get("watts")))
+
+
+def check_campaign_power(pace, hosts):
+    pacing.check_power(hosts, pacing.parse_power(
+        [pace["max_watts"]] if pace.get("max_watts") else []),
+        pacing.parse_draw(pace.get("watts")))
+
+
 def campaign_pacing(args, c=None):
     """The pacing a campaign runs with, as text: the flags given, else
     what `campaign new` kept.  Every value is parsed here, so a bad one
     is refused before anything starts."""
     pace = {}
     for key, flag in (("max_per", args.max_per), ("ramp", args.ramp),
-                      ("window", args.window)):
+                      ("window", args.window),
+                      ("max_watts", getattr(args, "max_watts", None)),
+                      ("watts", getattr(args, "watts", None))):
         if isinstance(flag, list):
             flag = ";".join(flag) if key == "window" else ",".join(flag)
         pace[key] = flag or (getattr(c, key, "") if c is not None else "")
     pacing.parse_caps([pace["max_per"]] if pace["max_per"] else [])
     pacing.parse_ramp(pace["ramp"])
     pacing.parse_windows([pace["window"]] if pace["window"] else [])
+    pacing.parse_power([pace["max_watts"]] if pace["max_watts"] else [])
+    pacing.parse_draw(pace["watts"])
+    if pace["watts"] and not pace["max_watts"]:
+        die("--watts is a host's draw under a power budget: give the budget "
+            "too (--max-watts pdu=7200)")
     return pace
 
 
@@ -4132,6 +4297,15 @@ def pacing_lines(pace):
         lines.append("  at most  %s running at once" % ", ".join(
             "%d per %s" % (n, a) for a, n in
             pacing.parse_caps([pace["max_per"]])))
+    if pace.get("max_watts"):
+        lines.append("  power    at most %s drawn at once (a host's draw: "
+                     "its watts attribute%s)" % (
+                         ", ".join(("%sW per %s" % (pacing._fmt(w), a)) if a
+                                   else "%sW in all" % pacing._fmt(w)
+                                   for a, w in pacing.parse_power(
+                                       [pace["max_watts"]])),
+                         (", else %sW" % pacing._fmt(pacing.parse_draw(
+                             pace["watts"]))) if pace.get("watts") else ""))
     if pace.get("ramp"):
         lines.append("  ramp     %s (a host start every %ss)" % (
             pace["ramp"], stats.fmt_num(pacing.parse_ramp(pace["ramp"]))))
@@ -5362,7 +5536,7 @@ def build_parser():
     sp = verb("campaign", "run a system in parts, progress kept by muster, "
               "every part in provost")
     sp.add_argument("action", choices=["new", "run", "status", "retry",
-                                       "ls"])
+                                       "ls", "estimate"])
     sp.add_argument("name", nargs="?", metavar="NAME")
     sp.add_argument("parts_named", nargs="*", metavar="PART",
                     help="retry: these parts (default: the ones that had "
@@ -5385,6 +5559,23 @@ def build_parser():
     sp.add_argument("--window", action="append", metavar="SPEC",
                     help="start parts only inside these hours: \"Mon-Fri "
                     "18:00-06:00\" (repeatable, local time)")
+    sp.add_argument("--max-watts", action="append", metavar="[ATTR=]W",
+                    help="a power budget: no more than W watts drawn at "
+                    "once per ATTR value (pdu=7200), or in all (30000); a "
+                    "host's draw is its watts attribute, else --watts")
+    sp.add_argument("--watts", metavar="W",
+                    help="the draw of a host with no watts attribute, under "
+                    "--max-watts")
+    sp.add_argument("--workers", type=positive, metavar="N",
+                    help="estimate: workers running the campaign at once, "
+                    "each with caps of its own (1)")
+    sp.add_argument("--assume", type=seconds, metavar="SECONDS",
+                    help="estimate: a host's duration where nothing in the "
+                    "store has run the command")
+    sp.add_argument("--start", metavar="YYYY-mm-ddTHH:MM",
+                    help="estimate: when it would start (default now)")
+    sp.add_argument("--json", action="store_true",
+                    help="estimate: the figures as JSON")
     add_format(sp)
     sp.set_defaults(fn=cmd_campaign, command=[])
 
