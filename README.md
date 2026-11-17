@@ -1129,6 +1129,7 @@ qd check latest --against limits.tsv --format csv -o trr.csv
 qd check latest --against limits.tsv --waivers waivers.tsv   # agreed deviations
 qd check latest --against limits.tsv --fail-level high       # exit 1 only for high and critical
 qd check latest --against limits.tsv --format junit -o qd-check.xml   # for CI
+qd check latest --against drift.tsv --baseline RUN|NAME     # limits relative to an earlier run
 ```
 
 The thresholds file is TSV (or CSV) with a header. `req`, `column`, `op`
@@ -1230,6 +1231,62 @@ day it holds), `where` (only these rows, in `--where`'s grammar),
 With waivers, the verdict table gains `justification`, `expires` and
 `granted_by`, and the head counts waived apart from passed. Without
 `--waivers` and without a `severity` column the output is what it was.
+
+### Against an earlier run: `--baseline`
+
+A fixed limit says whether a run is good enough; it cannot say a host
+slid 8% since last month and is still above the line. **`--baseline
+RUN|NAME`** holds limits written relative to a baseline to an earlier
+run (or a file), or to a qualified baseline from `qd baseline set`:
+
+```bash
+qd check latest --against drift.tsv --baseline 20261101-093000-load --each
+qd check latest --against drift.tsv --baseline gold   # qd baseline set gold ...
+```
+
+```text
+req     column  op      limit          limit2  where    agg
+DRIFT1  mbps    >=      baseline-5%                     each
+DRIFT2  rtt     <=      baseline+40us           rack=r2
+DRIFT3  mbps    within  baseline       +-5%             median
+DRIFT4  temp    between baseline-2     baseline+2
+```
+
+- A **relative limit** is `baseline`, `baseline+N` or `baseline-N`, a
+  percentage of the baseline's value (`baseline-5%`) or an absolute
+  difference (`baseline+2`, `baseline+40us`, read in the column's unit
+  when it carries none). It goes in `limit` of `<`, `<=`, `>`, `>=` and
+  `within` (whose `limit2` tolerance is then around the baseline's value),
+  and in either side of `between`. `in`, `==` and `!=` keep their words:
+  `== baseline` is still the word. A file with no relative limit means
+  what it always meant, and needs no `--baseline`.
+- Under **`each`**, every host is held to **its own** value in the
+  baseline, matched as `qd compare` matches them (the host, and the
+  record number where a host has several) or on a qualified baseline's
+  own key. A host whose several rows reduce to one figure is reduced by
+  its median, as compare reduces it; the verdict table has a row per
+  host, and its `limit` shows the figure each was held to.
+- Under an **aggregate**, the figure is taken over the baseline's rows
+  of the same hosts, through the same `where`, so the two are of one
+  population; for a qualified baseline it is taken over each host's
+  median there.
+- **Blank is never a pass**: a host or a column the baseline lacks is
+  not measured, so is an aggregate over hosts some of which the baseline
+  lacks, and so is a relative limit with no `--baseline` given.
+- **A qualified baseline of three runs or more decides by test.** Where
+  a host has three values or more in the run as well (repeated rows: a
+  test's iterations), a limit crossed fails only when the Mann-Whitney U
+  test that `qd compare --baseline NAME` makes finds the difference
+  significant (Holm-adjusted over the check's hosts, below 0.05); a
+  crossing it does not is a pass, named in the note. Otherwise the
+  medians decide, and the note says which it was ("against one run:
+  decided on medians"), so a verdict on a single noisy run reads as one.
+
+With `--baseline` the verdict table gains `baseline` (the baseline's
+value) and `drift_pct` (the run's change from it, as `qd compare`
+computes it). Waivers, severities, `--fail-level`, `--each`, `--keep`
+and every `--format` treat a relative verdict exactly as a fixed one,
+and `--keep` names the baseline in the filed run's command.
 
 `--keep` files the verdict table in the store as a run of kind `check`,
 named `check-<run>`, so `qd show`, `qd export` and `qd web` read it like

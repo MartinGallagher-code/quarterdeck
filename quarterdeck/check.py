@@ -23,6 +23,15 @@ the run.  A waivers file (QD-028) excuses a measured failure of a named
 requirement with a justification, until an expiry date: the check is then
 waived, never passed, and a waiver that expects a failure flags a pass as
 an unexpected pass.  Not measured is never waived.
+
+A limit can be relative to a baseline (QD-033): `baseline`, `baseline-5%`,
+`baseline+2`, `baseline-2ms`, held against an earlier run or a qualified
+baseline given with `qd check --baseline RUN|NAME`.  Under `each` every
+host is held to its own value in the baseline; a host the baseline lacks
+is not measured.  Against a qualified baseline of three runs or more, and
+three values or more for a host in the run, the Mann-Whitney U test with
+Holm's adjustment (as `qd compare --baseline NAME` makes it) must also
+find the difference significant before a crossed limit fails.
 """
 
 import datetime
@@ -30,7 +39,7 @@ import re
 
 from . import query, stats
 from .common import QdError, die
-from .table import load_file, split_unit, to_base, unit_family
+from .table import load_file, slug, split_unit, to_base, unit_family
 
 PASS, FAIL, UNMEASURED = "pass", "fail", "not measured"
 WAIVED, UNEXPECTED = "waived", "unexpected pass"
@@ -143,6 +152,27 @@ def _within_bounds(limit, limit2, unit):
     return bounds[0], bounds[1], tol[2]
 
 
+REL_RE = re.compile(r"^baseline\s*(?:([+-])\s*(.*))?$", re.I)
+REL_TEXT = "baseline, baseline+N, baseline-N or baseline-N%"
+
+
+def parse_relative(text):
+    """A limit relative to the baseline: (sign, amount, is_percent, unit)
+    for `baseline-5%`, `baseline+2ms`, `baseline` (no offset); None when
+    the text is not relative at all; a string saying why when it starts
+    `baseline` but cannot be read."""
+    m = REL_RE.match((text or "").strip())
+    if not m:
+        return None
+    if not m.group(1):
+        return (1, 0.0, False, "")
+    part = _tol_part(m.group(2).replace(" ", ""))
+    if part is None:
+        return "a limit relative to the baseline is %s, not %r" % (REL_TEXT,
+                                                                   text)
+    return (1 if m.group(1) == "+" else -1,) + part
+
+
 class Check(object):
     def __init__(self, line, req, column, op, limit, limit2="", where="",
                  agg="", unit="", note="", severity=""):
@@ -158,7 +188,20 @@ class Check(object):
         self.note = note
         self.severity = severity
         self.lo = self.hi = self.tol_shown = ""
-        if op == "within":
+        # a limit relative to the baseline (QD-033): limit, and limit2 of
+        # a between; never for the words of in, == and !=
+        self.rel = self.rel2 = None
+        if op in ("<", "<=", ">", ">=", "between", "within"):
+            r = parse_relative(limit)
+            self.rel = r if isinstance(r, tuple) else None
+        if op == "between":
+            r = parse_relative(limit2)
+            self.rel2 = r if isinstance(r, tuple) else None
+        self.relative = self.rel is not None or self.rel2 is not None
+        if op == "within" and self.rel is not None:
+            t = parse_tolerance(limit2)
+            self.tol_shown = t[2] if t else ""
+        elif op == "within":
             b = _within_bounds(limit, limit2, unit)
             if not isinstance(b, str):
                 self.lo, self.hi, self.tol_shown = b
@@ -214,7 +257,19 @@ def read_thresholds(path):
         if sev is None:
             die("%s: unknown severity %r (want %s, or an impact 0.0-1.0)"
                 % (where, d["severity"], ", ".join(SEVERITIES)), 2)
-        if op == "within":
+        rel = {}
+        for k in ("limit", "limit2"):
+            rel[k] = parse_relative(d.get(k, "")) if op in (
+                "<", "<=", ">", ">=", "between", "within") else None
+            if isinstance(rel[k], str) and (k == "limit" or
+                                            op == "between"):
+                die("%s: %s" % (where, rel[k]), 2)
+        if op == "within" and rel["limit"] is not None:
+            if parse_tolerance(d.get("limit2", "")) is None:
+                die("%s: within needs a tolerance in limit2 (+-10%%, "
+                    "-5%%,+10%% or +-3), not %r" % (where,
+                                                     d.get("limit2", "")), 2)
+        elif op == "within":
             b = _within_bounds(d["limit"], d.get("limit2", ""),
                                d.get("unit", ""))
             if isinstance(b, str):
@@ -223,12 +278,13 @@ def read_thresholds(path):
             if not d.get("limit2"):
                 die("%s: between needs limit2" % where, 2)
             for k in ("limit", "limit2"):
-                if split_unit(d[k])[0] is None:
+                if rel[k] is None and split_unit(d[k])[0] is None:
                     die("%s: between needs numbers, not %r" % (where, d[k]),
                         2)
-        elif op in ("<", "<=", ">", ">=") and split_unit(d["limit"])[0] \
-                is None:
-            die("%s: %s needs a number, not %r" % (where, op, d["limit"]), 2)
+        elif op in ("<", "<=", ">", ">=") and rel["limit"] is None and \
+                split_unit(d["limit"])[0] is None:
+            die("%s: %s needs a number or %s, not %r" % (
+                where, op, REL_TEXT, d["limit"]), 2)
         if agg != "each" and op in ("in",):
             die("%s: %s over hosts gives a number; `in` wants words"
                 % (where, agg), 2)
@@ -493,7 +549,7 @@ def _label(table, row, n):
     return "row %d" % n
 
 
-def run_check(table, chk):
+def run_check(table, chk, ref=None):
     if not table.has(chk.column):
         return Result(chk, note="no column %s" % chk.column)
     rows = table.rows
@@ -504,6 +560,8 @@ def run_check(table, chk):
             return Result(chk, note="where %s: %s" % (chk.where, exc))
     if not rows:
         return Result(chk, note="no rows where %s" % chk.where)
+    if chk.relative:
+        return run_relative(table, chk, rows, ref)
     scale = Scale(table, chk)
     if scale.problem:
         return Result(chk, total=len(rows), note="unit mismatch: " +
@@ -586,6 +644,9 @@ def _each_verdict(res):
     elif waived:
         shown = waived[0][1]
         note = ""
+    elif getattr(res, "margins", None) is not None:
+        shown = _closest(per, res.margins)
+        note = ""
     else:
         shown = _nearest(chk, per, res.nums, res.scale)
         note = ""
@@ -615,8 +676,18 @@ def _nearest(chk, per, nums, scale):
     return pairs[0][1]
 
 
-def run(table, checks, waivers=None, today=None):
-    out = [run_check(table, c) for c in checks]
+def _closest(per, margins):
+    """The row nearest its own limit, for an all-pass relative `each`."""
+    pairs = [(m, p[1]) for m, p in zip(margins, per) if m is not None]
+    if not pairs:
+        return per[0][1] if per else ""
+    return min(pairs, key=lambda x: x[0])[1]
+
+
+def run(table, checks, waivers=None, today=None, ref=None):
+    """Every check's Result.  ref (a Reference) is what limits relative to
+    the baseline are held to; without one they are not measured."""
+    out = [run_check(table, c, ref) for c in checks]
     if waivers:
         for r in out:
             mine = [w for w in waivers if w.req == r.chk.req]
@@ -731,23 +802,438 @@ def _keep_unit_note(note):
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Limits relative to a baseline (QD-033)
+# ---------------------------------------------------------------------------
+
+ALPHA = 0.05
+
+
+class Reference(object):
+    """What a relative limit is held to: an earlier run's table (narrowed
+    by the command's own --where, as the run is) or a qualified baseline
+    from `qd baseline set`, whose every key holds one value per run."""
+
+    def __init__(self, label, table=None, bl=None):
+        self.label = label
+        self.table = table
+        self.bl = bl
+
+    def runs(self):
+        return len(self.bl.runs) if self.bl is not None else 1
+
+    def describe(self):
+        if self.bl is not None:
+            return "baseline %s (%d run%s)" % (
+                self.label, self.runs(), "" if self.runs() == 1 else "s")
+        return "run %s" % self.label
+
+
+def _written_unit(cells):
+    """The commonest unit written in a column's cells, or ""."""
+    count = {}
+    for c in cells:
+        u = split_unit(c)[1]
+        if u:
+            count[u] = count.get(u, 0) + 1
+    if not count:
+        return ""
+    return sorted(count, key=lambda u: (-count[u], u))[0]
+
+
+class _Footing(object):
+    """How a relative check reads its numbers: both sides as qd's
+    baselines keep them (sizes in bytes, times in seconds, anything else
+    as written), and an offset or a figure shown in the check's own
+    unit."""
+
+    def __init__(self, chk, cells, common):
+        self.based = common in ("B", "s")
+        self.family = {"B": "size", "s": "time"}.get(common)
+        # the check's unit, else its offset's, else the cells' commonest
+        given = [r[3] for r in (chk.rel, chk.rel2) if r and r[3] and (
+            not self.based or unit_family(r[3]) == self.family)]
+        self.own = chk.unit or (given[0] if given else "") or \
+            _written_unit(cells)
+        self.problem = ""
+
+    def amount(self, amount, unit):
+        """An offset or a bound as a number on this footing; None when its
+        unit does not fit the column's."""
+        u = unit or self.own
+        if self.based:
+            if unit_family(u) == self.family:
+                return to_base("%r%s" % (amount, u))[0]
+            if u:
+                return None
+            return amount
+        if not unit or _units_match(unit, self.own):
+            return amount
+        if self.own and unit_family(unit) and \
+                unit_family(unit) == unit_family(self.own):
+            return to_base("%r%s" % (amount, unit))[0] / \
+                to_base("1" + self.own)[0]
+        return None
+
+    def show(self, v):
+        if v is None:
+            return ""
+        if self.based and unit_family(self.own):
+            f = to_base("1" + self.own)[0]
+            if f:
+                v = v / f
+        return stats.fmt_num(v)
+
+
+def _bound(rel, ref, foot):
+    sign, amount, pct, unit = rel
+    if pct:
+        return ref + sign * abs(ref) * amount / 100.0
+    d = foot.amount(amount, unit)
+    return None if d is None else ref + sign * d
+
+
+def resolve(chk, ref, foot):
+    """(limit, limit2) as numbers, given the baseline's value; None when
+    a unit does not fit."""
+    if chk.op == "within" and chk.rel is not None:
+        tol = parse_tolerance(chk.limit2)
+        out = []
+        for sign, (amount, pct, unit) in ((-1, tol[0]), (1, tol[1])):
+            if pct:
+                d = abs(ref) * amount / 100.0
+            else:
+                d = foot.amount(amount, unit)
+                if d is None:
+                    return None
+            out.append(ref + sign * d)
+        return out[0], out[1]
+    sides = []
+    for i, (rel, text) in enumerate(((chk.rel, chk.limit),
+                                     (chk.rel2, chk.limit2))):
+        if i == 1 and chk.op != "between":
+            sides.append(None)
+            continue
+        if rel is not None:
+            v = _bound(rel, ref, foot)
+        else:
+            n, u = split_unit(text)
+            v = None if n is None else foot.amount(n, u or chk.unit)
+        if v is None:
+            return None
+        sides.append(v)
+    return sides[0], sides[1]
+
+
+def _margin(op, v, lim, lim2):
+    if op in ("<", "<="):
+        return lim - v
+    if op in (">", ">="):
+        return v - lim
+    return min(v - lim, lim2 - v)
+
+
+def _key_columns(table, ref):
+    """The columns a run's rows are matched to the baseline's on, or a
+    string saying why they cannot be."""
+    from .diff import SECONDARY
+    if ref.bl is not None:
+        miss = [k for k in ref.bl.key if not table.has(k)]
+        if miss:
+            return "the baseline %s matches rows on %s, and this has no %s" \
+                % (ref.label, ",".join(ref.bl.key), ", ".join(miss))
+        return [table.colname(k) for k in ref.bl.key]
+    b = ref.table
+    if table.is_results() and b.is_results():
+        from .diff import auto_key
+        return auto_key(table, b)
+    for primary in ("host", "ssh_host", "target", "name", "src"):
+        if table.has(primary) and b.has(primary):
+            return [primary] + [c for c in SECONDARY if c != primary and
+                                table.has(c) and b.has(c)]
+    return "no host column the run and %s share to match rows on" % (
+        ref.describe())
+
+
+def _keyed(table, rows, kc, nums):
+    """[(key, [rows], [numbers])] in first-seen order; a row with every
+    key cell blank is nobody's."""
+    ki = [table.index(k) for k in kc]
+    order, by = [], {}
+    for r, v in zip(rows, nums):
+        k = tuple(r[i].strip() for i in ki)
+        if not any(k):
+            continue
+        if k not in by:
+            by[k] = ([], [])
+            order.append(k)
+        by[k][0].append(r)
+        if v is not None:
+            by[k][1].append(v)
+    return [(k, by[k][0], by[k][1]) for k in order]
+
+
+def _ref_side(chk, ref, run_unit):
+    """(column in the baseline, its numbers' unit, its rows or None, a
+    problem)."""
+    from . import baseline as blmod
+    if ref.bl is not None:
+        bl = ref.bl
+        name = None
+        for c in bl.columns:
+            if c == chk.column or slug(c) == slug(chk.column):
+                name = c
+        if name is None:
+            return None, "", None, "the baseline %s holds %s, not %s" % (
+                ref.label, ", ".join(bl.columns), chk.column)
+        u = bl.units.get(name, "")
+        return name, u, None, ""
+    b = ref.table
+    if not b.has(chk.column):
+        return None, "", None, "%s has no column %s" % (ref.describe(),
+                                                         chk.column)
+    rows = b.rows
+    if chk.where:
+        try:
+            rows = query.where(b, [chk.where])
+        except QdError as exc:
+            return None, "", None, "where %s in %s: %s" % (
+                chk.where, ref.describe(), exc)
+    nums, u = blmod.base_numbers(b.values(chk.column))
+    pos = dict((id(r), n) for n, r in enumerate(b.rows))
+    return b.colname(chk.column), u, [(r, nums[pos[id(r)]]) for r in rows], \
+        ""
+
+
+def run_relative(table, chk, rows, ref):
+    """A check whose limit is relative to the baseline."""
+    from . import baseline as blmod
+    from .compare import pct
+    if ref is None:
+        return Result(chk, total=len(rows), note="the limit is relative to "
+                      "a baseline: give one with --baseline RUN|NAME")
+    allnums, unit = blmod.base_numbers(table.values(chk.column))
+    pos = dict((id(r), n) for n, r in enumerate(table.rows))
+    nums = [allnums[pos[id(r)]] for r in rows]
+    foot = _Footing(chk, table.values(chk.column), unit)
+    col, bunit, brows, problem = _ref_side(chk, ref, unit)
+    if not problem and unit and bunit and unit != bunit:
+        problem = "%s is in %s here and in %s in %s" % (
+            chk.column, unit, bunit, ref.describe())
+    if problem:
+        return Result(chk, total=len(rows), note=problem)
+    kc = _key_columns(table, ref)
+    if isinstance(kc, str) and (chk.agg == "each" or ref.bl is not None):
+        return Result(chk, total=len(rows), note=kc)
+    if chk.agg == "each":
+        return _relative_each(table, chk, rows, nums, ref, col, brows, kc,
+                              foot, pct)
+    return _relative_agg(table, chk, rows, nums, ref, col, brows, kc, foot,
+                         pct)
+
+
+def _ref_by_key(ref, col, brows, kc):
+    """{key: [the baseline's values]}: a run's rows of a key reduced to
+    their median, as compare reduces them; a qualified baseline's one
+    value per run."""
+    from . import baseline as blmod
+    if ref.bl is not None:
+        return dict((k, xs) for (c, k), xs in ref.bl.keys.items()
+                    if c == col and xs)
+    b = ref.table
+    got = _keyed(b, [r for r, _ in brows], kc, [v for _, v in brows])
+    return dict((k, [blmod.reduce(xs, "median")]) for k, _, xs in got
+                if xs)
+
+
+def _relative_each(table, chk, rows, nums, ref, col, brows, kc, foot, pct):
+    from . import baseline as blmod
+    base = _ref_by_key(ref, col, brows, kc)
+    keyed = _keyed(table, rows, kc, nums)
+    per, src, margins, extra, tests = [], [], [], [], []
+    unknown, problem = [], ""
+    for k, krows, xs in keyed:
+        label = ",".join(x for x in k if x) or _label(table, krows[0], 0)
+        src.append(krows[0])
+        if not xs:
+            per.append((label, "", UNMEASURED))
+            margins.append(None)
+            extra.append(("", "", ""))
+            continue
+        v = blmod.reduce(xs, "median")
+        refs = base.get(k)
+        if not refs:
+            unknown.append(label)
+            per.append((label, foot.show(v), UNMEASURED))
+            margins.append(None)
+            extra.append(("not in the baseline", "", ""))
+            continue
+        bmed = blmod.median(refs)
+        lims = resolve(chk, bmed, foot)
+        if lims is None:
+            problem = "the limit's unit does not fit %s's" % chk.column
+            break
+        ok = compare(chk.op, v, lims[0], lims[1])
+        per.append((label, foot.show(v), PASS if ok else FAIL))
+        margins.append(_margin(chk.op, v, lims[0], lims[1]))
+        d = pct(bmed, v)
+        extra.append((_resolved_text(chk, lims, foot), foot.show(bmed),
+                      _pct_text(d)))
+        if ref.bl is not None and len(refs) >= blmod.MIN_RUNS and \
+                len(xs) >= blmod.MIN_RUNS:
+            from .stats import mann_whitney
+            tests.append((len(per) - 1, mann_whitney(xs, refs)["p"]))
+    if problem:
+        return Result(chk, total=len(keyed), note=problem)
+    notes = []
+    if tests:
+        from .stats import holm
+        adj = holm([p for _, p in tests])
+        kept = []
+        for (i, _), p in zip(tests, adj):
+            if per[i][2] == FAIL and p >= ALPHA:
+                per[i] = (per[i][0], per[i][1], PASS)
+                kept.append(per[i][0])
+                margins[i] = 0.0
+        if kept:
+            notes.append("past the limit but not significant (Holm-adjusted "
+                         "p %s or more): %s" % (stats.fmt_num(ALPHA),
+                                                _names([(x,) for x in kept])))
+    if unknown:
+        notes.append("%d not in %s: %s" % (len(unknown), ref.describe(),
+                                            _names([(x,) for x in unknown])))
+    notes.append(_how(ref, len(tests), len(keyed)))
+    measured = sum(1 for _, _, v in per if v != UNMEASURED)
+    res = Result(chk, "", PASS, measured, len(per), foot.own, "", per)
+    res.src = src
+    res.margins = margins
+    res.row_extra = extra
+    _each_verdict(res)
+    res.note = "; ".join(x for x in [res.note] + notes if x)
+    res.base_note = "; ".join(notes)
+    return res
+
+
+def _relative_agg(table, chk, rows, nums, ref, col, brows, kc, foot, pct):
+    from . import baseline as blmod
+    # each row's verdict is against the limit the aggregate is held to,
+    # once that is known; until then none is measured
+    per = [(_label(table, r, n), foot.show(v) if v is not None else "",
+            UNMEASURED) for n, (r, v) in enumerate(zip(rows, nums), 1)]
+    vals = [v for v in nums if v is not None]
+    if not vals:
+        return Result(chk, "", UNMEASURED, 0, len(per), foot.own,
+                      "nothing numeric to take the %s of" % chk.agg, per)
+    agg = stats.AGGS[chk.agg]([repr(v) for v in vals])
+    notes = []
+    if isinstance(kc, str):
+        bvals = [v for _, v in brows if v is not None]
+        notes.append("the baseline's rows are not matched host by host: "
+                     + kc)
+    else:
+        keys = set(k for k, _, _ in _keyed(table, rows, kc, nums))
+        base = _ref_by_key(ref, col, brows, kc)
+        missing = sorted(",".join(k) for k in keys if k not in base)
+        if missing:
+            return Result(chk, foot.show(agg), UNMEASURED, len(vals),
+                          len(per), foot.own, "%d not in %s, so the %s "
+                          "would be over other hosts: %s" % (
+                              len(missing), ref.describe(), chk.agg,
+                              _names([(x,) for x in missing])), per)
+        if ref.bl is not None:
+            bvals = [blmod.median(base[k]) for k in keys]
+            notes.append("the %s of each host's median over the baseline's "
+                         "runs; no rank test for a figure over hosts"
+                         % chk.agg)
+        else:
+            bki = [ref.table.index(k) for k in kc]
+            bvals = [v for r, v in brows if v is not None and
+                     tuple(r[i].strip() for i in bki) in keys]
+    if not bvals:
+        return Result(chk, foot.show(agg), UNMEASURED, len(vals), len(per),
+                      foot.own, "%s measured no %s" % (ref.describe(),
+                                                       chk.column), per)
+    bagg = stats.AGGS[chk.agg]([repr(v) for v in bvals])
+    lims = resolve(chk, bagg, foot)
+    if lims is None:
+        return Result(chk, total=len(per), note="the limit's unit does not "
+                      "fit %s's" % chk.column)
+    ok = compare(chk.op, agg, lims[0], lims[1])
+    per = [(p[0], p[1], p[2] if v is None else
+            PASS if compare(chk.op, v, lims[0], lims[1]) else FAIL)
+           for p, v in zip(per, nums)]
+    measured = len(vals)
+    if ref.bl is None:
+        notes.append(_how(ref, 0, 0))
+    if measured < len(per):
+        blank = [p[0] for p in per if p[2] == UNMEASURED]
+        res = Result(chk, foot.show(agg), UNMEASURED, measured, len(per),
+                     foot.own, "%s over %d of %d (%s would %s); not "
+                     "measured: %s" % (chk.agg, measured, len(per), chk.agg,
+                                       "pass" if ok else "fail",
+                                       ", ".join(blank[:5])), per)
+    else:
+        res = Result(chk, foot.show(agg), PASS if ok else FAIL, measured,
+                     len(per), foot.own, "", per)
+        res.src = list(rows)
+    res.note = "; ".join(x for x in [res.note] + notes if x)
+    res.base_shown = foot.show(bagg)
+    res.drift = _pct_text(pct(bagg, agg))
+    res.limit_shown = _resolved_text(chk, lims, foot)
+    return res
+
+
+def _how(ref, tested, keys):
+    if ref.bl is None:
+        return "against one run (%s): decided on medians, no rank test" % (
+            ref.label)
+    if tested == keys:
+        return "against %s: the rank test decided each host" % (
+            ref.describe())
+    if tested:
+        return "against %s: the rank test decided %d of %d hosts, medians " \
+            "the rest (3 values a side wanted)" % (ref.describe(), tested,
+                                                   keys)
+    return "against %s: decided on medians (the rank test wants 3 values " \
+        "a side, and the run has fewer per host)" % ref.describe()
+
+
+def _resolved_text(chk, lims, foot):
+    if chk.op in ("between", "within"):
+        return "between %s and %s" % (foot.show(lims[0]),
+                                      foot.show(lims[1]))
+    return "%s %s" % (chk.op, foot.show(lims[0]))
+
+
+def _pct_text(d):
+    if d is None:
+        return ""
+    if d in (float("inf"), float("-inf")):
+        return "from 0"
+    return "%.1f" % d
+
+
 SUMMARY_COLUMNS = ["req", "column", "agg", "where", "observed", "limit",
                    "unit", "measured", "verdict", "note"]
 EACH_COLUMNS = ["req", "row", "column", "observed", "limit", "unit",
                 "verdict"]
 SEVERITY_COLUMNS = ["severity"]
 WAIVER_COLUMNS = ["justification", "expires", "granted_by"]
+BASELINE_COLUMNS = ["baseline", "drift_pct"]
 
 
-def columns(base, checks, waivers):
+def columns(base, checks, waivers, ref=None):
     """A verdict table's header: the columns of old, then severity when
     the thresholds file has one, then the waiver's when there are
-    waivers.  With neither it is what it always was."""
+    waivers, then the baseline's value and the drift from it when there
+    is a baseline.  With none of them it is what it always was."""
     out = list(base)
     if any(c.severity for c in checks):
         out += SEVERITY_COLUMNS
     if waivers is not None:
         out += WAIVER_COLUMNS
+    if ref is not None:
+        out += BASELINE_COLUMNS
     return out
 
 
@@ -759,13 +1245,19 @@ def _waiver_cells(ws, today=None):
             "; ".join(w.granted_by for w in ws if w.granted_by)]
 
 
-def _extra(r, cols, ws, today=None):
+def _extra(r, cols, ws, today=None, base=("", "")):
     out = []
     if "severity" in cols:
         out.append(r.chk.severity)
     if "justification" in cols:
         out += _waiver_cells(ws, today)
+    if "baseline" in cols:
+        out += list(base)
     return out
+
+
+def _summary_base(r):
+    return (getattr(r, "base_shown", ""), getattr(r, "drift", ""))
 
 
 def summary_rows(results, cols=None, today=None):
@@ -773,11 +1265,15 @@ def summary_rows(results, cols=None, today=None):
     out = []
     for r in results:
         c = r.chk
+        lim = c.limit_text()
+        if getattr(r, "limit_shown", ""):
+            lim += " (%s)" % r.limit_shown
         out.append([c.req, c.column, c.agg, c.where, r.observed,
-                    c.limit_text(), r.unit,
+                    lim, r.unit,
                     "%d/%d" % (r.measured, r.total), r.verdict,
                     "; ".join(x for x in (r.note, c.note) if x)] +
-                   _extra(r, cols, r.waivers or r.expired, today))
+                   _extra(r, cols, r.waivers or r.expired, today,
+                          _summary_base(r)))
     return out
 
 
@@ -789,8 +1285,9 @@ def each_rows(results, cols=None, today=None):
         if not r.rows:
             out.append([c.req, "", c.column, "", c.limit_text(), r.unit,
                         r.verdict] + _extra(r, cols, r.waivers or r.expired,
-                                            today))
+                                            today, _summary_base(r)))
         whole = r.verdict in (WAIVED, UNEXPECTED) and c.agg != "each"
+        rx = getattr(r, "row_extra", None)
         for i, (label, obs, v) in enumerate(r.rows):
             w = r.row_waiver.get(i)
             if c.agg == "each" and r.verdict == UNEXPECTED:
@@ -799,8 +1296,17 @@ def each_rows(results, cols=None, today=None):
                 ws = r.waivers
             else:
                 ws = [w] if w else []
-            out.append([c.req, label, c.column, obs, c.limit_text(), r.unit,
-                        v] + _extra(r, cols, ws, today))
+            lim, base = c.limit_text(), ("", "")
+            if rx is not None:
+                if rx[i][0]:
+                    lim = "%s (%s)" % (lim, rx[i][0])
+                base = (rx[i][1], rx[i][2])
+            elif c.agg != "each" and c.relative:
+                base = _summary_base(r)
+                if getattr(r, "limit_shown", ""):
+                    lim = "%s (%s)" % (lim, r.limit_shown)
+            out.append([c.req, label, c.column, obs, lim, r.unit,
+                        v] + _extra(r, cols, ws, today, base))
     return out
 
 
