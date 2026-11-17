@@ -1773,9 +1773,86 @@ def report_hist(args, t, s):
 def cmd_outliers(args):
     t = load(args)
     s = subset(args, t)
+    if args.categorical:
+        lines, ot, found = report_categorical(args, t, s)
+        emit(args, ot, lines)
+        return 1 if found else 0
+    if not args.column:
+        die("outliers wants a column (or --categorical, to compare every "
+            "column of words host by host)")
+    if args.match:
+        die("--match is --categorical's")
     lines, ot = report_outliers(args, t, s)
     emit(args, ot, lines)
     return 0
+
+
+def report_categorical(args, t, s):
+    """outliers --categorical: within each group of hosts that ought to be
+    alike, the value most of them have, and every host that has another
+    (QD-034)."""
+    from . import differs
+    cols = [c.strip() for c in args.column.split(",") if c.strip()] \
+        if args.column else None
+    match = [c.strip() for c in args.match.split(",") if c.strip()] \
+        if args.match else None
+    pg = peers_of(args)
+    if pg is not None:
+        at = pg.assigner(s)
+        gname, how = pg.name, "peer group %s (%s)" % (pg.name, pg.how())
+    elif s.has("rack"):
+        ri = s.index("rack")
+
+        def at(row):
+            return row[ri].strip() or None
+        gname, how = s.colname("rack"), "rack"
+    else:
+        def at(row):
+            return "(all)"
+        gname, how = "group", "the whole fleet (no rack column: --peers " \
+            "NAME groups them)"
+    # what the hosts are grouped by is not compared within the groups
+    by = [s.colname(b) for b in pg.by if s.has(b)] if pg is not None else []
+    res = differs.find(s, at, cols, match, gname, by)
+    differ = [r for r in res.rows if r[-1] == differs.DIFFERS]
+    split = [r for r in res.rows if r[-1] == differs.SPLIT]
+    lines = ["%s outliers --categorical -- %s (%s): %s compared within "
+             "each %s%s" % (
+                 PROG, source_name(t), scope(args, t, s),
+                 plural(len(res.columns), "column"), how,
+                 (", each %s against the same %s on the others" % (
+                     ",".join(res.match), ",".join(res.match)))
+                 if res.match else ""), ""]
+    ot = tablemod.Table([gname] + differs.COLUMNS[1:], res.rows, "differs")
+    if not res.match:
+        ot = ot.derive(columns=[c for c in ot.columns if c != "match"])
+    if res.rows:
+        lines.extend(render.render_table(ot, width=width_of(args),
+                                         indent="  "))
+        lines.append("")
+    hosts = sorted(set(r[3] for r in differ))
+    lines.append("  %s differ from the majority of their group in %s; %s "
+                 "split with no majority" % (
+                     plural(len(hosts), "host"),
+                     plural(len(set((r[0], r[1], r[2]) for r in differ)),
+                            "column"),
+                     plural(len(set((r[0], r[1], r[2]) for r in split)),
+                            "column")))
+    lines.append("  %s compared (a column in a group with 2 hosts or more "
+                 "that measured it)" % plural(res.compared, "set"))
+    if res.left_out:
+        lines.append("  left out as per-host identities: %s (name one as "
+                     "COL to compare it)" % ", ".join(res.left_out[:8]) +
+                     (" ..." if len(res.left_out) > 8 else ""))
+    blank = sorted(res.unmeasured)
+    if blank:
+        lines.append("  not measured, and not counted: %s" % "; ".join(
+            "%s on %s" % (c, ", ".join(res.unmeasured[c][:4]) +
+                          (" ..." if len(res.unmeasured[c]) > 4 else ""))
+            for c in blank[:4]) + ("; ..." if len(blank) > 4 else ""))
+    if res.none:
+        lines.append("  %s in no group: left out" % plural(res.none, "row"))
+    return lines, ot, bool(res.rows)
 
 
 def cmd_check(args):
@@ -4902,9 +4979,21 @@ def build_parser():
     add_format(sp)
     sp.set_defaults(fn=cmd_hist)
 
-    sp = verb("outliers", "who sits far from the rest (median and MAD)")
+    sp = verb("outliers", "who sits far from the rest (median and MAD), or "
+              "differs from its rack-mates (--categorical)")
     sp.add_argument("ref", metavar="RUN")
-    sp.add_argument("column", metavar="COL")
+    sp.add_argument("column", metavar="COL", nargs="?",
+                    help="the column; with --categorical, a comma list "
+                    "(default: every column but per-host identities)")
+    sp.add_argument("--categorical", action="store_true",
+                    help="values, not numbers: each host whose value "
+                    "differs from the majority of its rack (or --peers "
+                    "group), as agree names the odd one out; exit 1 when "
+                    "one does")
+    sp.add_argument("--match", metavar="COLS",
+                    help="with --categorical: the columns a host's rows "
+                    "are told apart by (default nic, when a host has "
+                    "several rows)")
     sp.add_argument("--per", metavar="COL",
                     help="one value per COL first, its median (default: per "
                     "host when hosts repeat)")

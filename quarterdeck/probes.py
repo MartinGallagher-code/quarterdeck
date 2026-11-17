@@ -88,6 +88,76 @@ v=$(systemd-detect-virt 2>/dev/null)
 [ -z "$v" ] || printf 'virt: %s\n' "$v"
 """.strip(),
      "distribution, kernel, architecture, uptime, virtualisation", ""),
+    # firmware (QD-034): QD_PROBE_ROOT is unset on a real host; the tests
+    # point it at a fake host's own copy of /sys and /proc
+    ("firmware", "command", r"""
+r=${QD_PROBE_ROOT:-}
+kv() { printf '%s\t%s\t%s\n' "$1" "$2" "$(printf '%s' "$3" | tr '\t\n' '  ' | sed 's/^ *//; s/ *$//')"; }
+{
+d="$r/sys/class/dmi/id"
+if [ -d "$d" ]; then
+  for f in bios_vendor bios_version bios_date bios_release board_vendor board_name board_version product_name product_version product_family sys_vendor; do
+    [ -e "$d/$f" ] || continue
+    if [ -r "$d/$f" ]; then kv "" "$f" "$(cat "$d/$f" 2>/dev/null)"
+    else kv "" "$f" "needs root"; fi
+  done
+else
+  kv "" dmi "absent"
+fi
+if [ -r "$r/proc/cpuinfo" ]; then
+  m=$(awk -F': *' '$1 ~ /^microcode/ {print $2; exit}' "$r/proc/cpuinfo")
+  [ -z "$m" ] || kv "" microcode "$m"
+  m=$(awk -F': *' '$1 ~ /^model name/ {print $2; exit}' "$r/proc/cpuinfo")
+  [ -z "$m" ] || kv "" cpu_model "$m"
+fi
+e=yes
+command -v ethtool >/dev/null 2>&1 || e=no
+kv "" ethtool "$([ $e = yes ] && echo installed || echo 'not installed')"
+for n in "$r"/sys/class/net/*; do
+  [ -e "$n/device" ] || continue
+  i=${n##*/}
+  kv "$i" mtu "$(cat "$n/mtu" 2>/dev/null)"
+  [ $e = yes ] || continue
+  ethtool -i "$i" 2>/dev/null | awk -F': *' -v i="$i" '
+    $1 == "driver" {k = "driver"} $1 == "version" {k = "driver_version"}
+    $1 == "firmware-version" {k = "firmware_version"}
+    $1 == "expansion-rom-version" {k = "expansion_rom_version"}
+    $1 == "bus-info" {k = "bus_info"}
+    k != "" { v = $0; sub(/^[^:]*: */, "", v); if (v != "") print i "\t" k "\t" v; k = "" }'
+  ethtool -k "$i" 2>/dev/null | awk -v i="$i" '
+    /^[^:]*:[ \t]*(on|off)/ { k = $0; sub(/:.*/, "", k); sub(/^[ \t]+/, "", k)
+      v = $0; sub(/^[^:]*:[ \t]*/, "", v); sub(/[ \t].*/, "", v)
+      print i "\toffload." k "\t" v }'
+  ethtool -g "$i" 2>/dev/null | awk -v i="$i" '
+    /^Pre-set maximums/ {s = "ring_max."; next}
+    /^Current hardware settings/ {s = "ring."; next}
+    s != "" && /^[^:]+:[ \t]*[0-9a-z]/ { k = tolower($0); sub(/:.*/, "", k); gsub(/ /, "_", k)
+      v = $0; sub(/^[^:]*:[ \t]*/, "", v); if (v != "n/a") print i "\t" s k "\t" v }'
+  ethtool -c "$i" 2>/dev/null | awk -v i="$i" '
+    /^Coalesce parameters/ {next}
+    /^Adaptive RX:/ { print i "\tcoalesce.adaptive-rx\t" $3; if ($4 == "TX:") print i "\tcoalesce.adaptive-tx\t" $5; next }
+    /^[^:]+:[ \t]*[0-9a-z]/ { k = $0; sub(/:.*/, "", k)
+      v = $0; sub(/^[^:]*:[ \t]*/, "", v); if (v != "n/a") print i "\tcoalesce." k "\t" v }'
+  ethtool -a "$i" 2>/dev/null | awk -v i="$i" '
+    /^Pause parameters/ {next}
+    /^[^:]+:[ \t]*[a-z]/ { k = tolower($0); sub(/:.*/, "", k); gsub(/ /, "_", k)
+      v = $0; sub(/^[^:]*:[ \t]*/, "", v); print i "\tpause." k "\t" v }'
+done
+} | awk -F'\t' '
+  { if (!($2 in seen)) { seen[$2] = 1; keys[++nk] = $2 }
+    if ($1 == "") host[$2] = $3
+    else { if (!($1 in isnic)) { isnic[$1] = 1; nics[++nn] = $1 }; val[$1, $2] = $3 } }
+  END {
+    printf "nic"; for (j = 1; j <= nk; j++) printf "\t%s", keys[j]; printf "\n"
+    if (nn == 0) { nics[++nn] = "" }
+    for (a = 1; a <= nn; a++) {
+      printf "%s", nics[a]
+      for (j = 1; j <= nk; j++) { k = keys[j]; v = (k in host) ? host[k] : val[nics[a], k]; printf "\t%s", v }
+      printf "\n" } }'
+""".strip(),
+     "BIOS, board and CPU microcode; per NIC its driver, firmware, offloads, "
+     "rings, coalescing, pause and MTU (a row per NIC, without root)",
+     "ethtool on the hosts for the NIC settings"),
     ("sysctl", "command",
      "for k in net.core.somaxconn net.core.rmem_max net.core.wmem_max "
      "net.core.netdev_max_backlog net.ipv4.tcp_rmem net.ipv4.tcp_wmem "
@@ -240,7 +310,8 @@ echo 'containers_checked: yes'
 NAMES = [p[0] for p in CATALOGUE]
 
 GROUPS = {
-    "inventory": ["os", "disks", "mounts", "numa", "gpu", "packages"],
+    "inventory": ["os", "firmware", "disks", "mounts", "numa", "gpu",
+                  "packages"],
     "settings": ["sysctl", "numa"],
     "state": ["services", "listen", "containers", "pagecache"],
 }
