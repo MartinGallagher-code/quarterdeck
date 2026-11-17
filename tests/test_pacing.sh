@@ -241,6 +241,157 @@ print(fit_jobs(500, R(256, 256))[0])
     assert_eq "$out" "$(printf "(32, '')\n(32, '')\n4\n4\n43")"
 }
 
+# QD-035: a campaign's duration and windows, estimated before it starts
+
+# a fleet of 40 hosts, h01..h40, ten to a rack, and NAME's history: each
+# took SECONDS (an import named after the campaign, as a probe's run is)
+forty() {
+    : > hosts.txt
+    printf 'host,status,duration_s\n' > hist.csv
+    for i in $(seq -w 1 40); do
+        r=$(( (10#$i - 1) / 10 + 1 ))
+        echo "h$i rack=r$r ${3:-}" >> hosts.txt
+        echo "h$i,ok,$2" >> hist.csv
+    done
+    qd import hist.csv --name "$1" > /dev/null
+}
+
+t_estimate_by_hand() {
+    have_muster || { echo "  (no muster here: pip install binnacle)"; return 0; }
+    forty est 300
+    # one part of 40 hosts, 2 per rack at once: 8 at a time, so 5 passes
+    # of 5 minutes, 25 minutes, inside one 2-hour window
+    qd campaign new est -s hosts.txt --into 1 --max-per rack=2 \
+        --window "18:00-20:00" -- work > /dev/null
+    qd_rc campaign estimate est --start 2026-11-09T18:00 > out
+    assert_status "$QD_RC" 0
+    out="$(cat out)"
+    assert_contains "$out" "wall time  25m 00s (p10-p90 25m 00s - 25m 00s), from Mon 2026-11-09 18:00 to Mon 2026-11-09 18:25"
+    assert_contains "$out" "windows    1 window: Mon 11-09 18:00 until Mon 11-09 20:00"
+    assert_contains "$out" "2 hosts per rack at most (r1), of 2 allowed"
+    assert_contains "$out" "same hosts"
+    json="$(qd campaign estimate est --start 2026-11-09T18:00 --json)"
+    assert_contains "$json" '"wall_s": 1500.0'
+    assert_contains "$json" '"source": "same hosts"'
+    # a part a rack, an hour's window: 18:00, 18:25 and 18:50 start in
+    # the first (the third runs on to 19:15), the fourth waits a day
+    qd campaign new est2 -s hosts.txt --by rack --max-per rack=2 \
+        --window "18:00-19:00" -- work > /dev/null
+    printf 'host,status,duration_s\n' > h2.csv
+    for i in $(seq -w 1 40); do echo "h$i,ok,300" >> h2.csv; done
+    qd import h2.csv --name est2 > /dev/null
+    out="$(qd campaign estimate est2 --start 2026-11-09T18:00)"
+    assert_contains "$out" "2 windows: Mon 11-09 18:00 until Mon 11-09 19:00; Tue 11-10 18:00 until Tue 11-10 19:00"
+    assert_contains "$out" "to Tue 2026-11-10 18:25"
+    assert_contains "$out" "part rack-r3 runs 15m 00s past its window's close"
+    # two workers, each with caps of its own: two parts at once
+    out="$(qd campaign estimate est2 --start 2026-11-09T18:00 --workers 2)"
+    assert_contains "$out" "to Mon 2026-11-09 18:50"
+    assert_contains "$out" "2 hosts per rack at most"
+}
+
+t_estimate_unknown_and_assumed() {
+    have_muster || { echo "  (no muster here: pip install binnacle)"; return 0; }
+    printf 'a rack=r1\nb rack=r1\n' > hosts.txt
+    qd campaign new fresh -s hosts.txt --into 1 -- never-run-before > /dev/null
+    qd_rc campaign estimate fresh --start 2026-11-09T18:00 > out
+    assert_status "$QD_RC" 1
+    assert_contains "$(cat out)" "wall time  unknown: no history of this command for 1 part"
+    assert_contains "$(cat out)" "unknown"
+    assert_not_contains "$(cat out)" "0s"
+    qd_rc campaign estimate fresh --start 2026-11-09T18:00 --assume 300 --jobs 1 > out
+    assert_status "$QD_RC" 0
+    assert_contains "$(cat out)" "wall time  10m 00s"
+    assert_contains "$(cat out)" "assumed"
+    # the fleet's history covers a host with none of its own
+    printf 'host,status,duration_s\nother,ok,60\nb,failed,999\n' > h.csv
+    qd import h.csv --name fresh > /dev/null
+    out="$(qd campaign estimate fresh --start 2026-11-09T18:00 --jobs 1)"
+    assert_contains "$out" "wall time  2m 00s"
+    assert_contains "$out" "fleet"
+}
+
+t_power_budget() {
+    have_muster || { echo "  (no muster here: pip install binnacle)"; return 0; }
+    forty pw 300
+    # 400 W a host, 1000 W a rack: two at once a rack, as --max-per 2
+    qd campaign new pw -s hosts.txt --into 1 --max-watts rack=1000 \
+        --watts 400 -- work > out
+    assert_contains "$(cat out)" "power    at most 1000W per rack drawn at once (a host's draw: its watts attribute, else 400W)"
+    out="$(qd campaign estimate pw --start 2026-11-09T18:00)"
+    assert_contains "$out" "wall time  25m 00s"
+    assert_contains "$out" "800 watts per rack at most (r1), of 1000 allowed"
+    # a budget over all hosts, with each host's own draw
+    forty pw2 300 watts=250
+    qd campaign new pw2 -s hosts.txt --into 1 --max-watts 2.5kW -- work > /dev/null
+    out="$(qd campaign estimate pw2 --start 2026-11-09T18:00)"
+    # ten at a time: 4 passes, 20 minutes, 2500 W
+    assert_contains "$out" "wall time  20m 00s"
+    assert_contains "$out" "2500 watts at most, of 2500 allowed"
+    # an unknown draw is not zero, and a host bigger than its budget
+    # could never start: both refused before anything is kept
+    printf 'a rack=r1\nb rack=r1 watts=900\n' > small.txt
+    qd_rc campaign new x -s small.txt --into 1 --max-watts rack=800 -- work 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "a has no watts attribute"
+    qd_rc campaign new x -s small.txt --into 1 --max-watts rack=800 --watts 100 -- work 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "b draws 900W, more than the 800W budget per rack"
+    for bad in "--max-watts rack=lots" "--max-watts 0" "--watts 5 " "--max-watts r=1,r=2"; do
+        # shellcheck disable=SC2086
+        qd_rc campaign new x -s small.txt --into 1 $bad -- work > out 2>&1
+        assert_status "$QD_RC" 2
+    done
+    assert_not_contains "$(qd campaign ls)" " x "
+}
+
+t_power_budget_holds_in_a_run() {
+    have_muster || { echo "  (no muster here: pip install binnacle)"; return 0; }
+    seed
+    # 500 W each, 1000 W a pdu: p1's four hosts two at a time
+    qd campaign new hot -s hosts.txt --into 1 --max-watts pdu=1000 \
+        --watts 500 -- bash "$TEST_TMPDIR/work.sh" > /dev/null
+    qdf_rc campaign run hot --jobs 6 > out 2>&1
+    assert_status "$QD_RC" 0
+    assert_eq "$(grep -c '^start' "$TEST_TMPDIR/times")" "6"
+    assert_eq "$(max_overlap p1)" "2"
+    [ "$(max_overlap all)" -ge 3 ] || fail "only $(max_overlap all) ran at once"
+}
+
+t_estimate_against_a_real_run() {
+    have_muster || { echo "  (no muster here: pip install binnacle)"; return 0; }
+    seed
+    # one run first, so the store holds each host's duration
+    qd campaign new first -s hosts.txt --into 1 --max-per pdu=2 \
+        -- bash "$TEST_TMPDIR/work.sh" > /dev/null
+    qdf_rc campaign run first --jobs 6 > /dev/null 2>&1
+    qd campaign new second -s hosts.txt --into 1 --max-per pdu=2 \
+        -- bash "$TEST_TMPDIR/work.sh" > /dev/null
+    est="$(qd campaign estimate second --jobs 6 --json | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["wall_s"])')"
+    : > "$TEST_TMPDIR/times"
+    qdf_rc campaign run second --jobs 6 > /dev/null 2>&1
+    # the real wall time, first start to last end, within 50% (and a
+    # second) of the estimate: the hosts sleep 0.4 s, ssh's start-up is
+    # what varies
+    "$PY" - "$TEST_TMPDIR/times" "$est" <<'PYEOF' || fail "estimate $est s is not near the real run"
+import sys
+ts = [float(l.split()[1]) for l in open(sys.argv[1])]
+real, est = max(ts) - min(ts), float(sys.argv[2])
+print("real %.2f est %.2f" % (real, est))
+sys.exit(0 if abs(real - est) <= 0.5 * est + 1.0 else 1)
+PYEOF
+}
+
+t_dry_run_says_how_long() {
+    have_muster || { echo "  (no muster here: pip install binnacle)"; return 0; }
+    forty dry 300
+    qd campaign new dry -s hosts.txt --into 1 --max-per rack=2 -- work > /dev/null
+    install_fake_ssh
+    QD_NOW=2026-11-09T18:00 qdf_rc campaign run dry --dry-run > out 2>&1
+    assert_contains "$(head -3 out)" "# qd campaign estimate -- dry"
+    assert_contains "$(cat out)" "# wall time  25m 00s"
+}
+
 run_test "the gate, with a fake clock"           t_the_gate_with_a_fake_clock
 run_test "windows: open, closed, overnight, next" t_windows
 run_test "--max-per holds, and the campaign keeps it" t_max_per_holds_and_is_kept
@@ -249,4 +400,10 @@ run_test "--window holds parts back"             t_windows_hold_back_parts
 run_test "bad pacing is refused"                 t_bad_pacing_is_refused
 run_test "--rate spaces new connections"         t_rate_spaces_new_connections
 run_test "the open-file limit: raised, or fewer at once" t_the_open_file_limit_is_respected
+run_test "estimate: by hand, windows, workers"   t_estimate_by_hand
+run_test "estimate: unknown, assumed, the fleet's" t_estimate_unknown_and_assumed
+run_test "a power budget, and its estimate"      t_power_budget
+run_test "a power budget holds in a run"         t_power_budget_holds_in_a_run
+run_test "estimate against a real run"           t_estimate_against_a_real_run
+run_test "a dry run says how long"               t_dry_run_says_how_long
 finish

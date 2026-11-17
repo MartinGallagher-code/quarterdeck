@@ -5,6 +5,29 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.21.0 — 2026-11-17
+
+A campaign's duration and windows, estimated before it starts, and a
+power budget in watts (QD-035).
+
+### Added
+- **`qd campaign estimate NAME`**: the wall time (with a p10-p90
+  spread), the windows it needs and when each closes, any part that
+  overruns its window, and the most hosts (and watts) running at once
+  per capped attribute. Each host's duration is the median of its own
+  earlier runs of the command, else the fleet's, else `--assume
+  SECONDS`, and the source is named. A part with none is unknown, never
+  zero (exit 1). The parts go through the scheduler `campaign run` uses
+  (`pacing.Gate`), with `--jobs` and `--workers N`, and caps per worker.
+  `--start` sets the start time, and `--json` gives the figures as
+  JSON. `campaign run --dry-run` prints the same summary first.
+- **A power budget**: `--max-watts [ATTR=]W` on `campaign new` and
+  `run` caps the watts drawn at once per ATTR value (`pdu=7200`) or in
+  all (`30000`). A host's draw is its `watts` attribute, else `--watts
+  W`. A host with an unknown draw, or one bigger than its budget, is
+  refused before anything starts. The budget is kept with the campaign
+  and enforced by the same gate as `--max-per`.
+
 ## 0.19.0 — 2026-11-17
 
 `qd check` judges a run against an earlier run, not only against fixed

@@ -919,11 +919,58 @@ qd campaign status burnin   # at most 4 per pdu; ramp 6/min; windows ... (closed
   Saturday morning), no days for every day. `campaign run` starts a part
   only inside a window; outside one it starts nothing, says when the next
   opens, and exits 0. A part already running finishes.
+- **`--max-watts [ATTR=]W`** (repeatable, or `pdu=7200,rack=12kW`): a
+  power budget. No more than W watts are drawn at once by the hosts that
+  share a value of ATTR, or by all of them with no ATTR (`--max-watts
+  30000`). A host's draw is its `watts` attribute in the host list
+  (`node07 pdu=p3 watts=450`), else **`--watts W`**. A host with neither
+  is refused before anything starts (an unknown draw is not zero), and
+  so is a host that draws more than a budget it falls under, since it
+  could never start. A host with no ATTR shares one budget with the
+  others that lack it, as under `--max-per`.
 - Flags given to `campaign run` override the kept ones for that run.
 
-The caps and the ramp hold within one worker. Two terminals running one
+The caps, the power budget and the ramp hold within one worker. Two terminals running one
 campaign each keep their own count; muster still gives them different
 parts.
+
+### How long it will take: `qd campaign estimate`
+
+```bash
+qd campaign estimate burnin                       # wall time, windows, the load on the fleet
+qd campaign estimate burnin --workers 2 --start 2026-11-20T18:00
+qd campaign estimate burnin --assume 1800 --json  # where nothing has run it yet
+qd campaign run burnin --dry-run                  # the same figures first, then each part
+```
+
+Before a campaign starts, `estimate` works out how long it will take
+from what the store already holds and the campaign's own pacing:
+
+- **Each host's duration** is the median `duration_s` of its own earlier
+  runs of the campaign's command, or of runs named after the campaign (its
+  parts, a probe of that name), counting only hosts that answered ok.
+  Without any, it is the median over every host that ran it, then
+  `--assume SECONDS`. The table names the source for each part (`same
+  hosts`, `fleet`, `assumed`) and how many values it rests on. A part
+  none of them covers is **unknown**: the wall time is then unknown, never
+  zero, and the exit status is 1.
+- **The scheduler** is the one `campaign run` uses: `pacing.Gate` with the
+  campaign's `--max-per` caps, power budget and ramp, `--jobs` hosts at
+  a time. With `--workers N` (1 by default), N workers take parts as
+  muster hands them out, each with its own caps, as real workers do.
+- **The windows** gate when a part starts, as in a run. A part started
+  inside a window runs to its end, and the estimate says by how much it
+  overruns the close. A run stops when its window closes, and the
+  estimate assumes `campaign run` is started again when the next window
+  opens.
+- **The result**: the wall time, with a p10-p90 spread from each host's
+  own p10 and p90; the windows it takes, with when each opens and closes;
+  the most hosts running at once per capped attribute, and the most
+  watts per power budget, against what is allowed. `--json` gives the
+  same figures. `--start` sets the start time (now by default).
+
+`campaign run --dry-run` prints the same summary, as `#` lines, above
+what each part would run.
 
 Two workers filing into one store at the same moment rely on provost's
 store lock, and that lock is `mkdir`. Where `mkdir --version` says uutils
