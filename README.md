@@ -940,6 +940,7 @@ such a machine, run one worker per store, or switch the machine to GNU's
 qd compare facts -c cpu.busy_pct --last 5        # the last five runs of facts
 qd compare monday tuesday latest -c mbps         # these three
 qd compare --group burnin -c temp_c              # a campaign's parts, a design's points
+qd compare --campaigns burnin-oct burnin-nov     # two whole campaigns, host by host
 qd compare kernel --last 10                      # no column: every numeric median
 ```
 
@@ -958,6 +959,39 @@ is the host-by-run table. The exit status is 1 when anything changed, as
 with `diff`. `qd web` shows the same comparison on its Compare tab. Runs
 from other stores go in as `RUN@STORE` (see *Runs from different stores
 side by side*); `--last N@STORE` takes the last N from that store.
+
+### Two whole campaigns: `qd compare --campaigns A B`
+
+```bash
+qd compare --campaigns burnin-oct burnin-nov            # every column, host by host
+qd compare --campaigns burnin-oct burnin-nov -c mbps --drift 3
+qd compare --campaigns burnin-oct burnin-nov --format csv -o both.csv
+```
+
+`--group` lines up one campaign's parts, and `--baseline` holds runs
+against one run. `--campaigns A B` takes two whole campaigns (or designs)
+and puts them side by side (QD-036):
+
+- **Each side** is every part of its campaign, the latest run of each
+  part (a part run again after `campaign retry` counts once, as it now
+  stands), stacked into one table. `--where` and `--table` apply to every
+  run.
+- **Key by key** (the host, or `test,target` for viewer results, as `qd
+  compare` and `qd diff` match them; `--key` to choose), each numeric
+  column's value in A and in B and the change. The value is a key's
+  median (`--agg`), computed by the same function `qd compare` uses, so
+  the two cannot disagree. With `-c`, only that column.
+- **Flagged**: a change past `--drift` percent (5); a host in only one
+  campaign (`only in A`, `only in B`); a value measured in one campaign
+  and blank in the other. The text lists the flagged rows (`--limit`,
+  30; 0 for all), then counts the hosts, tests and numeric columns that
+  are in only one campaign.
+- `--format csv`, `tsv`, `json`, `ndjson`, `md`: every key and column,
+  `host,column,A,B,change_pct,flags`.
+
+The exit status is 1 when anything moved, or is in only one campaign; 0
+when they agree, as a campaign compared with itself does. `--baseline`,
+`--group`, `--last` and `--peers` do not go with `--campaigns`.
 
 ### Where a slow slide started: `qd changes`
 

@@ -2417,6 +2417,8 @@ def cmd_floor(args):
 
 def cmd_compare(args):
     from . import compare as comparemod
+    if args.campaigns:
+        return compare_campaigns(args)
     refs, last, st = list(args.refs), args.last, None
     if last is not None:
         m = re.match(r"^([0-9]+)(?:@(.+))?$", last)
@@ -2447,6 +2449,81 @@ def cmd_compare(args):
          else comparemod.wide_table(res), lines)
     return 1 if any(flags for _, _, flags in res.keys) or \
         any(flags for _, _, flags in res.peer_rows) else 0
+
+
+def compare_campaigns(args):
+    """compare --campaigns A B: two whole campaigns (or designs), every
+    part of each, side by side key by key (QD-036)."""
+    from . import compare as comparemod
+    a, b = args.campaigns
+    for flag, v in (("--baseline", args.baseline), ("--group", args.group),
+                    ("--last", args.last), ("--peers", args.peers)):
+        if v:
+            die("--campaigns compares two campaigns as wholes: leave %s out"
+                % flag)
+    if args.refs:
+        die("--campaigns A B names what is compared: no RUN as well")
+    st = home_store(args)
+    sides = []
+    for name in (a, b):
+        es = comparemod.campaign_runs(st, name)
+        ts = [e.load(args.table) for e in es]
+        if args.where:
+            ts = [t.derive(rows=query.where(t, args.where)) for t in ts]
+        sides.append((name, es, comparemod.stacked(ts, name)))
+    key = [k.strip() for k in args.key.split(",")] if args.key else None
+    res = comparemod.campaigns(sides[0][2], sides[1][2], args.column, key,
+                               args.drift, args.agg)
+    t = comparemod.campaign_table(res)
+    w = width_of(args)
+    lines = ["%s compare --campaigns -- A %s against B %s, by %s (a change: "
+             "a median moved past %s%%)" % (
+                 PROG, a, b, ",".join(res.key), stats.fmt_num(res.drift))]
+    for lab, (name, es, tt) in zip("AB", sides):
+        lines.append("  %s  %s: %s, %s, %s" % (
+            lab, name, plural(len(es), "run"), plural(len(tt.rows), "row"),
+            plural(len(comparemod._keys_of(tt, res.key)),
+                   ",".join(res.key))))
+    for n in res.notes:
+        lines.append("  note  %s" % n)
+    lines.append("")
+    flagged = [r for r in res.rows if r[-1]]
+    if flagged:
+        lim = len(flagged) if args.limit == 0 else args.limit
+        lines.extend(render.render_rows(t.columns, flagged[:lim], width=w,
+                                        indent="  "))
+        if len(flagged) > lim:
+            lines.append("  ... %d more: --limit 0 lists every one"
+                         % (len(flagged) - lim))
+        lines.append("")
+    lines.append("  %d of %s moved past %s%%, across %s" % (
+        res.changed, plural(len(res.rows), "value"),
+        stats.fmt_num(res.drift), plural(len(res.columns), "column")))
+    for lab, ks in zip("AB", res.only_keys):
+        if ks:
+            lines.append("  only in %s: %s %s" % (
+                lab, plural(len(ks), ",".join(res.key)),
+                ", ".join(",".join(k) for k in ks[:8]) +
+                (" ..." if len(ks) > 8 else "")))
+    for lab, ts in zip("AB", res.tests):
+        if ts:
+            lines.append("  tests only in %s: %s" % (lab, ", ".join(ts[:8])
+                                                      + (" ..." if len(ts) > 8
+                                                         else "")))
+    for lab, cs in zip("AB", res.only_cols):
+        if cs:
+            lines.append("  columns only in %s: %s" % (lab, ", ".join(cs[:8])
+                                                        + (" ..." if len(cs)
+                                                           > 8 else "")))
+    lines.extend(next_steps([
+        ("%s compare --campaigns %s %s -c COLUMN" % (PROG, a, b),
+         "one column, every key"),
+        ("%s compare --campaigns %s %s --format csv" % (PROG, a, b),
+         "every value, both sides, for a spreadsheet")]))
+    emit(args, t, lines)
+    differ = res.changed or any(res.only_keys) or any(res.tests) or \
+        any(res.only_cols) or any(r[-1] for r in res.rows)
+    return 1 if differ else 0
 
 
 def qualified_name(args):
@@ -5004,6 +5081,10 @@ def build_parser():
                     "--store or STORE")
     sp.add_argument("--group", metavar="NAME",
                     help="every run of a campaign or a design")
+    sp.add_argument("--campaigns", nargs=2, metavar=("A", "B"),
+                    help="two whole campaigns (or designs) side by side: "
+                    "every part of each, host by host, each column's value "
+                    "in A and in B and the change")
     sp.add_argument("--baseline", metavar="RUN|NAME",
                     help="what the others are measured against: a run (the "
                     "first), or a qualified baseline's NAME (qd baseline "

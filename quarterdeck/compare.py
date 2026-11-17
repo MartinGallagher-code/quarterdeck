@@ -405,3 +405,132 @@ def num(v):
     if isinstance(v, int):
         return str(v)
     return fmt_num(v)
+
+
+# ---------------------------------------------------------------------------
+# Two whole campaigns side by side (QD-036)
+# ---------------------------------------------------------------------------
+
+CAMPAIGN_COLUMNS = ["column", "A", "B", "change_pct", "flags"]
+
+
+def campaign_runs(st, name):
+    """A campaign's (or a design's) runs, the latest of each part: a part
+    run again (retry) counts once, as it stands now.  Oldest first."""
+    es = [e for e in st.entries() if e.meta.get("group") == name]
+    if not es:
+        die("no runs in campaign %r (a campaign or a design's name: qd "
+            "campaign ls)" % name)
+    latest, order = {}, []
+    for e in es:
+        p = e.meta.get("part") or e.id
+        if p not in latest:
+            order.append(p)
+        latest[p] = e
+    return [latest[p] for p in order]
+
+
+def stacked(tables, name):
+    """One table of several runs' rows, their columns put together."""
+    cols = []
+    for t in tables:
+        for c in t.columns:
+            if c not in cols:
+                cols.append(c)
+    rows = []
+    for t in tables:
+        idx = [t.columns.index(c) if c in t.columns else None for c in cols]
+        for r in t.rows:
+            rows.append([r[i] if i is not None else "" for i in idx])
+    return Table(cols, rows, name)
+
+
+class CampaignDiff(object):
+    def __init__(self):
+        self.key = []
+        self.columns = []           # compared
+        self.only_cols = ([], [])   # numeric columns in A only, B only
+        self.only_keys = ([], [])   # keys in A only, B only
+        self.tests = ([], [])       # tests in A only, B only (results)
+        self.rows = []              # [key..., column, A, B, change, flags]
+        self.notes = []
+        self.drift = 5.0
+        self.changed = 0
+
+
+def _keys_of(t, key):
+    ki = [t.index(k) for k in key]
+    out = []
+    seen = set()
+    for r in t.rows:
+        k = tuple(r[i] for i in ki)
+        if any(x.strip() for x in k) and k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out
+
+
+def campaigns(ta, tb, column=None, key=None, drift=5.0, agg="median"):
+    """Campaign A's rows against campaign B's, key by key (host, or test
+    and target), each numeric column's value in A and in B and the change
+    -- the per-key reduction and the drift rule `compare` itself applies
+    to two runs, called for each column, so the two cannot disagree."""
+    res = CampaignDiff()
+    res.drift = drift
+    res.key = _key_for([ta, tb], key)
+    if column:
+        ta.index(column)
+        tb.index(column)
+        cols = [ta.colname(column)]
+    else:
+        cols = common_numeric([ta, tb])
+        na, nb = common_numeric([ta, ta]), common_numeric([tb, tb])
+        res.only_cols = ([c for c in na if c not in nb],
+                         [c for c in nb if c not in na])
+        if not cols:
+            res.notes.append("no numeric column both campaigns measured: "
+                             "name one with -c")
+    res.columns = cols
+    ka, kb = _keys_of(ta, res.key), _keys_of(tb, res.key)
+    sa, sb = set(ka), set(kb)
+    res.only_keys = ([k for k in ka if k not in sb],
+                     [k for k in kb if k not in sa])
+    if ta.has("test") and tb.has("test"):
+        ta_t, tb_t = set(ta.values("test")), set(tb.values("test"))
+        res.tests = (sorted(x for x in ta_t - tb_t if x.strip()),
+                     sorted(x for x in tb_t - ta_t if x.strip()))
+    for c in cols:
+        r = compare([ta, tb], c, res.key, drift, agg)
+        for n in r.notes:
+            if n not in res.notes:
+                res.notes.append(n)
+        for k, vals, _ in r.keys:
+            a, b = vals
+            flags = []
+            if k not in sb:
+                flags.append("only in A")
+            elif k not in sa:
+                flags.append("only in B")
+            elif a is None and b is None:
+                continue
+            elif a is None:
+                flags.append("not measured in A")
+            elif b is None:
+                flags.append("not measured in B")
+            d = pct(a, b)
+            if a is not None and b is not None and d is not None and \
+                    abs(d) > drift:
+                flags.append("drift %+.1f%%" % d
+                             if d not in (float("inf"), float("-inf"))
+                             else "from 0")
+                res.changed += 1
+            res.rows.append(list(k) + [c, num(a), num(b),
+                                       ("%.1f" % d) if d not in (
+                                           None, float("inf"),
+                                           float("-inf")) else "",
+                                       "; ".join(flags)])
+    return res
+
+
+def campaign_table(res):
+    return Table(list(res.key) + CAMPAIGN_COLUMNS, res.rows, "campaigns")

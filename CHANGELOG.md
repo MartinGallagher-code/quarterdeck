@@ -5,6 +5,20 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.22.0 — 2026-11-17
+
+Two whole campaigns side by side (QD-036).
+
+### Added
+- **`qd compare --campaigns A B`**: every part of each campaign (or
+  design), the latest run of each part, stacked and matched key by key
+  (host, or test and target), with each numeric column's value in A, in
+  B and the change, as `qd compare` reduces and measures it. Changes past
+  `--drift`, hosts in only one campaign, and values measured on one side
+  only are flagged; tests and numeric columns found in only one are
+  listed. `-c`, `--key`, `--agg`, `--where`, `--table` and every format
+  apply. Exit 1 when anything moved or is in only one; 0 when they agree.
+
 ## 0.19.0 — 2026-11-17
 
 `qd check` judges a run against an earlier run, not only against fixed
