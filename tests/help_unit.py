@@ -116,7 +116,8 @@ def case_hints(mutation=None):
     if mutation == "flag":
         hints = [(q, c.replace("--servers", "--srevers")) for q, c in hints]
     elif mutation == "verb":
-        hints = [(q, c.replace("qd outliers", "qd outlyers")) for q, c in hints]
+        hints = [(q, c.replace("qd outliers", "qd outlyers"))
+                 for q, c in hints]
     elif mutation is not None:
         sys.stderr.write("help_unit.py: no such mutation: %s\n" % mutation)
         return 2

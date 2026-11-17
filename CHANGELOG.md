@@ -5,6 +5,38 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.25.3 — 2026-11-18
+
+Every README pointer in qd's code names a section the README has, and a
+check keeps it so (QD-046).
+
+### Fixed
+- **A pointer into the README had gone stale.** `quarterdeck/exporters.py`
+  sent readers to "Sending a run to Splunk or Prometheus", a section since
+  renamed "Into Splunk, Prometheus or a notebook". It names the section as
+  it is now.
+- **The five pointers are written one way:** `README: "Section"`, on one
+  line. `qd import --map` and `qd join --map` now point at "Telemetry
+  exports", the part of `qd join`'s section that explains a column map;
+  `qd check --against` at "Against requirements: qd check"; `policy.py` at
+  "Allow-lists and read-only", as before.
+- **`tests/check.sh --help` left out the last line of its own header.**
+  It prints all of it.
+
+### Tests
+- **`tests/check_readme_pointers.py`** (new), run by `tests/check.sh` and
+  by `tests/test_help.sh`: every `README` in `quarterdeck/*.py`, the page's
+  files and `qd` is a pointer of that shape, and names a heading of the
+  README (compared without backticks, case or runs of spaces; a `#`
+  comment inside an example's code block is not a heading). It is also
+  run on a copy with the stale pointer put back, with a heading renamed,
+  with a pointer at an example's comment, in the old `(README, "X")`
+  style and cut over two lines, so it is shown to fail on each. Its list
+  of manual files is one line, for when the manual has more than one.
+
+0.25.1 and 0.25.2 are in the same pull request and are not published on
+their own.
+
 ## 0.25.2 — 2026-11-18
 
 `qd hints` is tested: it prints every hint, and every command it
