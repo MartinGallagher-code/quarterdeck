@@ -49,4 +49,4 @@
 ==> demo-r2n11 ok 2.22 <==
 {"cpu.busy_pct": 12.0, "cpu.count": 32, "cpu.iowait_pct": 1.9, "cpu.load1": 3.79, "fs.fullest_pct": 65.9, "mem.available_pct": 72.6, "mem.total_kb": 263979040, "net.tcp_retrans_pct": 0.017, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 3781362, "therm.max_temp_c": 48}
 ==> demo-r2n12 ok 2.19 <==
-{"cpu.busy_pct": 10.8, "cpu.count": 32, "cpu.iowait_pct": 1.7, "cpu.load1": 3.59, "fs.fullest_pct": 61.4, "mem.available_pct": 71.2, "mem.total_kb": 263979040, "net.tcp_retrans_pct": 0.05, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 2147479, "therm.max_temp_c": 52}
+{"cpu.busy_pct": 11.0, "cpu.count": 32, "cpu.iowait_pct": 1.7, "cpu.load1": 3.59, "fs.fullest_pct": 61.4, "mem.available_pct": 71.2, "mem.total_kb": 263979040, "net.tcp_retrans_pct": 0.05, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 2147479, "therm.max_temp_c": 52}

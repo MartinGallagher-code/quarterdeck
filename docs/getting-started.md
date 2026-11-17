@@ -185,7 +185,7 @@ qd stats -- 20261113-080000-demo_facts:data by sku (24 rows): 2 groups
 
 sku      n   cpu.busy_pct_mean  cpu.busy_pct_median  cpu.busy_pct_min  cpu.busy_pct_max
 compute  16              44.55                 45.5              37.8              49.4
-storage   8              11.47                 11.3               9.5              14.2
+storage   8               11.5                 11.3               9.5              14.2
 ```
 
 ## 2. Did it get worse?
