@@ -404,8 +404,8 @@ class Reuse(object):
 
 class Runner(object):
     """The ssh launcher: one ssh per host, scp for pushed files.  The
-    others (quarterdeck/launch.py: srun, pdsh, clush) are subclasses that
-    change how a host is reached and nothing about what is kept."""
+    others (quarterdeck/launch.py: srun, pdsh, clush, local) are subclasses
+    that change how a host is reached and nothing about what is kept."""
 
     via = "ssh"
     # pdsh and clush answer for every host in one call (run_many)
@@ -531,6 +531,14 @@ class Runner(object):
         return "sh -c %s; %s" % (shlex.quote(MARK_SH % self.mark),
                                  self.wrap(command))
 
+    def _popen(self, argv, src):
+        """Start one call -- an ssh, an scp -- its output to pipes and its
+        stdin from `src`, an open file, or nothing.  --via local starts the
+        command itself here, in a session of its own (launch.LocalRunner)."""
+        return subprocess.Popen(argv, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                stdin=src or subprocess.DEVNULL)
+
     def _exec(self, argv, timeout, stdin=None):
         """Bounded capture: one host in a log storm must not sink the run.
         `stdin` is a local file fed to the command (a script for
@@ -549,9 +557,7 @@ class Runner(object):
         src = None
         try:
             src = open(stdin, "rb") if stdin else None
-            p = subprocess.Popen(argv, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE,
-                                 stdin=src or subprocess.DEVNULL)
+            p = self._popen(argv, src)
         except OSError as exc:
             # ssh (or scp) itself would not start: no host was reached
             return 255, "", "cannot run %s: %s" % (argv[0], exc), None

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Martin J. Gallagher
-"""How the hosts are reached: ssh, or srun, pdsh or clush (`--via`, QD_VIA).
+"""How the hosts are reached: ssh, or srun, pdsh, clush or local (`--via`,
+QD_VIA).
 
 Every launcher keeps ssh's contract (fleet.Runner, which these extend):
 one Result per host, in host-list order, with the same outcomes -- a host
@@ -18,6 +19,10 @@ pdsh   one pdsh for every host (`-w a,b,c`, `-f` = --jobs).  pdsh puts
        qd adds after the command gives each host's exit status, which pdsh
        does not.  Files go by pdcp, stdin as a file pushed beside them.
 clush  the same through ClusterShell's clush, files by `clush --copy`.
+local  this machine, without ssh (QD-037): `sh -c CMD` here, as sshd would
+       start it on a host.  The host a command runs on when nothing names
+       any; only this machine (localhost, 127.0.0.1, its hostname) can be
+       named with it.  Files are copied with cp, stdin goes straight in.
 
 qd never asks Slurm for an allocation: --via srun runs in the one it is
 given.
@@ -30,15 +35,17 @@ import secrets
 import selectors
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
+import threading
 import time
 
 from . import fleet
 from .common import die
-from .hosts import Host, expand_range, split_commas
+from .hosts import Host, expand_range, is_local, split_commas
 
-VIAS = ("ssh", "srun", "pdsh", "clush")
+VIAS = ("ssh", "srun", "pdsh", "clush", "local")
 
 # what pushed stdin is called in the run's directory, for pdsh and clush
 STDIN_NAME = ".qd-stdin"
@@ -631,11 +638,189 @@ class FanRunner(fleet.Runner):
 
 
 # ---------------------------------------------------------------------------
+# local: this machine, without ssh (QD-037)
+# ---------------------------------------------------------------------------
+
+# The commands --via local has started and not yet seen end, which
+# stop_local() stops; once it has, no host starts (a try --retries would
+# make, say) until the next command makes a LocalRunner.
+_LIVE = set()
+# reentrant: stop_local() runs from a signal handler too, on the main
+# thread, which may hold it at that moment
+_LIVE_LOCK = threading.RLock()
+_STOPPING = [False]
+
+# seconds stop_local() gives a group after TERM before KILL
+LOCAL_GRACE = 2.0
+
+
+class LocalRunner(fleet.Runner):
+    """This machine, reached without ssh: `sh -c CMD` here, as sshd starts
+    it on a host -- in a session of its own, so the group MARK_SH names is
+    the command's, and one qd gives up on is stopped with everything it
+    started (QD-026) by STOP_SH, run here too.  Pushed files are copied
+    with cp into the run's own directory, which only that run removes
+    (guarded_rm), as over ssh.
+
+    Ctrl-C reaches qd and not the command, which is in a session of its
+    own as a host's is; so qd stops it itself (stop_local), rather than
+    leave it running here or wait for it."""
+
+    via = "local"
+
+    def __init__(self, **kw):
+        fleet.Runner.__init__(self, **kw)
+        self._mine = threading.local()
+
+    def ssh_argv(self, host, command):
+        return ["sh", "-c", command]
+
+    def needs(self, pushing, stdin=False):
+        return ["sh"] + (["cp"] if pushing else [])
+
+    def check_hosts(self, hosts):
+        """This machine, once: a host anywhere else is ssh's (or pdsh's,
+        or srun's) to reach."""
+        for h in hosts:
+            if h.port:
+                return ("%s has a port (%d): --via local runs on this "
+                        "machine, with no ssh to give it to" % (h.name,
+                                                               h.port))
+            if not is_local(h.addr):
+                return ("%s is not this machine: --via local runs here "
+                        "only (localhost, 127.0.0.1 or this machine's "
+                        "name); reach %s with ssh (--via ssh)"
+                        % (h.name if h.name == h.addr
+                           else "%s (%s)" % (h.name, h.addr), h.name))
+        if len(hosts) > 1:
+            return ("%s are all this machine: --via local runs on it once, "
+                    "as one host" % ", ".join(h.name for h in hosts))
+        return None
+
+    def run_one(self, host, command, push=None, cleanup=True, pass_no=1,
+                stdin=None):
+        if _STOPPING[0]:
+            return fleet.not_run(host, pass_no, "interrupted before it "
+                                 "started")
+        return fleet.Runner.run_one(self, host, command, push, cleanup,
+                                    pass_no, stdin)
+
+    def _popen(self, argv, src):
+        with _LIVE_LOCK:
+            p = subprocess.Popen(argv, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE,
+                                 stdin=src or subprocess.DEVNULL,
+                                 start_new_session=True)
+            _LIVE.add(p)
+        self._mine.p = p
+        return p
+
+    def _capture(self, argv, timeout, stdin=None, marked=False):
+        self._mine.p = None
+        try:
+            rc, out, err, group = fleet.Runner._capture(self, argv, timeout,
+                                                        stdin, marked)
+        finally:
+            p = getattr(self._mine, "p", None)
+            if p is not None:
+                with _LIVE_LOCK:
+                    _LIVE.discard(p)
+        if isinstance(rc, (fleet.TimedOut, fleet.Flooded)):
+            return rc, out, err, group
+        if rc == 255 and err.startswith("cannot run "):
+            # sh itself would not start
+            return fleet.Unlaunched(255), out, err, group
+        if rc < 0:
+            # ended by a signal: as a shell says it, 128 + the signal
+            rc = 128 - rc
+        return rc, out, err, group
+
+    def _copy(self, host, files):
+        """The files into this run's directory, executable: cp, then the
+        chmod an scp is followed by."""
+        rc, _, err = self._exec(["cp", "--"] + list(files) +
+                                [self.work_dir + "/"], max(60, self.timeout))
+        if rc != 0:
+            return rc, err
+        names = " ".join(shlex.quote("%s/%s" % (self.work_dir,
+                                                os.path.basename(f)))
+                         for f in files)
+        rc, _, err = self._exec(self.argv(host, "chmod +x %s" % names), 60)
+        return rc, err
+
+    def outcome_of(self, rc, out, err):
+        if isinstance(rc, fleet.TimedOut):
+            return fleet.TIMEOUT
+        if isinstance(rc, fleet.Unlaunched):
+            return fleet.UNREACHABLE
+        return fleet.FAILED if rc != 0 else fleet.OK
+
+
+def stop_local(grace=None):
+    """Every command --via local started and has not seen end, stopped
+    with its process group: TERM, then KILL `grace` seconds on.  No host
+    starts after (cleaning up behind one still does).  The CLI calls it
+    when Ctrl-C comes, and however a command ends.  -> how many were
+    running"""
+    with _LIVE_LOCK:
+        _STOPPING[0] = True
+        live = [p for p in _LIVE if p.poll() is None]
+    if not live:
+        return 0
+    for p in live:
+        _signal_group(p.pid, signal.SIGTERM)
+    deadline = time.monotonic() + (LOCAL_GRACE if grace is None else grace)
+    while time.monotonic() < deadline and any(
+            _signal_group(p.pid, 0) for p in live):
+        time.sleep(0.05)
+    for p in live:
+        _signal_group(p.pid, signal.SIGKILL)
+    return len(live)
+
+
+def _signal_group(pgid, sig):
+    """`sig` to the group; whether any of it was there to get it.  Never
+    0 or 1, which are not a command's group."""
+    if pgid <= 1:
+        return False
+    try:
+        os.killpg(pgid, sig)
+        return True
+    except OSError:
+        return False
+
+
+def stop_local_on_signals():
+    """A TERM or HUP still ends qd at once, as it always has, but stops
+    the commands --via local has running first: they are in sessions of
+    their own, so nothing else would.  A signal already handled or
+    ignored (nohup, --reuse's) is left as it is.  Only the main thread can
+    set a handler; elsewhere this does nothing."""
+    def handler(signum, frame):
+        stop_local(0.5)
+        os._exit(128 + signum)
+
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            if signal.getsignal(sig) == signal.SIG_DFL:
+                signal.signal(sig, handler)
+        except (ValueError, OSError):
+            pass
+
+
+# ---------------------------------------------------------------------------
 
 def make(via, **kw):
     """The launcher for --via, built from the Runner keywords."""
     if via == "ssh":
         return fleet.Runner(**kw)
+    if via == "local":
+        _STOPPING[0] = False
+        stop_local_on_signals()
+        return LocalRunner(**kw)
     if via == "srun":
         return SrunRunner(alloc=need_allocation(allocation()), **kw)
     if via in ("pdsh", "clush"):
