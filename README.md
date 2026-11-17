@@ -812,15 +812,42 @@ qd show facts --cols host,cpu.busy_pct,mem.available_pct
 | `health` | dcprobe, from here | load, CPU, iowait, steal, memory, swap, disk, NIC link and drops, kernel errors, inventory |
 | `preflight` | dcprobe, from here | ssh, skew, nofile, bind, tools: before a test |
 | `reach` | binnacle, from here | `reachable --csv`: ping and ssh, and why not |
+| `firmware` | a shell command | BIOS, board, CPU microcode; per NIC its driver, firmware, offloads, rings, coalescing, pause and MTU (below) |
 | `os`, `sysctl`, `services`, `gpu`, `mounts`, `disks`, `packages`, `numa`, `pagecache`, `listen`, `containers` | a shell command | what none of the instruments measures |
 
-Groups: `inventory` (os, disks, mounts, numa, gpu, packages), `settings`
+Groups: `inventory` (os, firmware, disks, mounts, numa, gpu, packages), `settings`
 (sysctl, numa), `state` (services, listen, containers, pagecache). A
 binnacle tool is sent to `python3 -` on each host over ssh's stdin, as
 why-slow's own `--ssh` sends itself: one connection per host, nothing
 copied there and nothing left behind. The hosts need python3, and binnacle
 needs to be installed here, nowhere else. A probe whose tool isn't here
 says what to install before it contacts a host.
+
+**`firmware`** reads what a host's firmware and NICs are set to, without
+root, so that the one host configured differently can be found (`qd
+outliers firmware --categorical`, below). One row per NIC (an interface
+with a device behind it, so not `lo`, a bridge or a veth), with the host's
+own fields beside each:
+
+- `bios_vendor`, `bios_version`, `bios_date`, `bios_release`,
+  `board_vendor`, `board_name`, `board_version`, `product_name`,
+  `product_version`, `product_family`, `sys_vendor`: the world-readable
+  files in `/sys/class/dmi/id`. Serials and UUIDs are root-only and are
+  never asked for. A file that is there but unreadable says `needs root`;
+  a host with no DMI at all (many VMs) says `dmi: absent`.
+- `microcode` and `cpu_model`, from `/proc/cpuinfo`.
+- per NIC: `mtu` (from `/sys/class/net`), and from ethtool `driver`,
+  `driver_version`, `firmware_version`, `bus_info` (`-i`), every offload
+  as `offload.NAME` (`-k`, `[fixed]` dropped), `ring.rx` and
+  `ring_max.rx` and the rest (`-g`), `coalesce.NAME` (`-c`), and
+  `pause.NAME` (`-a`). Every `key: value` line ethtool prints is kept, so
+  a driver's own settings come through, and what a driver cannot say
+  (virtio has no firmware version and no coalescing) is left blank: not
+  measured. No MAC address is read.
+- `ethtool: not installed` when it is not on the host: the DMI and
+  microcode rows are filed all the same.
+
+BMC firmware needs ipmitool and root, and is not read.
 
 The probes you name run together. Every host is asked every probe at once,
 `--jobs` at a time in all. Every run is then filed by one provost call, in
@@ -1067,6 +1094,43 @@ one; the old one stays in the store's history.
 median and spread rather than the fleet's, so a host that is ordinary
 fleet-wide but far from its own SKU is found, and one that only looks odd
 because its SKU is different is not.
+
+### The odd one out by value: `qd outliers --categorical`
+
+A firmware version, a driver, an offload left on, an MTU: these are not
+far from a median, they are simply different. `qd outliers RUN
+--categorical` reads them as binnacle's `agree` reads answers (QD-034):
+
+```bash
+qd probe firmware -s hosts.txt                     # what every host and NIC is set to
+qd outliers firmware --categorical                 # who differs from its rack-mates
+qd outliers firmware bios_version,mtu --categorical --peers sku
+```
+
+- **The groups** are the hosts' `rack` (the attribute qd puts on every
+  row), or `--peers NAME`'s groups, or with neither the whole fleet. What
+  they are grouped by is not itself compared.
+- **Within each group, each column**: the value more than half of the
+  hosts that measured it share is the majority, and every host with
+  another value is named, with the majority beside it (`differs`). With no
+  such value -- one against one, two against two against one -- the
+  column is **split**: every host and its value is listed, and none is
+  called the odd one.
+- **Like with like.** Where a host has several rows (one per NIC), each
+  is compared with the same NIC on its rack-mates (`--match COLS`; `nic`
+  by default). A value the same on every row of a host, its BIOS, is
+  compared once a host.
+- **Blank is not measured**: a host that measured nothing in a column is
+  neither a vote for the majority nor an odd one out, and is named apart.
+  A group with fewer than two hosts that measured a column says nothing.
+- **What is meant to differ is left out**: serials, UUIDs, MAC and IP
+  addresses, host names, uptime, and bookkeeping (`rc`, `duration_s`,
+  ...). Name a column as `COL` (a comma list) to compare exactly those.
+
+The table is `group, match, column, host, value, majority, agree,
+measured, verdict` (no `match` when every host has one row). The exit
+status is 1 when any host differs or any column splits, as with `qd
+compare`, so a CI job can gate on it; 0 when every group agrees.
 
 **A qualified baseline** is set from one or more runs (named, `RUN --last
 N`, or `--group CAMPAIGN`) and kept as qd's own table, `qd.baselines`:
@@ -1528,6 +1592,7 @@ qd freq latest A                              # who said what
 qd hist latest rtt_p99 --bins 20
 qd outliers latest mbps                       # far from the median, by MAD
 qd outliers latest mbps --peers sku           # far from its own peer group's
+qd outliers firmware --categorical            # differs from its rack-mates, by value
 qd stats latest mbps --peers sku              # per peer group (qd peers)
 qd pivot latest --rows host --cols peer --values pps
 qd trend latest load1 --by host --over ts

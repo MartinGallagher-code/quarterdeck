@@ -218,6 +218,114 @@ t_probes_stop_and_retry_like_a_run() {
     assert_contains "$(qdf probe os -s hosts.txt --max-fail 1 --dry-run 2>&1)" "plan: --max-fail 1"
 }
 
+# QD-034: the firmware probe, read from a fake host's own /sys, /proc and
+# ethtool (QD_PROBE_ROOT=. points the probe at the host's sandbox), and
+# the categorical odd one out
+
+CORPUS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/corpus/firmware"
+
+# fw_host HOST BIOS NIC_KIND [MTU]: a host whose /sys and ethtool answer as
+# the corpus's NIC_KIND (mlx5 or virtio) does, with BIOS as its version
+fw_host() {
+    local h=$1 bios=$2 kind=$3 mtu=${4:-1500} d
+    fake_host "$h"
+    d="$FAKE_ROOT/$h"
+    mkdir -p "$d/sys/class/dmi/id" "$d/proc" "$d/sys/class/net/eth0/device" \
+        "$d/sys/class/net/lo" "$d/ethtool"
+    cp "$CORPUS/dmi/"* "$d/sys/class/dmi/id/"
+    printf '%s\n' "$bios" > "$d/sys/class/dmi/id/bios_version"
+    cp "$CORPUS/cpuinfo" "$d/proc/cpuinfo"
+    printf '%s\n' "$mtu" > "$d/sys/class/net/eth0/mtu"
+    printf '65536\n' > "$d/sys/class/net/lo/mtu"
+    for f in i k g c a; do
+        [ -f "$CORPUS/$kind.$f" ] && cp "$CORPUS/$kind.$f" "$d/ethtool/eth0.$f"
+    done
+    return 0
+}
+
+# an ethtool that answers from the fake host's ./ethtool/IFACE.FLAG, as the
+# real one does: what it cannot do is "Operation not supported", exit 1
+fake_ethtool() {
+    mkdir -p "$TEST_TMPDIR/ethbin"
+    cat > "$TEST_TMPDIR/ethbin/ethtool" <<'SH'
+#!/bin/sh
+f="ethtool/$2.${1#-}"
+[ -f "$f" ] && exec cat "$f"
+echo "Cannot get device settings: Operation not supported" >&2
+exit 1
+SH
+    chmod +x "$TEST_TMPDIR/ethbin/ethtool"
+}
+
+t_firmware_reads_dmi_cpuinfo_and_ethtool() {
+    install_fake_ssh
+    fake_ethtool
+    fw_host a 2.19.1 mlx5 9000
+    fw_host b 2.19.1 virtio
+    printf 'a rack=r1\nb rack=r1\n' > hosts.txt
+    QD_PROBE_ROOT=. PATH="$TEST_TMPDIR/ethbin:$PATH" \
+        qdf_rc probe firmware -s hosts.txt -q > out
+    assert_status "$QD_RC" 0
+    assert_contains "$(cat out)" "qd probe firmware -- BIOS, board"
+    csv="$(qd show firmware --cols host,nic,bios_version,bios_vendor,product_name,microcode,mtu,driver,firmware_version --format csv)"
+    assert_contains "$csv" "a,eth0,2.19.1,Dell Inc.,PowerEdge R650,0xd0003d1,9000,mlx5_core,22.36.1010 (MT_0000000359)"
+    # virtio has no firmware version: blank, not measured, never a word
+    assert_contains "$csv" "b,eth0,2.19.1,Dell Inc.,PowerEdge R650,0xd0003d1,1500,virtio_net,"
+    # lo has no device: not a NIC, not a row
+    assert_not_contains "$csv" ",lo,"
+    out="$(qd show firmware --cols host,offload.tx-checksum-ipv4,offload.large-receive-offload,ring.rx,ring_max.rx,coalesce.rx-usecs,coalesce.adaptive-rx,pause.rx,pause.autonegotiate --format csv)"
+    assert_contains "$out" "a,off,off,1024,8192,8,on,on,off"
+    # what virtio's ethtool cannot say (coalescing, pause) is left out
+    assert_contains "$out" "b,,off,256,256,,,,"
+    # serials and the like are never read
+    assert_not_contains "$(qd show firmware --format csv | head -1)" "serial"
+    assert_contains "$(qd probe)" "firmware"
+    assert_contains "$(qd probe)" "inventory = os firmware disks"
+}
+
+t_firmware_says_what_it_could_not_read() {
+    install_fake_ssh
+    fw_host a 2.19.1 mlx5
+    fw_host b 2.19.1 mlx5
+    # no dmi at all on b (a VM without it)
+    rm -rf "$FAKE_ROOT/b/sys/class/dmi"
+    printf 'a\nb\n' > hosts.txt
+    nop="$(path_without ethtool)"
+    QD_PROBE_ROOT=. PATH="$nop" qdf_rc probe firmware -s hosts.txt -q > out
+    assert_status "$QD_RC" 0
+    csv="$(qd show firmware --cols host,nic,bios_version,dmi,ethtool,mtu --format csv)"
+    # the DMI rows are filed, and ethtool's absence is said, not blank
+    assert_contains "$csv" "a,eth0,2.19.1,,not installed,1500"
+    assert_contains "$csv" "b,eth0,,absent,not installed,1500"
+    assert_not_contains "$(qd show firmware --format csv | head -1)" "driver"
+    if [ "$(id -u)" != 0 ]; then
+        # a file only root can read says so (root reads it: not testable as root)
+        chmod 000 "$FAKE_ROOT/a/sys/class/dmi/id/bios_version"
+        QD_PROBE_ROOT=. PATH="$nop" qdf_rc probe firmware -s hosts.txt -q > out
+        assert_contains "$(qd show firmware --cols host,bios_version --format csv)" "a,needs root"
+        chmod 644 "$FAKE_ROOT/a/sys/class/dmi/id/bios_version"
+    fi
+}
+
+t_firmware_finds_the_odd_host_in_a_rack() {
+    install_fake_ssh
+    fake_ethtool
+    for h in a b c; do fw_host "$h" 2.19.1 mlx5 9000; done
+    fw_host d 2.17.0 mlx5 9000
+    fw_host e 2.19.1 mlx5 1500
+    printf 'a rack=r1\nb rack=r1\nc rack=r1\nd rack=r1\ne rack=r2\n' > hosts.txt
+    QD_PROBE_ROOT=. PATH="$TEST_TMPDIR/ethbin:$PATH" \
+        qdf_rc probe firmware -s hosts.txt -q > /dev/null
+    qd_rc outliers firmware --categorical --format csv > out
+    assert_status "$QD_RC" 1
+    out="$(cat out)"
+    # one NIC a host: no match column
+    assert_contains "$out" "rack,column,host,value,majority,agree,measured,verdict"
+    # d's BIOS against r1's 2.19.1; e is alone in r2, so nothing to say
+    assert_contains "$out" "r1,bios_version,d,2.17.0,2.19.1,3,4,differs"
+    assert_eq "$(printf '%s\n' "$out" | tail -n +2 | wc -l | tr -d ' ')" "1"
+}
+
 run_test "the catalogue lists itself"                t_the_catalogue_lists_itself
 run_test "command probes: a run each, named"         t_command_probes_file_a_run_each
 run_test "a group expands to its probes"             t_a_group_expands
@@ -228,4 +336,7 @@ run_test "a fleet tool: run here, read back"         t_a_fleet_tool_is_run_here_
 run_test "several probes run together"             t_probes_run_together
 run_test "binnacle's scripts run on the hosts"       t_binnacle_scripts_run_on_the_hosts
 run_test "probes stop and retry like a run"         t_probes_stop_and_retry_like_a_run
+run_test "firmware: dmi, cpuinfo and ethtool"       t_firmware_reads_dmi_cpuinfo_and_ethtool
+run_test "firmware: what it could not read"         t_firmware_says_what_it_could_not_read
+run_test "firmware: the odd host in a rack"         t_firmware_finds_the_odd_host_in_a_rack
 finish

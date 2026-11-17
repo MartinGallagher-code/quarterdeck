@@ -1,0 +1,4 @@
+Pause parameters for eth0:
+Autonegotiate:	off
+RX:		on
+TX:		on
