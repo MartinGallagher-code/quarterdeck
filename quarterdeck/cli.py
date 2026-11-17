@@ -11,6 +11,8 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
        qd doe plan|run|status|analyze          designed experiments
        qd log [RUN]                            what the store holds
        qd rm RUN... --yes                      delete runs (store clear: all)
+       qd store new|ls|use|rename|rm|clear|export|import
+                                               named stores: pick one, move one
        qd view [RUN]                           full-screen; ] [ page the store
        qd show|stats|freq|hist|outliers|pivot|trend RUN ...
        qd diff [OLD] NEW                       what changed between two

@@ -5,6 +5,25 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.25.1 — 2026-11-18
+
+`qd --help` lists `qd store`, and a test keeps it listing every command
+(QD-043). This pull request first took 0.23.1, which QD-039 and QD-037
+reached `main` past first.
+
+### Fixed
+- **`qd --help` had no line for `qd store`**, the named stores' commands
+  (`new`, `ls`, `use`, `rename`, `rm`, `clear`, `export`, `import`), though
+  `qd doctor` and every "no store" message point to `qd store use` and
+  `qd store ls`. It is listed now, after `qd rm`.
+
+### Tests
+- A new suite, `tests/test_help.sh`, with `tests/help_unit.py` beside it:
+  every verb the parser registers has a usage line on `qd --help`. It is
+  also run on cards with a line taken out (`store`, a verb run together
+  with others, a verb after a spaced `|`, and `run`, which campaign's and
+  doe's own `run` must not stand in for), so it is shown to fail.
+
 ## 0.25.0 — 2026-11-18
 
 A command given no hosts runs on this machine (QD-037). This pull
