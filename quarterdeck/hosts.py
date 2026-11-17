@@ -29,7 +29,7 @@ from .common import die, env, read_text, warn
 # not one: it is where a server sits, as a layout says (room, row, rack).
 RESERVED = {"host", "addr", "port", "status", "rc", "duration_s", "error",
             "pass", "ts", "stdout", "stderr", "line", "line_no", "value",
-            "run", "capture", "n", "dataset", "bytes", "attrs"}
+            "run", "capture", "n", "dataset", "bytes", "attrs", "preamble"}
 
 ATTR_RE = re.compile(r"^[A-Za-z_][\w.-]*=")
 

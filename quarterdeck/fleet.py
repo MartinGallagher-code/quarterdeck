@@ -66,8 +66,35 @@ FLEET_FAILURES = (UNREACHABLE, TIMEOUT, PUSH_FAILED)
 # Its group is read from /proc where there is one; a shell that does not
 # lead its own group (an sshd that does not start a session) is never
 # signalled, since its group is someone else's.
-MARK_SH = ("p=$PPID; g=$p; s=; { read -r s < /proc/$p/stat; } 2>/dev/null "
-           "&& { s=${s##*) }; set -- $s; g=$3; }; echo %s $p $g >&2")
+GROUP_SH = ("p=$PPID; g=$p; s=; { read -r s < /proc/$p/stat; } 2>/dev/null "
+            "&& { s=${s##*) }; set -- $s; g=$3; }; ")
+MARK_SH = GROUP_SH + "echo %s $p $g >&2"
+
+# The start line (QD-038).  sshd runs a command through the user's login
+# shell, and that shell reads its startup files (~/.bashrc,
+# /etc/bash.bashrc, ~/.zshenv, conda's or `module`'s init) before it runs
+# anything; whatever they print -- a greeting, a maintenance notice,
+# `bash: warning: setlocale: ...`, `stty: Inappropriate ioctl for device`
+# -- comes back on the same stdout and stderr as the command's answer, and
+# was filed as the answer and read as the host's error.  So the command
+# goes out after a line on each stream, written by `sh -c` once the
+# startup files have been read and just before the command runs: on
+# stdout the run's start mark, on stderr ssh's group line above (or the
+# start mark again, for a launcher qd does not stop that way).  On each
+# stream, what came before that line is the shell's preamble: kept apart
+# (Result.preamble, qd.hosts' preamble column), never the answer.  Each
+# line opens with a newline of its own, so it is found after a preamble
+# that did not end its last line.  No line, no cut: a host whose line
+# never came (the command never started, a startup file that exec'd
+# something else) keeps all its output, as it did before.  --keep-preamble
+# sends no start line, as before 0.23.0.
+START_SH = "echo; echo %s; echo >&2; echo %s >&2"
+START_MARK_SH = GROUP_SH + "echo; echo %s; echo >&2; echo %s $p $g >&2"
+
+# How much may come before the start line on one stream: past it, qd stops
+# looking, cuts nothing, and keeps the stream whole, as it would a host
+# whose line never came.  Held uncounted, outside --max-output.
+HEAD_MAX = 65536
 
 # Most of a minute: the 8 s to connect, and a few seconds for TERM to
 # work, then KILL.
@@ -111,7 +138,8 @@ class Unlaunched(int):
 
 class Result(object):
     __slots__ = ("host", "outcome", "rc", "stdout", "stderr", "duration",
-                 "started", "pass_no", "left_running", "attempt", "earlier")
+                 "started", "pass_no", "left_running", "attempt", "earlier",
+                 "preamble")
 
     def __init__(self, host, pass_no=1):
         self.host = host
@@ -119,6 +147,9 @@ class Result(object):
         self.rc = 0
         self.stdout = ""
         self.stderr = ""
+        # what the host's login shell printed before the command ran
+        # (QD-038): cut from stdout and stderr, its stdout first
+        self.preamble = ""
         self.duration = 0.0
         self.started = time.time()
         self.pass_no = pass_no
@@ -416,11 +447,13 @@ class Runner(object):
     # every command goes out after MARK_SH, and one qd gives up on is
     # stopped on the host by a second ssh (QD-026).  srun stops its own
     # step (stop_grace); pdsh and clush have no second call to make.
+    # Apart from the start line (QD-038), which every launcher sends.
     marks = True
 
     def __init__(self, ssh="ssh", scp="scp", user=None, timeout=60,
                  max_output=4 * 1024 * 1024, remote_dir="/var/tmp",
-                 sudo=False, ssh_config=None, reuse=None):
+                 sudo=False, ssh_config=None, reuse=None,
+                 keep_preamble=False):
         self.ssh = shlex.split(ssh)
         self.scp = shlex.split(scp)
         # --ssh-config: ssh and scp alike read this file, not ~/.ssh/config
@@ -449,6 +482,15 @@ class Runner(object):
         self.mark = "qd.%s.pgid" % self.run_id
         self._mark_re = re.compile(
             b"(?m)^" + re.escape(self.mark.encode()) + b" ([0-9]+) ([0-9]+)\n")
+        # the start line (QD-038), unless --keep-preamble: everything a
+        # host prints before it on a stream is its login shell's
+        self.cut = not keep_preamble
+        self.start = "qd.%s.start" % self.run_id
+        self._start_re = {
+            "out": re.compile(b"\n" + re.escape(self.start.encode()) + b"\n"),
+            "err": re.compile(b"\n" + re.escape(self.mark.encode()) +
+                              b" ([0-9]+) ([0-9]+)\n") if self.marks else
+            re.compile(b"\n" + re.escape(self.start.encode()) + b"\n")}
 
     def target(self, host):
         return "%s@%s" % (self.user, host.addr) if self.user else host.addr
@@ -522,14 +564,37 @@ class Runner(object):
     def command_for(self, command, pushed=False, marked=True):
         """What runs on a host: beside the pushed files when there are any
         (so `--push x -- tool x` finds x), under `sudo -n` with --sudo,
-        and after the line naming its process group (MARK_SH), which
-        --dry-run leaves out (`marked`) so the command can be read."""
+        and after the start line (QD-038) and the line naming its process
+        group (MARK_SH), which --dry-run leaves out (`marked`) so the
+        command can be read.  Both are written before sudo starts, so
+        what sudo says is the command's."""
         if pushed:
             command = "cd %s && %s" % (shlex.quote(self.work_dir), command)
-        if not marked or not self.marks:
+        if not marked:
+            return self.wrap(command)
+        if self.cut:
+            return self.started(self.wrap(command))
+        if not self.marks:
             return self.wrap(command)
         return "sh -c %s; %s" % (shlex.quote(MARK_SH % self.mark),
                                  self.wrap(command))
+
+    def start_sh(self):
+        """The shell that writes the start line on both streams (QD-038):
+        on stderr, with ssh, the line naming the group (MARK_SH)."""
+        if self.marks:
+            return START_MARK_SH % (self.start, self.mark)
+        return START_SH % (self.start, self.start)
+
+    def started(self, command):
+        """`command` after the start line, so what the host's login shell
+        prints first is cut from what it says: the command itself, and
+        each of qd's own calls (mkdir, chmod, cleanup, the stop), so a
+        failed push's row says the push's own error.  Unchanged with
+        --keep-preamble."""
+        if not self.cut:
+            return command
+        return "sh -c %s; %s" % (shlex.quote(self.start_sh()), command)
 
     def _popen(self, argv, src):
         """Start one call -- an ssh, an scp -- its output to pipes and its
@@ -539,16 +604,29 @@ class Runner(object):
                                 stderr=subprocess.PIPE,
                                 stdin=src or subprocess.DEVNULL)
 
-    def _exec(self, argv, timeout, stdin=None):
+    def _exec(self, argv, timeout, stdin=None, started=False, pre=None):
         """Bounded capture: one host in a log storm must not sink the run.
         `stdin` is a local file fed to the command (a script for
-        `python3 -`), else it reads nothing."""
-        return self._capture(argv, timeout, stdin)[:3]
+        `python3 -`), else it reads nothing.  `started`: argv's command
+        went out after the start line (started()), so its preamble is
+        cut, and added to the list `pre` when one is given."""
+        rc, out, err, _, preamble = self._capture(argv, timeout, stdin,
+                                                  started=started)
+        if pre is not None and preamble:
+            pre.append(preamble)
+        return rc, out, err
 
-    def _capture(self, argv, timeout, stdin=None, marked=False):
-        """_exec, and for a command sent by command_for (`marked`), the
-        process group the host said it runs in, with that line taken off
-        its stderr: -> (rc, stdout, stderr, group).  The group is None
+    def _capture(self, argv, timeout, stdin=None, marked=False,
+                 started=False):
+        """_exec, and for a command sent by command_for: -> (rc, stdout,
+        stderr, group, preamble).
+
+        `started`: it went out after the start line (QD-038).  On each
+        stream, what came before that line is its login shell's preamble,
+        taken off and returned apart -- stdout's, then stderr's -- and
+        never the answer; with ssh, the line on stderr names the process
+        group the host runs it in.  `marked` (--keep-preamble): only that
+        group line was sent, and only it is taken off.  The group is None
         when the line never came, and 0 when the shell does not lead a
         group of its own.  Past the deadline rc is TimedOut, past
         --max-output Flooded; either way ssh is killed here, and the
@@ -560,7 +638,7 @@ class Runner(object):
             p = self._popen(argv, src)
         except OSError as exc:
             # ssh (or scp) itself would not start: no host was reached
-            return 255, "", "cannot run %s: %s" % (argv[0], exc), None
+            return 255, "", "cannot run %s: %s" % (argv[0], exc), None, ""
         finally:
             if src:
                 src.close()
@@ -568,10 +646,20 @@ class Runner(object):
         sizes = {p.stdout: 0, p.stderr: 0}
         deadline = time.monotonic() + timeout
         flooded = False
-        # stderr is held here, uncounted, until the line naming the group
-        # has come and been taken off (or 64 KiB came first, or it ended):
-        # what is left counts against --max-output exactly as before
-        head = [b""] if marked else None
+        # The start of a stream is held here, uncounted, until its line
+        # has come and been taken off (or HEAD_MAX came first, or it
+        # ended): what is left counts against --max-output exactly as
+        # before.  `started` holds both streams, `marked` stderr alone.
+        kind = {p.stdout: "out", p.stderr: "err"}
+        heads = {}
+        if started:
+            heads = {p.stdout: b"", p.stderr: b""}
+        elif marked:
+            heads = {p.stderr: b""}
+        pre = {p.stdout: b"", p.stderr: b""}
+        # streams whose line came after HEAD_MAX: it is taken off at the
+        # end, and nothing before it is cut
+        late = []
         group = [None]
 
         def take(f, data):
@@ -581,18 +669,29 @@ class Runner(object):
             sizes[f] += len(data)
             return sizes[f] > limit
 
-        def take_head(eof):
-            buf = head[0]
-            m = self._mark_re.search(buf)
-            if m:
+        def found(f, m):
+            if f is p.stderr and self.marks:
                 pid, pgid = int(m.group(1)), int(m.group(2))
                 # 0: the line came, but its shell leads no group of its own
                 group[0] = pgid if pid == pgid > 1 else 0
-                buf = buf[:m.start()] + buf[m.end():]
-            elif not eof and len(buf) < 65536:
+
+        def take_head(f, eof):
+            buf = heads[f]
+            m = (self._start_re[kind[f]] if started
+                 else self._mark_re).search(buf)
+            if m:
+                found(f, m)
+                if started:
+                    pre[f] = buf[:m.start()]
+                    buf = buf[m.end():]
+                else:
+                    buf = buf[:m.start()] + buf[m.end():]
+            elif not eof and len(buf) < HEAD_MAX:
                 return False
-            head[0] = None
-            return take(p.stderr, buf)
+            elif started and not eof:
+                late.append(f)
+            del heads[f]
+            return take(f, buf)
 
         sel = selectors.DefaultSelector()
         sel.register(p.stdout, selectors.EVENT_READ)
@@ -610,12 +709,12 @@ class Runner(object):
                 if not chunk:
                     sel.unregister(f)
                     open_count -= 1
-                    if f is p.stderr and head and head[0] is not None:
-                        flooded = take_head(True) or flooded
+                    if f in heads:
+                        flooded = take_head(f, True) or flooded
                     continue
-                if f is p.stderr and head and head[0] is not None:
-                    head[0] += chunk
-                    flooded = take_head(False) or flooded
+                if f in heads:
+                    heads[f] += chunk
+                    flooded = take_head(f, False) or flooded
                     continue
                 flooded = take(f, chunk) or flooded
             if flooded:
@@ -635,15 +734,24 @@ class Runner(object):
             f.close()
 
         def text(f):
-            return b"".join(chunks[f]).decode("utf-8-sig", "replace")
+            data = b"".join(chunks[f])
+            if f in late:
+                # the line came too late to cut by: only it goes, and the
+                # stream is otherwise as it came
+                m = self._start_re[kind[f]].search(data)
+                if m:
+                    found(f, m)
+                    data = data[:m.start()] + data[m.end():]
+            return data.decode("utf-8-sig", "replace")
 
+        preamble = joined(pre[p.stdout], pre[p.stderr])
         if timed_out and not flooded:
             return (TimedOut(124), "", "timed out after %ss" % timeout,
-                    group[0])
+                    group[0], preamble)
         if flooded:
             return (Flooded(125), "", "output exceeded --max-output (%d "
-                    "bytes)" % limit, group[0])
-        return rc, text(p.stdout), text(p.stderr), group[0]
+                    "bytes)" % limit, group[0], preamble)
+        return rc, text(p.stdout), text(p.stderr), group[0], preamble
 
     def stop(self, host, group):
         """Stop a command qd gave up on, on the host: TERM to its process
@@ -659,7 +767,8 @@ class Runner(object):
         script = STOP_SH % group
         cmd = self.wrap(script) if self.sudo else "sh -c %s" % shlex.quote(
             script)
-        rc, _, err = self._exec(self.ssh_argv(host, cmd), STOP_TIMEOUT)
+        rc, _, err = self._exec(self.ssh_argv(host, self.started(cmd)),
+                                STOP_TIMEOUT, started=self.cut)
         if rc == 0:
             return ""
         last = (err or "").strip().splitlines()
@@ -670,13 +779,16 @@ class Runner(object):
             why = "the stop itself timed out"
         return "qd could not stop it (%s)" % why
 
-    def push(self, host, files):
+    def push(self, host, files, pre=None):
+        """The files into this run's directory on a host.  -> (rc, why);
+        `pre`, a list, gets what the host's login shell printed first."""
         for f in files:
             if os.path.basename(f) == SENTINEL:
                 return 1, ("qd: cannot push a file named %s: it is the "
                            "mark qd leaves in its own directory" % SENTINEL)
-        rc, out, err = self._exec(self.argv(host, self.mkdir_command()),
-                                  60)
+        rc, out, err = self._exec(
+            self.argv(host, self.started(self.mkdir_command())), 60,
+            started=self.cut, pre=pre)
         if rc != 0:
             return rc, err
         if host.name not in self._made:
@@ -718,7 +830,9 @@ class Runner(object):
         names = " ".join(shlex.quote("%s/%s" % (self.work_dir,
                                                 os.path.basename(f)))
                          for f in files)
-        rc, _, err = self._exec(self.argv(host, "chmod +x %s" % names), 60)
+        rc, _, err = self._exec(
+            self.argv(host, self.started("chmod +x %s" % names)), 60,
+            started=self.cut)
         return rc, err
 
     def cleanup(self, host):
@@ -734,7 +848,9 @@ class Runner(object):
         if self._made[host.name]:
             cmd += " && { rmdir %s 2>/dev/null || true; }" % shlex.quote(
                 self.remote_dir)
-        rc, _, err = self._exec(self.argv(host, self.wrap(cmd)), 60)
+        rc, _, err = self._exec(
+            self.argv(host, self.started(self.wrap(cmd))), 60,
+            started=self.cut)
         if rc == 0:
             return ""
         first = (err or "").strip().splitlines()
@@ -747,9 +863,11 @@ class Runner(object):
         t0 = time.monotonic()
         self._note_master(host)
         if push:
-            rc, err = self.push(host, push)
+            pre = []
+            rc, err = self.push(host, push, pre)
             if rc != 0:
                 r.outcome, r.rc, r.stderr = PUSH_FAILED, rc, err
+                r.preamble = pre[0] if pre else ""
                 if rc == 255:
                     r.outcome = UNREACHABLE
                 elif cleanup:
@@ -759,9 +877,9 @@ class Runner(object):
                         r.stderr = (err or "").rstrip("\n") + "\n" + left
                 r.duration = time.monotonic() - t0
                 return r
-        rc, out, err, group = self._capture(
+        rc, out, err, group, r.preamble = self._capture(
             self.argv(host, self.command_for(command, bool(push))),
-            self.timeout, stdin, marked=self.marks)
+            self.timeout, stdin, marked=self.marks, started=self.cut)
         r.rc, r.stdout, r.stderr = rc, out, err
         if self.marks and isinstance(rc, (TimedOut, Flooded)):
             # qd has given up on it, and killed its ssh; the command is
@@ -803,6 +921,18 @@ class Runner(object):
         if rc != 0:
             return FAILED
         return OK
+
+
+def joined(out, err):
+    """A host's preamble as one text (QD-038): what its login shell printed
+    on stdout, then on stderr, each part ending its last line."""
+    parts = []
+    for data in (out, err):
+        if data:
+            t = data.decode("utf-8", "replace") if isinstance(
+                data, bytes) else data
+            parts.append(t if t.endswith("\n") else t + "\n")
+    return "".join(parts)
 
 
 def guarded_rm(work_dir, run_id):

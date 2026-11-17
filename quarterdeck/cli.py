@@ -495,7 +495,8 @@ def host_row(rid, r):
             "" if r.duration is None else "%.2f" % r.duration,
             str(len(r.stdout.encode("utf-8"))) if ran else "",
             r.error(), storemod.join_attrs(h.attrs),
-            r.stderr[:STDERR_KEEP], str(r.attempt)]
+            r.stderr[:STDERR_KEEP], str(r.attempt),
+            (r.preamble or "")[:STDERR_KEEP]]
 
 
 def filed(st, rid, notes, batch, cleanup=True):
@@ -621,11 +622,19 @@ def new_runner(args, hs=None):
                          else args.user,
                          timeout=args.timeout, max_output=args.max_output,
                          remote_dir=args.remote_dir, sudo=args.sudo,
-                         ssh_config=ssh_config, reuse=reuse)
+                         ssh_config=ssh_config, reuse=reuse,
+                         keep_preamble=keep_preamble_of(args))
     problem = runner.check_hosts(hs or [])
     if problem:
         die(problem)
     return runner
+
+
+def keep_preamble_of(args):
+    """--keep-preamble (QD_KEEP_PREAMBLE=1): what each host's login shell
+    prints before the command stays in its answer, as before 0.23.0."""
+    return bool(getattr(args, "keep_preamble", False) or
+                policymod._truthy(env("KEEP_PREAMBLE")))
 
 
 def ssh_config_of(args):
@@ -691,8 +700,9 @@ def dry_run_lines(runner, hs, command, push=(), stdin=None, jobs=1,
         feed = ("%s/%s" % (runner.work_dir, launch.STDIN_NAME)) if stdin \
             else None
         out(" ".join(shlex.quote(a) for a in runner.fan_argv(
-            hs, runner.command_for(command, bool(push)), runner.timeout,
-            min(jobs, max(1, len(hs))), feed)))
+            hs, runner.command_for(command, bool(push), marked=False),
+            runner.timeout, min(jobs, max(1, len(hs))), feed,
+            marked=False)))
         return
     for h in hs:
         out(" ".join(shlex.quote(a) for a in runner.argv(
@@ -795,6 +805,26 @@ def left_running_note(results):
         " and %d more" % (len(names) - 8) if len(names) > 8 else "")
     return "may still be running on %s, where qd could not stop it: %s" % (
         plural(len(names), "host"), shown)
+
+
+def say_preamble(results, rids=()):
+    """Once a run: the hosts whose login shell printed before the command
+    (QD-038), cut from their answers, and where that text is kept.
+    Nothing when none did."""
+    names = []
+    for r in tries(results):
+        if r.preamble and r.host.name not in names:
+            names.append(r.host.name)
+    if not names:
+        return
+    shown = ", ".join(names[:8]) + (
+        " and %d more" % (len(names) - 8) if len(names) > 8 else "")
+    where = ("kept in the preamble column (%s)" % ", ".join(
+        "%s show %s:hosts" % (PROG, rid) for rid in rids)) if rids \
+        else "not kept (--no-store)"
+    warn("the login shell printed before the command on %s (%s): cut from "
+         "the answers, %s; --keep-preamble leaves it in" % (
+             plural(len(names), "host"), shown, where))
 
 
 def say_filing(ncap):
@@ -924,6 +954,7 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
     took = round(time.time() - t0, 2)
     passes = max(r.pass_no for r in results)
     if st is None:
+        say_preamble(results)
         return Job(results, interrupted, None, unfiled_table(results, passes),
                    stopped)
     # a part of a campaign or a design point carries its part in its id:
@@ -934,6 +965,7 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
     ncap = add_answers(b, rid, label, results, passes, context)
     add_own_tables(b, rid, label, command, created, took, hs, results,
                    interrupted, passes, args.every, ncap, extra, stopped)
+    say_preamble(results, [rid])
     say_filing(ncap)
     notes = file_batch(prov, b, "answers")
     entry = filed(st, rid, notes, b)
@@ -1007,6 +1039,9 @@ def fleet_runs_together(args, hs, specs, extra=None):
                           if r.started is not None] or [t0]) - t0, 2)
         add_own_tables(b, rid, label, command, created, took, hs, rs,
                        interrupted, 1, None, ncap, extra, stopped)
+    say_preamble([r for rs in each for r in rs],
+                 [rid for rid, rs in zip(rids, each)
+                  if any(r.preamble for r in tries(rs))])
     say_filing(sum(ncaps))
     notes = file_batch(prov, b, "answers")
     entries = [filed(st, rid, notes, b, cleanup=False) for rid in rids]
@@ -3412,7 +3447,7 @@ def hosts_of_run(e):
         attrs = [(c, r[t.index(c)]) for c in t.columns[1:]
                  if c not in ("addr", "pass", "ts", "status", "rc",
                               "duration_s", "bytes", "error", "stderr",
-                              "capture") and r[t.index(c)]]
+                              "preamble", "capture") and r[t.index(c)]]
         if not any(h.name == name for h in out):
             out.append(parse_host_token("%s=%s" % (name, addr) if addr
                                         else name, attrs))
@@ -4969,6 +5004,9 @@ def add_ssh(sp):
                    "in here, removed afterwards (QD_REMOTE_DIR, /var/tmp)")
     g.add_argument("--keep-remote", action="store_true",
                    help="leave the run's directory on the hosts")
+    g.add_argument("--keep-preamble", action="store_true",
+                   help="keep what a host's login shell prints before the "
+                   "command in its answer, uncut (QD_KEEP_PREAMBLE=1)")
     return g
 
 
@@ -5030,8 +5068,9 @@ def add_safety(sp):
     g = sp.add_argument_group("safety")
     g.add_argument("--dry-run", action="store_true",
                    help="print the ssh (srun) command per host, or the "
-                   "pdsh or clush call, and stop (less the line ahead of an "
-                   "ssh command that lets qd stop it)")
+                   "pdsh or clush call, and stop (less the lines qd puts "
+                   "ahead of the command: where it starts, and how to stop "
+                   "it)")
     g.add_argument("--limit", type=positive, metavar="N",
                    help="refuse to run wider than N hosts without --yes")
     g.add_argument("--yes", action="store_true",

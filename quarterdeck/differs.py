@@ -32,7 +32,7 @@ MOVING = ("uptime", "uptime_s")
 HOST_COLUMNS = ("host", "ssh_host", "target", "hostname")
 MATCH_DEFAULT = ("nic", "dev", "device", "iface", "interface", "port",
                  "index", "disk", "name")
-STATUS = ("status", "error", "stderr")
+STATUS = ("status", "error", "stderr", "preamble")
 
 DIFFERS, SPLIT = "differs", "split"
 COLUMNS = ["group", "match", "column", "host", "value", "majority",
