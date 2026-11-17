@@ -625,6 +625,8 @@ class Api(object):
         for label, text in e.raw(host=host, pas=one(q, "pass"), capture=cap):
             if label == "stderr":
                 out["err"] = text[:1 << 20]
+            elif label == "preamble":
+                out["pre"] = text[:1 << 20]
             elif "out" not in out:
                 out["out"], out["label"] = text[:1 << 20], label
         return out

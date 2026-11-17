@@ -635,6 +635,7 @@
           pass: pi >= 0 ? row[pi] : null, capture: ci >= 0 ? row[ci] : null }));
         if (raw.out !== undefined) body.append(h("h3", { text: raw.label || "Raw answer" }), h("pre", { text: raw.out || "(nothing)" }));
         if (raw.err) body.append(h("h3", { text: "stderr" }), h("pre", { text: raw.err }));
+        if (raw.pre) body.append(h("h3", { text: "before the command (the login shell's, cut)" }), h("pre", { text: raw.pre }));
       } catch (err) { body.append(h("p", { class: "count", text: String(err.message) })); }
     }
   }

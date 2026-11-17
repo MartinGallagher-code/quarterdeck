@@ -5,6 +5,45 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.23.0 — 2026-11-17
+
+What a host's login shell prints before the command is cut from its
+answer (QD-038).
+
+### Changed
+- **A greeting from `~/.bashrc` is no longer filed as the answer.** sshd
+  runs a command through the login shell, which reads its startup files
+  first; a greeting, a maintenance notice or a `setlocale` warning they
+  printed came back with the answer, so a table was filed as lines, JSON
+  as text, and the warning became the host's `error`, under an `ok` run.
+  Every command now goes out after a start line on stdout and stderr,
+  written by `sh -c` just before the command runs, and what came before
+  it is cut: never filed, never the `error` column. The same through
+  `--via srun`, `pdsh` and `clush`, and for qd's own calls on a host
+  (`--push`/`--script`'s mkdir, copy, chmod and cleanup, and the stop),
+  so a failed push's row says the push's own error. With no start line,
+  or past 64 KiB before it, nothing is cut. A host whose shell prints
+  nothing gives the same answer, row and exit status as before. ssh's
+  line naming the command's process group (QD-026) is the start line on
+  stderr, now with a newline of its own ahead of it, so it is found after
+  a greeting that did not end its line.
+
+### Added
+- **`qd.hosts`' `preamble` column**: what the login shell printed before
+  the command, stdout's then stderr's, up to 16 KiB (blank for a run
+  filed before 0.23.0). `qd show RUN:hosts` shows it when any host has
+  one, and `qd web` and `qd view` beside a row's raw answer. A host
+  attribute named `preamble` is carried as `attr_preamble`, as one named
+  `stderr` or `error` is.
+- The run says once on stderr which hosts' shells printed before the
+  command, and where to see it; a run where none did says nothing new.
+- **`--keep-preamble`** (`QD_KEEP_PREAMBLE=1`): no start line, and the
+  answer as it came, as before 0.23.0.
+- `FAKE_SSH_RC` in the suites' fake ssh and launchers, a host's
+  `~/.bashrc`; `tests/test_preamble.sh`; and in `tests/test_ssh.sh`, a
+  real sshd and bash reading a `~/.bashrc` that greets, warns and runs
+  `stty`.
+
 ## 0.22.0 — 2026-11-17
 
 Two whole campaigns side by side (QD-036).

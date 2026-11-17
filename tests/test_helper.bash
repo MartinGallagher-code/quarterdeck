@@ -12,7 +12,9 @@
 #   qd ARGS...              the CLI under test, run from a clone
 #   install_fake_ssh        an ssh+scp pair that run "remote" commands locally
 #                           (FAKE_SSH_DETACH=1: apart from the client, as
-#                           OpenSSH runs them)
+#                           OpenSSH runs them; FAKE_SSH_RC=FILE: the host's
+#                           login shell reads FILE first, as bash does
+#                           ~/.bashrc under sshd, and prints what it prints)
 #   install_fake_launchers  srun, scontrol, pdsh, pdcp and clush that do the
 #                           same, on PATH; in_allocation sets a Slurm job
 #   fake_host NAME          a sandbox root for one fake host
@@ -81,7 +83,7 @@ setup_env() {
     # every ssh and scp the fakes are started with, options and all
     export FAKE_SSH_ARGV="$TEST_TMPDIR/ssh.argv"
     export FAKE_PY="$PY"
-    unset FAKE_SSH_DETACH
+    unset FAKE_SSH_DETACH FAKE_SSH_RC
     mkdir -p "$FAKE_BIN" "$FAKE_ROOT"
     : > "$FAKE_SSH_LOG"
     : > "$FAKE_SSH_ARGV"
@@ -92,7 +94,7 @@ setup_env() {
     unset QD_WEB_PORT QD_TEST_KEYS QD_TEST_SCREEN QD_FILE_JOBS QD_RATE
     unset QD_WEB_TOKEN QD_WEB_TOKEN_FILE QD_WEB_TLS_CERT QD_WEB_TLS_KEY QD_TEST_CA
     unset QD_ALLOW QD_READ_ONLY QD_TEST_PART QD_SSH_CONFIG QD_SSH_REUSE
-    unset QD_VIA PDSH_SSH_ARGS_APPEND
+    unset QD_VIA PDSH_SSH_ARGS_APPEND QD_KEEP_PREAMBLE BASH_ENV ENV
     unset SLURM_JOB_ID SLURM_JOBID SLURM_JOB_NODELIST SLURM_NODELIST
     unset SLURM_JOB_PARTITION
     unset PROVOST_WORKSPACE PROVOST_HOME PROVOST_CONTEXT_COLUMNS PROVOST_QUIET
@@ -377,6 +379,10 @@ export FAKE_HOST="$host"
 # FAKE_SSH_DETACH=1: as OpenSSH does, the "remote" command runs in a
 # session of its own, apart from this client, so killing the client
 # leaves it running (QD-026).  Otherwise it is this process.
+# FAKE_SSH_RC=FILE: the login shell reads FILE before the command, as
+# bash reads ~/.bashrc when sshd starts it (QD-038), and only that shell:
+# fake-login-rc unsets BASH_ENV before it reads FILE.
+[ -n "${FAKE_SSH_RC:-}" ] && export BASH_ENV="$FAKE_BIN/fake-login-rc"
 if [ -n "${FAKE_SSH_DETACH:-}" ]; then
   exec 3<&0
   "${FAKE_PY:-python3}" -c 'import os, sys
@@ -407,6 +413,14 @@ cp "${srcs[@]}" "$target/" 2>/dev/null || exit 1
 SHIM
     # Remote paths are absolute; the fake host's root stands in for /.
     chmod +x "$FAKE_BIN/ssh" "$FAKE_BIN/scp"
+    fake_login_rc
+}
+
+# What a fake host's login shell reads first when FAKE_SSH_RC is set: that
+# file, once, in that shell and none it starts (QD-038).
+fake_login_rc() {
+    # shellcheck disable=SC2016  # expanded by the fake host's shell
+    printf '%s\n' 'unset BASH_ENV' '. "$FAKE_SSH_RC"' > "$FAKE_BIN/fake-login-rc"
 }
 
 fake_host() {
@@ -478,6 +492,9 @@ def state(host):
 
 def run(argv, cwd, host, timeout, out, err, stdin=None):
     env = dict(os.environ, FAKE_HOST=host, SLURMD_NODENAME=host)
+    # FAKE_SSH_RC: the host's login shell reads it first (QD-038)
+    if env.get("FAKE_SSH_RC"):
+        env["BASH_ENV"] = os.path.join(env["FAKE_BIN"], "fake-login-rc")
     p = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, stdin=stdin,
                          start_new_session=True)
@@ -545,6 +562,12 @@ if tool == "srun":
             % os.environ["SLURM_JOB_ID"])
         sys.exit(1)
     env = dict(os.environ, FAKE_HOST=host, SLURMD_NODENAME=host)
+    # FAKE_SSH_RC: srun starts no login shell, but what the node prints
+    # ahead of the task (a TaskProlog's `print` lines) comes first on the
+    # task's own streams, as a login shell's would (QD-038)
+    if env.get("FAKE_SSH_RC"):
+        subprocess.call(["bash", env["FAKE_SSH_RC"]], cwd=d, env=env,
+                        stdin=subprocess.DEVNULL)
     p = subprocess.Popen(cmd, cwd=d, env=env, start_new_session=True)
     def stop(sig, frame):
         os.killpg(p.pid, signal.SIGKILL)
@@ -637,6 +660,7 @@ if tool in ("pdsh", "pdcp", "clush"):
     sys.exit(bad[0])
 EOF
     chmod +x "$FAKE_BIN/qd-fake-launcher"
+    fake_login_rc
     local t
     for t in srun scontrol pdsh pdcp clush; do
         ln -sf qd-fake-launcher "$FAKE_BIN/$t"
