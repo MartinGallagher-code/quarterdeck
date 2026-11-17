@@ -200,6 +200,52 @@ t_binnacle_scripts_run_on_the_hosts() {
     fi
 }
 
+# QD-038: a login shell that prints before the command files the same
+# rows as a quiet one -- a script probe's JSON (why-slow's facts, sent on
+# stdin) and a command probe's columns -- and keeps what it printed apart
+t_a_printing_shell_files_the_same_rows() {
+    seed
+    probes="os"
+    if "$PY" -c 'import binnacle.why_slow' 2>/dev/null; then
+        probes="facts os"
+    fi
+    # shellcheck disable=SC2086  # one probe or two
+    qdf_rc probe $probes -s hosts.txt -q > /dev/null
+    assert_status "$QD_RC" 0
+    for p in $probes; do
+        qd show "$p" --format csv | cut -d, -f1,2 > "quiet-$p.csv"
+    done
+    cols="host,rack,status,error,kernel"
+    qd show os --cols "$cols" --format csv > quiet-os-cols.csv
+    case "$probes" in
+        facts*) qd show facts --cols host,status,cpu.count --format csv \
+                    > quiet-facts-cols.csv ;;
+    esac
+    cat > rc <<'EOF'
+echo "Welcome to $FAKE_HOST -- scheduled maintenance Friday"
+echo "bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8)" >&2
+EOF
+    export FAKE_SSH_RC="$PWD/rc"
+    # shellcheck disable=SC2086  # one probe or two
+    qdf_rc probe $probes -s hosts.txt -q > /dev/null 2> err
+    assert_status "$QD_RC" 0
+    assert_eq "$(grep -c 'login shell printed' err)" "1"
+    for p in $probes; do
+        assert_eq "$(qd show "$p" --format csv | cut -d, -f1,2)" \
+            "$(cat "quiet-$p.csv")"
+        assert_contains "$(qd show "$p:hosts" --where host=b --cols preamble --format csv)" \
+            "Welcome to b"
+    done
+    assert_eq "$(qd show os --cols "$cols" --format csv)" "$(cat quiet-os-cols.csv)"
+    case "$probes" in
+        facts*)
+            # read as JSON, a column each, not as lines
+            assert_eq "$(qd show facts --cols host,status,cpu.count --format csv)" \
+                "$(cat quiet-facts-cols.csv)"
+            assert_contains "$(qd show facts --cols host,cpu.count --format csv)" "b," ;;
+    esac
+}
+
 # QD-027: --max-fail and --retries are the fan-out's, so a probe has them,
 # and probes run together share one stop
 t_probes_stop_and_retry_like_a_run() {
@@ -335,6 +381,7 @@ run_test "reach reads reachable's CSV"              t_reach_reads_reachables_csv
 run_test "a fleet tool: run here, read back"         t_a_fleet_tool_is_run_here_and_read_back
 run_test "several probes run together"             t_probes_run_together
 run_test "binnacle's scripts run on the hosts"       t_binnacle_scripts_run_on_the_hosts
+run_test "a printing login shell: the same rows"    t_a_printing_shell_files_the_same_rows
 run_test "probes stop and retry like a run"         t_probes_stop_and_retry_like_a_run
 run_test "firmware: dmi, cpuinfo and ethtool"       t_firmware_reads_dmi_cpuinfo_and_ethtool
 run_test "firmware: what it could not read"         t_firmware_says_what_it_could_not_read

@@ -78,7 +78,7 @@ CELL_LIMIT = 160
 
 # columns a summary's figures leave out: bookkeeping and who-it-was
 NOT_FIGURES = set(stats.BOOKKEEPING) | {"host", "addr", "error", "stderr",
-                                        "capture"}
+                                        "preamble", "capture"}
 # '#%' keys that are qd's own, said elsewhere in the report
 QD_KEYS = ("run", "host", "pass")
 VERDICT_ORDER = (checkmod.FAIL, checkmod.UNMEASURED, checkmod.UNEXPECTED,

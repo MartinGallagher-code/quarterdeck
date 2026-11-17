@@ -64,9 +64,11 @@ RUN_COLUMNS = ("run", "kind", "name", "command", "created", "finished",
                "group", "part", "factors", "operator", "operator_host",
                "ssh_user", "ssh_key", "sudo", "via", "sched_job",
                "not_run", "rerun_of")
+# preamble (QD-038): what the host's login shell printed before the
+# command, cut from its answer; blank in a run filed before 0.23.0
 HOST_COLUMNS = ("run", "host", "addr", "pass", "ts", "status", "rc",
                 "duration_s", "bytes", "error", "attrs", "stderr",
-                "attempt")
+                "attempt", "preamble")
 OUTCOMES = ("ok", "failed", "timeout", "unreachable", "push-failed",
             "not-run")
 
@@ -74,7 +76,8 @@ OUTCOMES = ("ok", "failed", "timeout", "unreachable", "push-failed",
 # cell, and provost's TSV reader dropped double quotes until the release
 # with `batch` (PyPI's 2.1.0 still does), so they are escaped too.
 TEXT_COLUMNS = ("command", "ran", "version", "cwd", "notes", "error",
-                "stderr", "attrs", "factors", "operator", "operator_host",
+                "stderr", "preamble", "attrs", "factors", "operator",
+                "operator_host",
                 "ssh_user", "ssh_key",
                 # qd.peers and qd.baselines: column names and group values
                 # are anyone's words (a facts run's cpu.model)
@@ -1063,8 +1066,10 @@ class Run(object):
         hosts = self.store.host_rows(self.id)
         cols, cells = self._host_lead(hosts)
         caps = self._by_host()
-        tail = ["status", "rc", "duration_s", "bytes", "error", "stderr",
-                "capture"]
+        # what a host's login shell printed first (QD-038), when any did
+        tail = ["status", "rc", "duration_s", "bytes", "error", "stderr"] + \
+            (["preamble"] if any(h.get("preamble") for h in hosts)
+             else []) + ["capture"]
         rows = [cells(h) + [h.get(c, "") for c in tail[:-1]] +
                 [caps.get(host_key(h), "")]
                 for h in hosts]
@@ -1192,10 +1197,14 @@ class Run(object):
                 out.append((source_label(self.store, capture), text))
         if host is not None and self.meta.get("kind") == "run":
             for h in self.store.host_rows(self.id):
-                if h.get("host") == host and \
-                        (h.get("pass") or "1") == (pas or "1") and \
-                        h.get("stderr"):
+                if h.get("host") != host or \
+                        (h.get("pass") or "1") != (pas or "1"):
+                    continue
+                if h.get("stderr"):
                     out.append(("stderr", h["stderr"]))
+                # QD-038: cut from the answer, shown apart
+                if h.get("preamble"):
+                    out.append(("preamble", h["preamble"]))
         return out
 
 

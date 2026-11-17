@@ -122,7 +122,7 @@ Besides the answers, a run files two tables of qd's own:
 | Dataset | One row per | What |
 |---|---|---|
 | `qd.runs` | run | what ran, where, when, how many hosts answered |
-| `qd.hosts` | host and pass | status, rc, duration, stderr, whether it printed anything |
+| `qd.hosts` | host and pass | status, rc, duration, stderr, whether it printed anything, and what its login shell printed before the command (`preamble`) |
 
 and qd puts them back together when you read a run: each host's status
 beside the rows provost parsed out of its answer, and a row for a host
@@ -435,7 +435,9 @@ that times out is stopped with SIGTERM, which ends its step.
 **pdsh and clush.** One call answers for every host: pdsh (or clush) puts
 `host: ` before each line, which tells the answers apart, and qd adds a
 line after the command with its exit status, which pdsh does not report
-per host. A host with no such line did not answer. `--jobs` is the
+per host, and one before it on each stream, where the command starts
+(see *What the login shell says first*). A host with no status line did
+not answer. `--jobs` is the
 fan-out (`-f`), `--timeout` each host's limit (`-u`), and `--user` its
 `-l`. pdsh's ssh gets the options qd's own ssh uses (`BatchMode=yes`,
 `StrictHostKeyChecking=accept-new`) after any you set in
@@ -478,6 +480,57 @@ Every dataset a run makes has these columns: `host`, its attributes,
 agree's sense of each, and `not-run` for a host qd never tried), `rc`, `duration_s`, `error` (the first line of what
 went wrong) and `capture` (provost's id for the answer), then what provost
 read.
+
+### What the login shell says first
+
+sshd runs a command through your login shell, and that shell reads its
+startup files before it runs anything: `~/.bashrc` (which bash reads
+under sshd, interactive or not), `/etc/bash.bashrc`, `~/.zshenv`, conda's
+or `module`'s init. Whatever they print comes back on the same stdout and
+stderr as the answer: a greeting, a maintenance notice, `bash: warning:
+setlocale: LC_ALL: cannot change locale`, `stty: Inappropriate ioctl for
+device`. Left in, one greeting line turned a host's table into lines and
+its JSON into text, and a setlocale warning became its `error`, with the
+run still saying `ok`.
+
+So qd cuts it. Every command goes out after a start line, written on each
+stream by `sh -c` once the startup files have been read, just before the
+command runs, and what came before that line is the shell's, not the
+command's:
+
+- it is not filed as the answer, and it is never the `error` column;
+- it is kept in `qd.hosts`' `preamble` column (stdout's, then stderr's,
+  up to 16 KiB): `qd show RUN:hosts`, and beside a row's raw answer in
+  `qd web` and `qd view`;
+- the run says so once on stderr, with where to look:
+
+  ```
+  qd: the login shell printed before the command on 2 hosts (n07, n12): cut from the answers, kept in the preamble column (qd show 20261117-101500-df:hosts); --keep-preamble leaves it in
+  ```
+
+  A run where no shell printed anything says nothing, and its hosts table
+  has no `preamble` column. Either way the host stays `ok`.
+
+It is the same through every launcher (pdsh and clush get a start line on
+each host; with srun, what a node prints ahead of the task, such as a
+TaskProlog's `print` lines, is cut the same way) and for qd's own calls
+on a host: the mkdir, copy, chmod and cleanup of `--push` and `--script`,
+and the stop, so a failed push's row says the push's own error. The line
+is written before `sudo` starts, so what sudo says is the command's.
+
+qd cuts only at that line. Where it never comes (the command never
+started, a startup file `exec`'d something else) or more than 64 KiB
+came before it, nothing is cut and the host's output is kept as it came.
+The command's own output is never cut, whatever it prints: the line
+carries the run's random id, and qd stops looking once it has it. What is
+cut is held apart from `--max-output`.
+
+`--keep-preamble` (`QD_KEEP_PREAMBLE=1`) sends no start line and keeps it
+all in the answer, as qd did before 0.23.0. Better is to quiet the host:
+in `~/.bashrc`, print only for an interactive shell (`case $- in *i*)
+echo hello ;; esac`) or only at a terminal (`[ -t 1 ] && echo hello`).
+Output a startup file arranges to come after the command (an `EXIT`
+trap) is not cut.
 
 ### When a host takes too long
 
@@ -582,7 +635,7 @@ design's points run through the same fan-out and take the same flags.
 | `--script FILE -- ARGS` | push FILE, run it with ARGS, remove it again |
 | `--push FILE` | copy a file over first (repeatable); the command runs beside it, in a directory of the run's own in `--remote-dir` |
 | `--sudo` | run under `sudo -n` |
-| `--dry-run` | print the ssh (or srun) command per host, or the one pdsh or clush call; an ssh command less the line ahead of it that lets qd stop it (see *When a host takes too long*); contact nothing |
+| `--dry-run` | print the ssh (or srun) command per host, or the one pdsh or clush call, less the lines qd puts ahead of the command (where it starts, see *What the login shell says first*; for ssh, how to stop it, see *When a host takes too long*); contact nothing |
 | `--first N` | the first N hosts only, the canary before the fleet |
 | `--limit N` | refuse to run wider than N hosts without `--yes` |
 | `--no-store` | print the answers, keep nothing |
@@ -777,6 +830,7 @@ sshd, a push run on one host went from five logins to one
 | `--ssh-config` | `QD_SSH_CONFIG` | none: ssh's own, `~/.ssh/config` |
 | `--reuse` | `QD_SSH_REUSE=1` | off: a login per call |
 | `--remote-dir` | `QD_REMOTE_DIR` | `/var/tmp` |
+| `--keep-preamble` | `QD_KEEP_PREAMBLE=1` | off: what a host's login shell prints before the command is cut from its answer (see What the login shell says first) |
 | `--rate` | `QD_RATE` | none: new connections as fast as `--jobs` allows; `10/s` for a bastion's `MaxStartups` |
 | `--max-fail` | `QD_MAX_FAIL` | none: every host runs; `N` or `P%` stops starting hosts past it |
 | `--max-fail-on` | `QD_MAX_FAIL_ON` | `any`: every status but ok; `unreachable` counts only the fleet's failures |
@@ -2223,7 +2277,7 @@ On every pull request and every push to `main` (`.github/workflows/ci.yml`):
 | test (python 3.9 to 3.13) | the whole suite, PyPI's newest provost (`batch`), binnacle, and doe from 3.10 | 3 each, `--shard 1/3` to `3/3` |
 | Python 3.6 compatibility | vermin and the compile check, then the whole suite under a real Python 3.6 in a container, provost's bundle | 3 |
 | test (provost 2.1.0) | the whole suite, one capture at a time | 3 |
-| ssh (a real sshd on loopback) | `test_ssh.sh` with openssh-server installed and `QD_TEST_SSHD=require`: a bastion, `--reuse`, a master opened first, a certificate | 1 |
+| ssh (a real sshd on loopback) | `test_ssh.sh` with openssh-server installed and `QD_TEST_SSHD=require`: a bastion, `--reuse`, a master opened first, a certificate, a `~/.bashrc` that prints | 1 |
 | version, web page syntax, shellcheck and the shard check, REUSE, build the wheel | once each | 1 each |
 
 A newer push to a pull request cancels that pull request's run still in
@@ -2250,8 +2304,14 @@ and the web suite talks to a real server on loopback.
 and then, where `sshd` is installed, starts a real one of its own on
 loopback, as the user running it, to log in through: a ProxyJump through
 it as a bastion, `--reuse`'s one login per host, a master opened
-beforehand carrying a run once the key is withdrawn (the MFA setup), and
-a certificate login. Where there is no sshd those cases are skipped and
+beforehand carrying a run once the key is withdrawn (the MFA setup), a
+certificate login, and a `~/.bashrc` that greets, warns and runs `stty`,
+cut from the answers by what real sshd and bash do at login (the login's
+`HOME` is the case's own, through `authorized_keys`' `environment=`, so
+this user's own `~/.bashrc` is never touched). `tests/test_preamble.sh`
+plays a printing login shell through the fake ssh (`FAKE_SSH_RC`), and
+`tests/test_via.sh` through each launcher. Where there is no sshd those
+cases are skipped and
 named; `QD_TEST_SSHD=require`, as in CI's ssh job, fails them instead.
 `tests/test_remote.sh` reads a store made in git's SHA-256 object format
 (`provost init --object-format sha256`); where git is older than 2.29 or

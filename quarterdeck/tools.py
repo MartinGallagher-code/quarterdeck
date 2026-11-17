@@ -354,8 +354,8 @@ def plan(argv, entry_dir):
 TARGET_COLS = ("host", "target", "ssh_host", "name", "src", "source")
 PEER_COLS = ("peer", "dst")
 SKIP = ("addr", "rc", "duration_s", "pass", "ts", "timestamp", "time",
-        "line_no", "error", "parse_error", "stdout", "stderr", "line",
-        "run", "at", "test_start", "filename", "digest", "is_baseline",
+        "line_no", "error", "parse_error", "stdout", "stderr", "preamble",
+        "line", "run", "at", "test_start", "filename", "digest", "is_baseline",
         "group_id", "slot", "path", "room", "row", "rack", "role")
 STATUS_VERDICT = {"ok": "PASS", "failed": "FAIL", "timeout": "FAIL",
                   "unreachable": "FAIL", "push-failed": "FAIL",

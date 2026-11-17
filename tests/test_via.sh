@@ -341,6 +341,59 @@ t_a_tool_probe_says_it_uses_ssh() {
     assert_contains "$(cat err)" "--via pdsh does not apply to it"
 }
 
+# QD-038: a login shell that prints before the command (srun: what the
+# node prints ahead of the task), through each launcher -- the same rows
+# and the same error column as from quiet shells, what was printed in the
+# preamble column, and a --script pushed and cleaned up through it
+# shellcheck disable=SC2016  # expanded on the far side, not here
+through_a_printing_shell() {
+    local via="$1" a b
+    seed
+    local hosts=(-S 'node[01-03]')
+    if [ "$via" = srun ]; then
+        in_allocation 4242 'node[01-03]'
+        hosts=()
+    fi
+    cat > rc <<'EOF'
+echo "Welcome to $FAKE_HOST"
+echo "bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8)" >&2
+EOF
+    local cmd='case $FAKE_HOST in node02) ls /nonexistent-dir; exit 3;;
+        *) printf "cpus\tmhz\n64\t2400\n";; esac'
+    qd_rc run "${hosts[@]}" --via "$via" --name quiet -q -- "$cmd" > /dev/null
+    assert_status "$QD_RC" 1
+    export FAKE_SSH_RC="$PWD/rc"
+    qd_rc run "${hosts[@]}" --via "$via" --name chatty -q -- "$cmd" \
+        > /dev/null 2> err
+    assert_status "$QD_RC" 1
+    a="$(qd show quiet --cols host,status,rc,error,cpus,mhz --format csv)"
+    b="$(qd show chatty --cols host,status,rc,error,cpus,mhz --format csv)"
+    assert_eq "$b" "$a"
+    assert_contains "$b" "node01,ok,0,,64,2400"
+    assert_contains "$b" "node02,failed,3,ls: cannot access"
+    a="$(qd show quiet:hosts --cols host,status,rc,error,stderr --format csv)"
+    b="$(qd show chatty:hosts --cols host,status,rc,error,stderr --format csv)"
+    assert_eq "$b" "$a"
+    assert_not_contains "$b" "setlocale"
+    b="$(qd show chatty:hosts --where host=node03 --cols preamble --format csv)"
+    assert_contains "$b" "Welcome to node03"
+    assert_contains "$b" "setlocale"
+    assert_contains "$(cat err)" "the login shell printed before the command on 3 hosts"
+    printf '#!/bin/sh\nprintf "cpus\\tmhz\\n8\\t1\\n"\n' > probe.sh
+    qd_rc run "${hosts[@]}" --via "$via" --script probe.sh --remote-dir rd \
+        -q > /dev/null 2>&1
+    assert_status "$QD_RC" 0
+    assert_eq "$(qd show latest --cols host,cpus --format csv | tail -n +2)" \
+        "$(printf 'node01,8\nnode02,8\nnode03,8')"
+    for h in node01 node02 node03; do
+        assert_eq "$(ls -A "$FAKE_ROOT/$h/rd")" ""
+    done
+}
+
+t_pdsh_through_a_printing_shell() { through_a_printing_shell pdsh; }
+t_clush_through_a_printing_shell() { through_a_printing_shell clush; }
+t_srun_through_a_printing_shell() { through_a_printing_shell srun; }
+
 # -- what is said before anything runs ------------------------------------------
 
 t_dry_run_through_each_launcher() {
@@ -441,6 +494,9 @@ run_test "pdsh: ports and shared addresses refused"       t_pdsh_refuses_what_it
 run_test "runs with other #% keys share a dataset"        t_runs_with_other_keys_share_a_dataset
 run_test "probes through every launcher"                  t_probes_through_every_launcher
 run_test "a tool probe says it reaches hosts by ssh"      t_a_tool_probe_says_it_uses_ssh
+run_test "pdsh: through a printing login shell"         t_pdsh_through_a_printing_shell
+run_test "clush: through a printing login shell"        t_clush_through_a_printing_shell
+run_test "srun: what the node prints first is cut"      t_srun_through_a_printing_shell
 run_test "--dry-run through each launcher"                t_dry_run_through_each_launcher
 run_test "the stop on the host is ssh's"                 t_the_stop_on_the_host_is_sshs
 run_test "a launcher not here, or unknown, is refused"    t_a_launcher_not_here_is_refused

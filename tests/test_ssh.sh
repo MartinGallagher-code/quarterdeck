@@ -376,13 +376,15 @@ Host jumped
 EOF
 }
 
-# start_sshd [cert]: an sshd of this case's own on a free loopback port, as
-# this user, logging every login to $SSHD_DIR/sshd.log, and client_cfg's
-# config for it.  With cert, it trusts a CA's certificates and no plain key
-# at all, and the client offers a certificate that CA signed.
+# start_sshd [cert|home]: an sshd of this case's own on a free loopback
+# port, as this user, logging every login to $SSHD_DIR/sshd.log, and
+# client_cfg's config for it.  With cert, it trusts a CA's certificates and
+# no plain key at all, and the client offers a certificate that CA signed.
+# With home, a login's HOME is $SSHD_DIR/home, so the login shell reads
+# the case's own ~/.bashrc and ~/.zshenv, not this user's.
 start_sshd() {
     SSHD_DIR="$TEST_TMPDIR/sshd"
-    local d="$SSHD_DIR" auth cert_line="" ca_line="" me
+    local d="$SSHD_DIR" auth cert_line="" ca_line="" me env_line=""
     me="$(id -un)"
     mkdir -p "$d"
     ssh-keygen -q -t ed25519 -N '' -f "$d/host_key"
@@ -393,6 +395,12 @@ start_sshd() {
         auth="AuthorizedKeysFile none"
         ca_line="TrustedUserCAKeys $d/ca.pub"
         cert_line="CertificateFile $d/user_key-cert.pub"
+    elif [ "${1:-}" = home ]; then
+        mkdir -p "$d/home"
+        printf 'environment="HOME=%s" %s\n' "$d/home" \
+            "$(cat "$d/user_key.pub")" > "$d/authorized_keys"
+        auth="AuthorizedKeysFile $d/authorized_keys"
+        env_line="PermitUserEnvironment yes"
     else
         cp "$d/user_key.pub" "$d/authorized_keys"
         auth="AuthorizedKeysFile $d/authorized_keys"
@@ -405,6 +413,7 @@ HostKey $d/host_key
 PidFile $TEST_TMPDIR/sshd.pid
 $auth
 $ca_line
+$env_line
 StrictModes no
 UsePAM no
 PasswordAuthentication no
@@ -537,6 +546,45 @@ t_real_certificate_login() {
     assert_contains "$out" "user_key-cert.pub: valid from "
 }
 
+# QD-038 against what a real sshd and login shell do: a ~/.bashrc (and
+# ~/.zshenv, for a zsh login) that greets, warns and runs stty, as real
+# ones do.  The shell does read it (--keep-preamble shows it in the
+# answer, as before), and qd cuts it: the table is a table, the error is
+# the command's own, and what it printed is in the preamble column.
+t_real_a_login_shells_greeting_is_cut() {
+    start_sshd home
+    cfg="$SSHD_DIR/ssh.cfg"
+    printf '%s\n' 'echo "Welcome to the test host"' \
+        'echo "bash: warning: setlocale: LC_ALL: cannot change locale (xx_XX.UTF-8)" >&2' \
+        'stty -ixon' > "$SSHD_DIR/home/.bashrc"
+    cp "$SSHD_DIR/home/.bashrc" "$SSHD_DIR/home/.zshenv"
+    table="printf 'cpus\tmhz\n64\t2400\n'"
+    qd run --ssh-config "$cfg" -S direct --keep-preamble -q -- "$table" \
+        > /dev/null
+    cap="$(qd show latest --cols capture --format csv | tail -n 1)"
+    assert_contains "$(cat "$QD_STORE/captures/$cap/output.txt")" \
+        "Welcome to the test host"
+    qd run --ssh-config "$cfg" -S direct -q -- "$table" > /dev/null 2> err
+    assert_eq "$(qd show latest --cols host,cpus,mhz --format csv)" \
+        "$(printf 'host,cpus,mhz\ndirect,64,2400')"
+    pre="$(qd show latest:hosts --cols preamble --format csv)"
+    assert_contains "$pre" "Welcome to the test host"
+    assert_contains "$pre" "setlocale"
+    assert_contains "$pre" "stty"
+    assert_contains "$(cat err)" "the login shell printed before the command on 1 host (direct)"
+    qd_rc run --ssh-config "$cfg" -S direct -q -- 'ls /nonexistent-dir' \
+        > /dev/null 2>&1
+    assert_status "$QD_RC" 1
+    err="$(qd show latest:hosts --cols error --format csv | tail -n 1)"
+    assert_contains "$err" "ls: cannot access"
+    # a pushed script, the push's own calls and its cleanup, through it too
+    push_tool
+    qd run --ssh-config "$cfg" -S direct --push tool.sh \
+        --remote-dir "$TEST_TMPDIR/rd" -q -- ./tool.sh > /dev/null
+    assert_eq "$(qd show latest --cols host,A --format csv | tail -n 1)" "direct,ran-on-"
+    assert_eq "$(ls -A "$TEST_TMPDIR/rd")" ""
+}
+
 run_test "--ssh-config: -F for ssh, scp and ssh -G"      t_ssh_config_reaches_ssh_scp_and_dash_g
 run_test "QD_SSH_CONFIG does the same"                   t_qd_ssh_config_is_the_same
 run_test "a missing --ssh-config: refused, no host"      t_a_missing_ssh_config_is_refused_before_any_host
@@ -558,7 +606,8 @@ why="$(sshd_why_not)"
 for c in "real sshd: ProxyJump through a bastion:t_real_proxyjump_through_a_bastion" \
          "real sshd: --reuse logs in once a host:t_real_reuse_logs_in_once_per_host" \
          "real sshd: a master opened first carries a run:t_real_a_master_opened_first_carries_the_run" \
-         "real sshd: a certificate login:t_real_certificate_login"; do
+         "real sshd: a certificate login:t_real_certificate_login" \
+         "real sshd: a login shell's greeting is cut:t_real_a_login_shells_greeting_is_cut"; do
     name="${c%%:t_*}"
     fn="t_${c##*:t_}"
     if [ -z "$why" ]; then

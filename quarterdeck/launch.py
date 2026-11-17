@@ -148,20 +148,21 @@ class SrunRunner(fleet.Runner):
     def run_fields(self):
         return {"via": self.via, "sched_job": self.alloc.get("job", "")}
 
-    def _capture(self, argv, timeout, stdin=None, marked=False):
-        rc, out, err, group = fleet.Runner._capture(self, argv, timeout,
-                                                    stdin, marked)
+    def _capture(self, argv, timeout, stdin=None, marked=False,
+                 started=False):
+        rc, out, err, group, pre = fleet.Runner._capture(
+            self, argv, timeout, stdin, marked, started)
         if isinstance(rc, (fleet.TimedOut, fleet.Flooded)):
-            return rc, out, err, group
+            return rc, out, err, group, pre
         if rc == 255 and err.startswith("cannot run "):
-            return fleet.Unlaunched(255), out, err, group
+            return fleet.Unlaunched(255), out, err, group, pre
         lines = err.splitlines(True)
         ran = any(TASK_RE.match(ln) for ln in lines)
         kept = "".join(ln for ln in lines if not TASK_EXIT_RE.match(ln))
         if rc != 0 and not ran and any(SRUN_ERR_RE.match(ln)
                                        for ln in lines):
-            return fleet.Unlaunched(255), out, kept, group
-        return rc, out, kept, group
+            return fleet.Unlaunched(255), out, kept, group, pre
+        return rc, out, kept, group, pre
 
     def _copy(self, host, files):
         # through the step's stdin: the host's own copy, in the same step
@@ -170,8 +171,9 @@ class SrunRunner(fleet.Runner):
             dest = shlex.quote("%s/%s" % (self.work_dir,
                                           os.path.basename(f)))
             rc, _, err = self._exec(
-                self.argv(host, "cat > %s && chmod +x %s" % (dest, dest)),
-                max(60, self.timeout), f)
+                self.argv(host, self.started(
+                    "cat > %s && chmod +x %s" % (dest, dest))),
+                max(60, self.timeout), f, started=self.cut)
             if rc != 0:
                 return rc, err
         return 0, ""
@@ -257,18 +259,33 @@ class FanRunner(fleet.Runner):
             argv += ["-l", self.user]
         return argv
 
-    def remote(self, command, stdin_file=None):
-        """What each host runs: the command in a subshell of its own (so
-        an `exit` in it ends only that), then a line with its status."""
+    def remote(self, command, stdin_file=None, marked=True):
+        """What each host runs: the start line on both streams (QD-038;
+        not with --keep-preamble, nor for --dry-run's `marked`), the
+        command in a subshell of its own (so an `exit` in it ends only
+        that), then a line with its status.  Every call qd makes through
+        pdsh or clush goes this way -- mkdir, the check, cleanup -- so the
+        login shell's preamble is cut from each."""
         inner = "(eval %s)" % shlex.quote(command)
         if stdin_file:
             inner += " < %s" % shlex.quote(stdin_file)
-        return "%s; printf '\\n%%s %%d\\n' %s \"$?\"" % (inner, self.token)
+        head = ""
+        if marked and self.cut:
+            s = shlex.quote(self.start)
+            head = "printf '\\n%%s\\n' %s; printf '\\n%%s\\n' %s >&2; " % (
+                s, s)
+        return "%s%s; printf '\\n%%s %%d\\n' %s \"$?\"" % (
+            head, inner, self.token)
 
-    def fan_argv(self, hosts, command, timeout, jobs, stdin_file=None):
+    def started(self, command):
+        # the start line is remote()'s, in every call
+        return command
+
+    def fan_argv(self, hosts, command, timeout, jobs, stdin_file=None,
+                 marked=True):
         return self._common(jobs, timeout) + [
             "-w", ",".join(h.addr for h in hosts),
-            self.remote(command, stdin_file)]
+            self.remote(command, stdin_file, marked)]
 
     def copy_argv(self, hosts, files, jobs):
         argv = self._common(jobs)
@@ -281,7 +298,7 @@ class FanRunner(fleet.Runner):
 
     def argv(self, host, command):
         """One host's command, as --dry-run would print it alone."""
-        return self.fan_argv([host], command, self.timeout, 1)
+        return self.fan_argv([host], command, self.timeout, 1, marked=False)
 
     # -- reading what comes back ----------------------------------------
 
@@ -379,14 +396,74 @@ class FanRunner(fleet.Runner):
     def _fan(self, hosts, command, timeout, jobs, stdin_file=None,
              label=None):
         """`command` on every host in one call.  -> {name: (rc, stdout,
-        stderr, when it answered)}"""
+        stderr, when it answered, preamble)}
+
+        A host's lines on each stream are held until its start line comes
+        (QD-038, remote()): those before it are its login shell's
+        preamble, cut; with no start line, or past fleet.HEAD_MAX before
+        it, they are its answer as they came."""
         by_addr = dict((h.addr, h) for h in hosts)
+        cut = self.cut
         st = dict((h.name, {"out": [], "err": [], "bytes": 0, "ebytes": 0,
                             "flood": False, "rc": None, "t": None,
-                            "timeout": False}) for h in hosts)
+                            "timeout": False,
+                            "head": {"out": [] if cut else None,
+                                     "err": [] if cut else None},
+                            "hbytes": {"out": 0, "err": 0},
+                            "pre": {"out": [], "err": []},
+                            "late": {"out": False, "err": False}})
+                  for h in hosts)
         stray = []
         done = [0]
         limit = int(self.max_output)
+
+        def keep_out(s, rest):
+            if s["flood"]:
+                return
+            s["bytes"] += len(rest.encode("utf-8")) + 1
+            if s["bytes"] > limit:
+                s["flood"], s["out"] = True, []
+                return
+            s["out"].append(rest)
+
+        def keep_err(s, rest):
+            s["ebytes"] += len(rest) + 1
+            if s["ebytes"] <= limit:
+                s["err"].append(rest)
+
+        keep = {"out": keep_out, "err": keep_err}
+
+        def release(s, k, late=False):
+            """A stream's held lines, as its answer: nothing cut."""
+            head = s["head"][k]
+            if head is None:
+                return
+            s["head"][k], s["late"][k] = None, late
+            for ln in head:
+                keep[k](s, ln)
+
+        def taken(s, k, rest):
+            """Whether a host's line is the start line or held before it."""
+            head = s["head"][k]
+            if head is None:
+                if s["late"][k] and rest == self.start:
+                    # came past HEAD_MAX: only it goes, with the newline
+                    # it opens with
+                    s["late"][k] = False
+                    if s[k] and s[k][-1] == "":
+                        s[k].pop()
+                    return True
+                return False
+            if rest == self.start:
+                if head and head[-1] == "":
+                    head.pop()          # the newline it opens with
+                s["pre"][k], s["head"][k] = head, None
+                return True
+            head.append(rest)
+            s["hbytes"][k] += len(rest.encode("utf-8")) + 1
+            if s["hbytes"][k] > fleet.HEAD_MAX:
+                release(s, k, late=True)
+            return True
 
         def on_line(kind, line):
             if kind == "out":
@@ -398,19 +475,15 @@ class FanRunner(fleet.Runner):
                     return
                 m = self._marker.match(rest)
                 if m:
+                    release(s, "out")
                     s["rc"], s["t"] = int(m.group(1)), time.monotonic()
                     done[0] += 1
                     if label is not None:
                         fleet.progress("%s%d/%d done" % (label, done[0],
                                                          len(hosts)))
                     return
-                if s["flood"]:
-                    return
-                s["bytes"] += len(rest.encode("utf-8")) + 1
-                if s["bytes"] > limit:
-                    s["flood"], s["out"] = True, []
-                    return
-                s["out"].append(rest)
+                if not taken(s, "out", rest):
+                    keep_out(s, rest)
                 return
             m = TOOL_PREFIX_RE.match(line)
             text = line[m.end():] if m else line
@@ -423,13 +496,17 @@ class FanRunner(fleet.Runner):
                 return
             for name in names:
                 s = st[name]
+                if m:
+                    # the tool's own line about the host: it is done, and
+                    # what it held is said first, in the order it came
+                    release(s, "err")
+                elif taken(s, "err", rest):
+                    continue
                 if m and EXIT_RE.match(rest):
                     continue
                 if m and "command timeout" in rest:
                     s["timeout"] = True
-                s["ebytes"] += len(rest) + 1
-                if s["ebytes"] <= limit:
-                    s["err"].append(rest)
+                keep_err(s, rest)
 
         argv = self.fan_argv(hosts, command, timeout, jobs, stdin_file)
         rc, why = self._stream(argv, self._overall(len(hosts), jobs,
@@ -440,20 +517,25 @@ class FanRunner(fleet.Runner):
         res = {}
         for h in hosts:
             s = st[h.name]
+            release(s, "out")
+            release(s, "err")
+            pre = fleet.joined(*["".join(ln + "\n" for ln in s["pre"][k])
+                                 for k in ("out", "err")])
             err = "".join(ln + "\n" for ln in s["err"])
             if s["flood"]:
                 res[h.name] = (125, "", (
                     "output exceeded --max-output (%d bytes); the rest of "
-                    "it was dropped\n" % limit) + err, s["t"])
+                    "it was dropped\n" % limit) + err, s["t"], pre)
             elif s["rc"] is not None:
-                res[h.name] = (s["rc"], self._text(s["out"]), err, s["t"])
+                res[h.name] = (s["rc"], self._text(s["out"]), err, s["t"],
+                               pre)
             elif s["timeout"] or stopped:
                 res[h.name] = (fleet.TimedOut(124), "",
-                               "timed out after %ss" % timeout, None)
+                               "timed out after %ss" % timeout, None, pre)
             else:
                 res[h.name] = (fleet.Unlaunched(255), self._text(s["out"]),
                                err + "".join(ln + "\n" for ln in stray)
-                               or "%s: no answer\n" % self.via, None)
+                               or "%s: no answer\n" % self.via, None, pre)
         return res
 
     @staticmethod
@@ -505,9 +587,10 @@ class FanRunner(fleet.Runner):
                 ans = self._fan(live, self.command_for(command, bool(files)),
                                 self.timeout, jobs, feed, label)
                 for h in live:
-                    rc, out, err, when = ans[h.name]
+                    rc, out, err, when, pre = ans[h.name]
                     r = by[h.name]
                     r.rc, r.stdout, r.stderr = rc, out, err
+                    r.preamble = pre
                     r.outcome = self.outcome_of(rc, out, err)
                     r.duration = (when or time.monotonic()) - t0
             if sending and cleanup:
@@ -522,9 +605,9 @@ class FanRunner(fleet.Runner):
                 shutil.rmtree(tmp, ignore_errors=True)
         return rs
 
-    def _failed(self, r, rc, err, t0):
+    def _failed(self, r, rc, err, t0, pre=""):
         r.outcome = fleet.UNREACHABLE if rc == 255 else fleet.PUSH_FAILED
-        r.rc, r.stderr = rc, err
+        r.rc, r.stderr, r.preamble = rc, err, pre
         r.duration = time.monotonic() - t0
 
     def _push_all(self, hosts, sending, files, by, cleanup, jobs, t0):
@@ -540,9 +623,9 @@ class FanRunner(fleet.Runner):
         ans = self._fan(hosts, self.mkdir_command(), 60, jobs)
         made = []
         for h in hosts:
-            rc, out, err, _ = ans[h.name]
+            rc, out, err, _, pre = ans[h.name]
             if rc != 0:
-                self._failed(by[h.name], rc, err, t0)
+                self._failed(by[h.name], rc, err, t0, pre)
                 continue
             if h.name not in self._made:
                 self._made[h.name] = "qd-made-parent" in out
@@ -567,13 +650,13 @@ class FanRunner(fleet.Runner):
         ans = self._fan(made, " && ".join(checks), 60, jobs)
         live = []
         for h in made:
-            rc, _, err, _ = ans[h.name]
+            rc, _, err, _, pre = ans[h.name]
             if rc == 0:
                 live.append(h)
                 continue
             why = "".join(ln + "\n" for ln in errs.get(h.name, []))
             self._failed(by[h.name], rc if rc == 255 else 1,
-                         why + (err or ""), t0)
+                         why + (err or ""), t0, pre)
         return live
 
     def _copy_all(self, hosts, files, jobs):
@@ -621,7 +704,7 @@ class FanRunner(fleet.Runner):
                     shlex.quote(self.remote_dir)
             ans = self._fan(group, self.wrap(cmd), 60, jobs)
             for h in group:
-                rc, _, err, _ = ans[h.name]
+                rc, _, err, _, _ = ans[h.name]
                 if rc != 0:
                     first = (err or "").strip().splitlines()
                     out[h.name] = ("qd: could not remove %s from this host: "
