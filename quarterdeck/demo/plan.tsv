@@ -1,0 +1,11 @@
+# What qd demo files, in this order: when the run is filed as having
+# started (UTC), its name, the answers it reads, and the command a real
+# fleet would have been sent.  Tab-separated.
+at	name	answers	command
+2026-11-09T08:00:00Z	demo-facts	facts-1.txt	why-slow --facts
+2026-11-10T08:00:00Z	demo-facts	facts-2.txt	why-slow --facts
+2026-11-11T08:00:00Z	demo-facts	facts-3.txt	why-slow --facts
+2026-11-12T08:00:00Z	demo-facts	facts-4.txt	why-slow --facts
+2026-11-13T08:00:00Z	demo-facts	facts-5.txt	why-slow --facts
+2026-11-13T08:30:00Z	demo-kernel	kernel.txt	uname -r
+2026-11-13T09:00:00Z	demo-iperf	iperf.txt	iperf3 -c demo-peer -f m -t 10 | awk '/receiver/ {print "mbps:", $7}'

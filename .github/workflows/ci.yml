@@ -358,10 +358,15 @@ jobs:
           printf 'host,v\na,1\nb,2\n' > t.csv
           qd import t.csv > /dev/null
           qd stats latest v
+          # qd demo's answers are package data too: the wheel files the
+          # whole demo, in a home of its own (QD-039)
+          qd demo --limits | grep -q '^req,column,op,limit'
+          HOME="$RUNNER_TEMP/demo-home" qd demo | tee demo.out
+          grep -q '7 runs of 24 hosts' demo.out
 
       # The floor: what PyPI will serve must install and start on 3.6, in a
       # venv of its own, though it is built on a newer Python (QD-007).
       - name: Install the wheel on Python 3.6
         run: |
           docker run --rm -v "$PWD/dist:/dist:ro" python:3.6 \
-            bash -euxc 'python -m venv /v && /v/bin/pip install -q /dist/*.whl && /v/bin/qd --version && /v/bin/qd --help > /dev/null'
+            bash -euxc 'python -m venv /v && /v/bin/pip install -q /dist/*.whl && /v/bin/qd --version && /v/bin/qd --help > /dev/null && /v/bin/qd demo --limits > /dev/null'

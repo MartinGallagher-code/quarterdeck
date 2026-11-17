@@ -1,0 +1,52 @@
+# demo-iperf: each demo host's throughput to demo-peer, as iperf3's
+# receiver line gives it.  One section a host: ==> NAME STATUS SECONDS
+# <==, then its answer.
+
+==> demo-r1n01 ok 10.05 <==
+mbps: 9410
+==> demo-r1n02 ok 10.20 <==
+mbps: 9416
+==> demo-r1n03 ok 10.07 <==
+mbps: 9389
+==> demo-r1n04 ok 10.06 <==
+mbps: 9388
+==> demo-r1n05 ok 10.14 <==
+mbps: 9439
+==> demo-r1n06 ok 10.20 <==
+mbps: 9399
+==> demo-r1n07 ok 10.15 <==
+mbps: 9398
+==> demo-r1n08 ok 10.20 <==
+mbps: 9434
+==> demo-r1n09 ok 10.20 <==
+mbps: 9389
+==> demo-r1n10 ok 10.24 <==
+mbps: 9436
+==> demo-r1n11 ok 10.18 <==
+mbps: 9384
+==> demo-r1n12 ok 10.27 <==
+mbps: 9417
+==> demo-r2n01 ok 10.19 <==
+mbps: 9402
+==> demo-r2n02 ok 10.22 <==
+mbps: 9380
+==> demo-r2n03 ok 10.29 <==
+mbps: 4882
+==> demo-r2n04 ok 10.24 <==
+mbps: 9402
+==> demo-r2n05 ok 10.18 <==
+mbps: 9401
+==> demo-r2n06 ok 10.26 <==
+mbps: 9381
+==> demo-r2n07 ok 10.17 <==
+mbps: 9435
+==> demo-r2n08 ok 10.05 <==
+mbps: 9411
+==> demo-r2n09 ok 10.12 <==
+mbps: 9414
+==> demo-r2n10 ok 10.08 <==
+mbps: 9417
+==> demo-r2n11 ok 10.14 <==
+mbps: 9404
+==> demo-r2n12 ok 10.06 <==
+mbps: 9394
