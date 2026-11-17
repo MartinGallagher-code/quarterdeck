@@ -5,6 +5,32 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.20.0 — 2026-11-17
+
+A firmware probe, and the host that differs from its rack-mates by value
+(QD-034): the fleet drift checker, inside qd.
+
+### Added
+- **`qd probe firmware`** (in `inventory`): BIOS, board and product
+  strings from `/sys/class/dmi/id`, CPU microcode from `/proc/cpuinfo`,
+  and per NIC its MTU and ethtool's driver, driver and firmware versions,
+  offloads (`-k`), rings (`-g`), coalescing (`-c`) and pause (`-a`), one
+  row per NIC, without root. Every `key: value` line ethtool prints is
+  kept. A file only root can read says `needs root`, a host with no DMI
+  says `dmi: absent`, and a host without ethtool says `ethtool: not
+  installed` and still files the rest. Serials, UUIDs and MACs are never
+  read.
+- **`qd outliers RUN [COLS] --categorical`**: within each rack (or `--peers`
+  group), each column's majority value and every host that differs from
+  it; a group with no majority is split, never two outliers; NIC compared
+  with NIC (`--match`), host-wide values once a host; blanks not counted;
+  per-host identities left out unless named. Exit 1 when a host differs
+  or a column splits.
+
+### Changed
+- `qd outliers`' column is optional with `--categorical`; without it a
+  column is still required, as before.
+
 ## 0.18.1 — 2026-11-11
 
 A remote store made in git's SHA-256 object format is read (QD-032,

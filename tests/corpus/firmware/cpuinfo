@@ -1,0 +1,13 @@
+processor	: 0
+vendor_id	: GenuineIntel
+cpu family	: 6
+model		: 106
+model name	: Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz
+stepping	: 6
+microcode	: 0xd0003d1
+cpu MHz		: 2000.000
+
+processor	: 1
+vendor_id	: GenuineIntel
+model name	: Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz
+microcode	: 0xd0003d1

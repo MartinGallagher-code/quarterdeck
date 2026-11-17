@@ -336,6 +336,86 @@ t_rm_needs_yes_and_leaves_history() {
     assert_contains "$(qd baseline ls)" "b1"
 }
 
+# QD-034: --categorical, the odd one out by value, as agree names it
+t_categorical_the_odd_host_in_a_rack() {
+    {
+        echo 'host,rack,bios_version,kernel,product_serial,uptime_s'
+        for h in a b c d e; do echo "$h,r1,2.19.1,6.8.0,SN-$h,10$h"; done
+        echo 'f,r1,2.17.0,6.8.0,SN-f,77'
+        # a rack of two that disagree: split, not two outliers
+        echo 'g,r2,2.19.1,6.8.0,SN-g,1'
+        echo 'h,r2,2.17.0,6.8.0,SN-h,2'
+    } > fw.csv
+    qd import fw.csv --name fw > /dev/null
+    qd_rc outliers fw --categorical --format csv > out
+    assert_status "$QD_RC" 1
+    out="$(cat out)"
+    assert_contains "$out" "rack,column,host,value,majority,agree,measured,verdict"
+    assert_contains "$out" "r1,bios_version,f,2.17.0,2.19.1,5,6,differs"
+    assert_contains "$out" "r2,bios_version,g,2.19.1,,1,2,split"
+    assert_contains "$out" "r2,bios_version,h,2.17.0,,1,2,split"
+    # exactly those three rows: kernel agrees, serials and uptime are not
+    # compared at all
+    assert_eq "$(printf '%s\n' "$out" | tail -n +2 | wc -l | tr -d ' ')" "3"
+    out="$(qd outliers fw --categorical || true)"
+    assert_contains "$out" "1 host differ from the majority of their group in 1 column; 1 column split"
+    assert_contains "$out" "left out as per-host identities: product_serial"
+    # named, an identity is compared: every serial differs, so all split
+    assert_contains "$(qd outliers fw product_serial --categorical --format csv || true)" \
+        "r1,product_serial,a,SN-a,,1,6,split"
+    # a rack that agrees on everything asked: exit 0
+    qd_rc outliers fw kernel --categorical > out
+    assert_status "$QD_RC" 0
+    assert_contains "$(cat out)" "0 hosts differ"
+}
+
+t_categorical_per_nic_blank_and_peers() {
+    {
+        echo 'host,rack,sku,nic,driver,mtu,bios_version'
+        for h in a b c; do
+            echo "$h,r1,x,eth0,mlx5_core,9000,2.19.1"
+            echo "$h,r1,x,eth1,mlx5_core,9000,2.19.1"
+        done
+        # d: eth1's MTU left at 1500; e: eth1 measured nothing
+        echo 'd,r1,y,eth0,mlx5_core,9000,2.19.1'
+        echo 'd,r1,y,eth1,mlx5_core,1500,2.19.1'
+        echo 'e,r1,y,eth0,mlx5_core,9000,2.19.1'
+        echo 'e,r1,y,eth1,,,2.19.1'
+    } > nic.csv
+    qd import nic.csv --name nic > /dev/null
+    qd_rc outliers nic --categorical --format csv > out
+    assert_status "$QD_RC" 1
+    out="$(cat out)"
+    # NIC against the same NIC; the BIOS, the same on every row of a host,
+    # once a host
+    assert_contains "$out" "rack,match,column,host,value,majority,agree,measured,verdict"
+    assert_contains "$out" "r1,eth1,mtu,d,1500,9000,3,4,differs"
+    # a host attribute is a value like any other: d and e are sku y
+    assert_contains "$out" "r1,,sku,d,y,x,3,5,differs"
+    assert_eq "$(printf '%s\n' "$out" | tail -n +2 | wc -l | tr -d ' ')" "3"
+    # e's blank is not measured: not counted, never a value
+    assert_contains "$(qd outliers nic --categorical || true)" "not measured, and not counted: mtu on e/eth1"
+    # by a peer group instead of the rack: sku y is d and e, which split,
+    # and the sku they are grouped by is not compared within the groups
+    qd peers define sku --by sku > /dev/null
+    out="$(qd outliers nic --categorical --peers sku --format csv || true)"
+    assert_not_contains "$out" ",sku,"
+    assert_contains "$out" "sku,match,column,host,value,majority,agree,measured,verdict"
+    # in y, eth1's MTU is d's alone (e's is blank): one host is no
+    # majority and no odd one, so nothing differs anywhere
+    assert_eq "$(printf '%s\n' "$out" | tail -n +2 | wc -l | tr -d ' ')" "0"
+    # no rack and no peers: the whole fleet is one group
+    printf 'host,v\na,1\nb,1\nc,2\n' > flat.csv
+    assert_contains "$(qd outliers flat.csv --categorical --format csv 2>/dev/null || true)" \
+        "(all),v,c,2,1,2,3,differs"
+    # numbers ask for a column; --match is --categorical's
+    qd_rc outliers nic 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "outliers wants a column"
+    qd_rc outliers nic mtu --match nic 2> err
+    assert_status "$QD_RC" 2
+}
+
 run_test "the rank test matches scipy's figures"        t_rank_test_matches_scipy
 run_test "Holm's adjustment"                            t_holm_adjustment
 run_test "peers: define --by, ls, show, stats --peers"  t_define_by_ls_show_and_stats
@@ -349,4 +429,6 @@ run_test "too few runs: the drift alone"                t_too_few_runs_falls_bac
 run_test "blank is never zero"                          t_blank_is_never_zero
 run_test "compare --peers, run against run"             t_compare_peers_run_against_run
 run_test "rm needs --yes; own records stay"             t_rm_needs_yes_and_leaves_history
+run_test "categorical: the odd host in a rack"         t_categorical_the_odd_host_in_a_rack
+run_test "categorical: per NIC, blanks, peer groups"   t_categorical_per_nic_blank_and_peers
 finish
