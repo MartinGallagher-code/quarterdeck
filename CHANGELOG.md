@@ -5,6 +5,42 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.27.0 — 2026-11-18
+
+`qd check` can pass or fail on how alike the hosts are: `agg` takes `cv`,
+`skew`, `kurtosis` and `zmax` (QD-050).
+
+### Added
+- **Four spread and shape aggregates for a thresholds file's `agg`.**
+  `cv` is the sample stdev over the mean's size; `skew` the adjusted
+  Fisher-Pearson sample skewness (G1, Excel's `SKEW`); `kurtosis` the
+  sample excess kurtosis (G2, Excel's `KURT`, 0 for a normal
+  distribution); `zmax` the largest robust |z|, 0.6745 (x - median) /
+  MAD, worked out by `qd outliers`' own code, so the two agree on the
+  worst host and its score, which the note names. `agg zmax`, `op <=
+  3.5` reads "no host is an outlier".
+- **Not measured, with the reason**, below each one's fewest values (2,
+  3, 4 and 3), for a mean of 0 (`cv`), every value the same (`skew`,
+  `kurtosis`) and a MAD of 0 (`zmax`).
+- **Unitless**: a limit with a unit on one of them is refused with exit
+  2, naming the check, and the column's unit does not scale them. A
+  percentage tolerance or baseline offset is a share, and is taken.
+- **`--baseline` works on them**: a relative limit is held to the same
+  figure over the baseline's rows of the same hosts.
+- `qd check --help` names every `agg`; README "Against requirements: `qd
+  check`" has a "Spread and shape" section with the definitions.
+
+### Changed
+- `quarterdeck/stats.py`: `robust_z()` is the one formula `outliers()`
+  and `zmax` score by; `shape()` works out the four. In
+  `quarterdeck/check.py` the baseline values an aggregate is held to are
+  found by one helper, `_baseline_values()`, shared by the old
+  aggregates and the new; their output is unchanged.
+- Tests: seven cases in `tests/test_check.sh` (hand-worked values on 1,
+  2, 3, 4, 100; not measured; units refused; zmax against `qd outliers`;
+  a file's old rows unchanged beside new ones; JUnit, waivers, severity,
+  `--keep`; `--baseline`).
+
 ## 0.25.3 — 2026-11-18
 
 Every README pointer in qd's code names a section the README has, and a

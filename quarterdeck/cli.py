@@ -5355,7 +5355,10 @@ def build_parser():
     sp.add_argument("ref", metavar="RUN")
     sp.add_argument("--against", required=True, metavar="FILE",
                     help="thresholds: req, column, op, limit [limit2, where, "
-                    "agg, unit, note, severity] "
+                    "agg, unit, note, severity]; agg is each, mean, median, "
+                    "min, max, sum, stdev, range, p05..p99, or unitless cv, "
+                    "skew, kurtosis (excess), zmax (robust |z|, as qd "
+                    "outliers) "
                     "(README: \"Against requirements: qd check\")")
     sp.add_argument("--waivers", default=env("WAIVERS"), metavar="FILE",
                     help="excuse failures: req, justification [expires, "

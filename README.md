@@ -1460,7 +1460,8 @@ SYS-104  temp    between  20     45                 max
   command line narrows them for every check.
 - **`agg`**: `each` (the default: every row must pass) or one figure over
   the rows -- `mean`, `median`, `min`, `max`, `sum`, `stdev`, `range`,
-  `p05`, `p25`, `p75`, `p95`, `p99`.
+  `p05`, `p25`, `p75`, `p95`, `p99`, or the spread and shape figures
+  `cv`, `skew`, `kurtosis` and `zmax` (below).
 - **`unit`** is the limit's unit, if the limit does not carry one
   (`250us` does). Sizes and times are put on one scale, so `0.3ms`
   fails `<= 250us` and `2G` passes `<= 4096M`, and the observed value is
@@ -1489,6 +1490,67 @@ still a failure in the table, and the head says how many were let off.
 Two things are never let off: a check with **no** severity (it counts at
 every level, so a file without the column behaves as it always did), and
 **not measured**, whatever its severity.
+
+### Spread and shape: `cv`, `skew`, `kurtosis`, `zmax`
+
+`qd stats` and `qd outliers` show how alike the hosts are; these four
+aggregates let a check pass or fail on it. `agg zmax` with `op <= 3.5`
+reads "no host is an outlier", and `agg cv` with `op <= 0.05` "the hosts
+agree within 5%":
+
+```text
+req      column  op  limit  agg
+FLT-001  mbps    <=  3.5    zmax
+FLT-002  mbps    <=  0.05   cv
+FLT-003  rtt     <   1      skew
+```
+
+| `agg` | what it is | fewest values |
+|---|---|---|
+| `cv` | coefficient of variation: the sample stdev (n - 1, as `stdev`) over the mean's size, `stdev / abs(mean)` | 2 |
+| `skew` | the adjusted Fisher-Pearson sample skewness, G1 = g1 sqrt(n(n-1)) / (n-2) with g1 = m3 / m2^1.5 (Excel's `SKEW`): 0 for a symmetric spread, positive when a long tail runs high | 3 |
+| `kurtosis` | the sample **excess** kurtosis, G2 = ((n+1) g2 + 6)(n-1) / ((n-2)(n-3)) with g2 = m4 / m2^2 - 3 (Excel's `KURT`): 0 for a normal distribution, positive for heavier tails | 4 |
+| `zmax` | the largest robust \|z\| over the rows, 0.6745 (x - median) / MAD, as `qd outliers` scores it | 3 |
+
+(m2, m3 and m4 are the central moments, sums of (x - mean)^k over n.)
+
+- **They are unitless.** Cells in units are read on one scale, as `qd
+  outliers` reads them (`1ms` beside `0.1s`), and the figure is shown as
+  it is: the column's unit does not scale it, and the `unit` column of
+  the verdict is blank. A limit with a unit on one of them -- in `unit`,
+  in `limit` or `limit2` (`5%` included: write `0.05`), or in a `within`
+  tolerance or a baseline offset -- is refused with exit 2, naming the
+  check. A tolerance or an offset in percent (`+-10%`, `baseline+10%`)
+  is a share of the figure, not a unit, and is taken.
+- **Not measured, never a pass**, when the figure cannot be had: fewer
+  values than the table's last column, a mean of 0 for `cv`, every value
+  the same for `skew` and `kurtosis`, and a MAD of 0 for `zmax` (most
+  hosts agree exactly: `qd outliers` lists every one that differs). The
+  note says which. A figure over some rows but not all is shown and not
+  passed, as every aggregate's is.
+- **`zmax` is `qd outliers`' score**: the same median, MAD and formula,
+  so the two agree on the worst host and its z. Where hosts repeat (a
+  time series), each host's median is scored, as `qd outliers` does by
+  default; its fewest values are then hosts. The note names the host
+  with the worst |z|, its signed z to one place as `qd outliers` prints
+  it, and the median and MAD. A zmax over three or four hosts is noisy:
+  with so few, the MAD is small and a host a little off can score high.
+- **Under `--each`**, a row of a `zmax` check is that host's own robust
+  z, held to the limit by its size; a row of a `cv`, `skew` or
+  `kurtosis` check shows the host's value and carries the check's
+  verdict, since the figure is the fleet's, not the host's.
+- **With `--baseline`, a relative limit works** as it does on the other
+  aggregates: `baseline+0.02` or `baseline+50%` is held to the same
+  figure over the baseline's rows of the same hosts (each host's median
+  there for a `zmax` over hosts that repeat, and for a qualified
+  baseline), and a host the baseline lacks makes it not measured, as
+  does a baseline whose own figure cannot be had. The `baseline` and
+  `drift_pct` columns give the baseline's figure and the change from it;
+  a percentage of a skew or kurtosis near 0 swings widely, so prefer an
+  absolute offset there.
+- Waivers, severities, `--fail-level`, `--keep` and every `--format`,
+  JUnit included, treat these verdicts as any other aggregate's. A
+  thresholds file with none of them gives the output it always gave.
 
 ### Waivers
 

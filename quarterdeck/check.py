@@ -32,6 +32,10 @@ is not measured.  Against a qualified baseline of three runs or more, and
 three values or more for a host in the run, the Mann-Whitney U test with
 Holm's adjustment (as `qd compare --baseline NAME` makes it) must also
 find the difference significant before a crossed limit fails.
+
+`cv`, `skew`, `kurtosis` and `zmax` (QD-050) are unitless figures of the
+rows' spread and shape (stats.shape); zmax is qd outliers' robust z.  A
+limit on one takes no unit, and one that cannot be had is not measured.
 """
 
 import datetime
@@ -51,8 +55,10 @@ OPTIONAL = ("limit2", "where", "agg", "unit", "note", "severity")
 SEVERITIES = ("info", "low", "medium", "high", "critical")
 WAIVER_REQUIRED = ("req", "justification")
 WAIVER_OPTIONAL = ("expires", "where", "expect", "granted_by")
+# spread and shape (QD-050): unitless, so a limit on them takes no unit
+SHAPE_AGGS = ("cv", "skew", "kurtosis", "zmax")
 NUMERIC_AGGS = ("mean", "median", "min", "max", "sum", "stdev", "range",
-                "p05", "p25", "p75", "p95", "p99")
+                "p05", "p25", "p75", "p95", "p99") + SHAPE_AGGS
 AGGS = ("each",) + NUMERIC_AGGS
 
 
@@ -288,6 +294,11 @@ def read_thresholds(path):
         if agg != "each" and op in ("in",):
             die("%s: %s over hosts gives a number; `in` wants words"
                 % (where, agg), 2)
+        if agg in SHAPE_AGGS:
+            unit = _unit_on_shape(d, op, rel)
+            if unit:
+                die("%s: %s is unitless, so its limit takes no unit (%s)"
+                    % (where, agg, unit), 2)
         if d.get("where"):
             try:
                 query.parse(d["where"])
@@ -304,6 +315,29 @@ def read_thresholds(path):
     if not out:
         die("%s holds no checks" % path, 2)
     return out
+
+
+def _unit_on_shape(d, op, rel):
+    """What gives a unit to a limit on cv, skew, kurtosis or zmax, or "".
+    A percentage of the baseline, or a within tolerance in percent, is
+    not a unit: it is a share of the figure."""
+    if d.get("unit"):
+        return "unit %s" % d["unit"]
+    for k in ("limit", "limit2"):
+        text = d.get(k, "")
+        if k == "limit2" and op != "between":
+            if op == "within":
+                tol = parse_tolerance(text) or ()
+                if any(part[2] for part in tol[:2]):
+                    return "limit2 %s" % text
+            continue
+        r = rel.get(k)
+        if isinstance(r, tuple):
+            if r[3]:
+                return "%s %s" % (k, text)
+        elif split_unit(text)[1]:
+            return "%s %s" % (k, text)
+    return ""
 
 
 class Waiver(object):
@@ -562,6 +596,8 @@ def run_check(table, chk, ref=None):
         return Result(chk, note="no rows where %s" % chk.where)
     if chk.relative:
         return run_relative(table, chk, rows, ref)
+    if chk.agg in SHAPE_AGGS:
+        return run_shape(table, chk, rows)
     scale = Scale(table, chk)
     if scale.problem:
         return Result(chk, total=len(rows), note="unit mismatch: " +
@@ -682,6 +718,166 @@ def _closest(per, margins):
     if not pairs:
         return per[0][1] if per else ""
     return min(pairs, key=lambda x: x[0])[1]
+
+
+# ---------------------------------------------------------------------------
+# Spread and shape over the rows (QD-050)
+# ---------------------------------------------------------------------------
+
+class _Plain(object):
+    """The footing of a unitless figure: numbers as they are, an offset
+    from the baseline in no unit at all."""
+    own = ""
+
+    def amount(self, amount, unit):
+        return None if unit else amount
+
+    def show(self, v):
+        return stats.fmt_num(v)
+
+
+def _shape_of(sub, col, agg):
+    """(figure, why not, a note, {row index: robust z}) over the table
+    `sub`.  zmax is taken by qd outliers' own reading: outliers() with
+    its default per (each host's median when hosts repeat), so the two
+    agree on the worst host and its score."""
+    nums = sub.numbers(col)
+    if agg != "zmax":
+        fig, why = stats.shape(agg, [v for v in nums if v is not None])
+        return fig, why, "", {}
+    per = stats.default_per(sub, col)
+    hits, info = stats.outliers(sub, col, per, z=0.0)
+    need = dict(stats.SHAPE_MIN)["zmax"]
+    who = "hosts" if per else "values"
+    if info["n"] < need:
+        return None, "zmax wants %d %s or more, and has %d" % (
+            need, who, info["n"]), "", {}
+    if not info["mad"]:
+        return None, "the MAD is 0 (most %s are the same), so there is no " \
+            "robust z; qd outliers lists every one that differs" % who, \
+            "", {}
+    med, mad = info["median"], info["mad"]
+    by = {}
+    if per:
+        ki = sub.index(per)
+        for r, v in zip(sub.rows, nums):
+            if v is not None:
+                by.setdefault(r[ki], []).append(v)
+        by = dict((k, stats.quantile(sorted(xs), .5)) for k, xs in
+                  by.items())
+    zs = {}
+    for i, (r, v) in enumerate(zip(sub.rows, nums)):
+        if v is None:
+            continue
+        x = by[r[sub.index(per)]] if per else v
+        zs[i] = stats.robust_z(x, med, mad)
+    if not hits:
+        return 0.0, "", "no value off the median %s" % stats.fmt_num(med), zs
+    key, _, _, _, score, _ = hits[0]
+    note = "worst |z|: %s (robust z %s; median %s, MAD %s%s)" % (
+        key, stats.outlier_cells([hits[0]])[0][3], stats.fmt_num(med),
+        stats.fmt_num(mad), ", per %s" % per if per else "")
+    return abs(score), "", note, zs
+
+
+def _plain_limits(chk):
+    num = lambda t: split_unit(t)[0]
+    if chk.op == "between":
+        return num(chk.limit), num(chk.limit2)
+    if chk.op == "within":
+        return num(chk.lo), num(chk.hi)
+    return num(chk.limit), None
+
+
+def run_shape(table, chk, rows, ref=None, side=None):
+    """A cv, skew, kurtosis or zmax check.  They are unitless: the cells
+    are read on one scale, as qd outliers reads them, and the figure is
+    shown as it is.  With ref and side (the run's numbers on the
+    baseline's footing, the baseline's column, rows and key), the limit
+    is relative to the same figure over the baseline's rows of the same
+    hosts."""
+    from .compare import pct
+    sub = table.derive(rows=list(rows))
+    col = sub.colname(chk.column)
+    nums = sub.numbers(col)
+    pos = dict((id(r), n) for n, r in enumerate(table.rows, 1))
+    labels = [_label(table, r, pos[id(r)]) for r in rows]
+    cells = [r[table.index(chk.column)].strip() for r in rows]
+    measured = sum(1 for v in nums if v is not None)
+    blank = [lb for lb, v in zip(labels, nums) if v is None]
+    fig, why, worst, zs = _shape_of(sub, col, chk.agg)
+    foot = _Plain()
+    notes, extra = [], {}
+    lims = None
+    if fig is not None and chk.relative:
+        bnums, bcol, brows, kc = side
+        # zmax over hosts that repeat is over each host's median, on
+        # both sides, as qd outliers takes it
+        bvals, notes, missing = _baseline_values(
+            table, chk, rows, bnums, ref, bcol, brows, kc,
+            chk.agg == "zmax" and stats.default_per(sub, col) is not None)
+        bfig = None
+        if missing:
+            why = missing
+        elif not bvals:
+            why = "%s measured no %s" % (ref.describe(), chk.column)
+        else:
+            bfig, bwhy = stats.shape(chk.agg, bvals)
+            if bfig is None:
+                why = "in %s: %s" % (ref.describe(), bwhy)
+        if bfig is not None:
+            lims = resolve(chk, bfig, foot)
+            if lims is None:
+                why = "the limit's unit does not fit %s" % chk.agg
+            else:
+                extra = dict(base_shown=foot.show(bfig),
+                             drift=_pct_text(pct(bfig, fig)),
+                             limit_shown=_resolved_text(chk, lims, foot))
+        if ref.bl is None:
+            notes.append(_how(ref, 0, 0))
+        if why:
+            fig = None
+    elif fig is not None:
+        lims = _plain_limits(chk)
+
+    def obs_of(i):
+        if chk.agg == "zmax" and i in zs and fig is not None:
+            return stats.fmt_num(zs[i])
+        return cells[i]
+
+    if fig is None:
+        per = [(lb, obs_of(i), UNMEASURED) for i, lb in enumerate(labels)]
+        note = why + ("; not measured: %s" % ", ".join(blank[:5])
+                      if blank else "")
+        res = Result(chk, "", UNMEASURED, measured, len(per), "",
+                     "; ".join(x for x in [note] + notes if x), per)
+        for k, v in extra.items():
+            setattr(res, k, v)
+        return res
+    ok = compare(chk.op, fig, lims[0], lims[1])
+    per = []
+    for i, (lb, v) in enumerate(zip(labels, nums)):
+        if v is None:
+            per.append((lb, cells[i], UNMEASURED))
+        elif chk.agg == "zmax":
+            per.append((lb, obs_of(i), PASS if compare(
+                chk.op, abs(zs[i]), lims[0], lims[1]) else FAIL))
+        else:
+            per.append((lb, cells[i], PASS if ok else FAIL))
+    if measured < len(per):
+        res = Result(chk, foot.show(fig), UNMEASURED, measured, len(per), "",
+                     "%s over %d of %d (%s would %s); not measured: %s" % (
+                         chk.agg, measured, len(per), chk.agg,
+                         "pass" if ok else "fail", ", ".join(blank[:5])),
+                     per)
+    else:
+        res = Result(chk, foot.show(fig), PASS if ok else FAIL, measured,
+                     len(per), "", "", per)
+        res.src = list(rows)
+    res.note = "; ".join(x for x in [res.note, worst] + notes if x)
+    for k, v in extra.items():
+        setattr(res, k, v)
+    return res
 
 
 def run(table, checks, waivers=None, today=None, ref=None):
@@ -1029,6 +1225,8 @@ def run_relative(table, chk, rows, ref):
     if chk.agg == "each":
         return _relative_each(table, chk, rows, nums, ref, col, brows, kc,
                               foot, pct)
+    if chk.agg in SHAPE_AGGS:
+        return run_shape(table, chk, rows, ref, (nums, col, brows, kc))
     return _relative_agg(table, chk, rows, nums, ref, col, brows, kc, foot,
                          pct)
 
@@ -1115,8 +1313,41 @@ def _relative_each(table, chk, rows, nums, ref, col, brows, kc, foot, pct):
     return res
 
 
-def _relative_agg(table, chk, rows, nums, ref, col, brows, kc, foot, pct):
+def _baseline_values(table, chk, rows, nums, ref, col, brows, kc,
+                     per_host=False):
+    """(the baseline's values a figure over the run's rows is held to,
+    notes, why not): the baseline's rows of the same hosts (each host's
+    median of them, with per_host), or each host's median over a
+    qualified baseline's runs.  `why not` is set when the baseline lacks
+    some of the hosts."""
     from . import baseline as blmod
+    notes = []
+    if isinstance(kc, str):
+        bvals = [v for _, v in brows if v is not None]
+        notes.append("the baseline's rows are not matched host by host: "
+                     + kc)
+        return bvals, notes, ""
+    keys = set(k for k, _, _ in _keyed(table, rows, kc, nums))
+    base = _ref_by_key(ref, col, brows, kc)
+    missing = sorted(",".join(k) for k in keys if k not in base)
+    if missing:
+        return [], notes, "%d not in %s, so the %s would be over other " \
+            "hosts: %s" % (len(missing), ref.describe(), chk.agg,
+                           _names([(x,) for x in missing]))
+    if ref.bl is not None:
+        bvals = [blmod.median(base[k]) for k in keys]
+        notes.append("the %s of each host's median over the baseline's "
+                     "runs; no rank test for a figure over hosts" % chk.agg)
+    elif per_host:
+        bvals = [base[k][0] for k in keys]
+    else:
+        bki = [ref.table.index(k) for k in kc]
+        bvals = [v for r, v in brows if v is not None and
+                 tuple(r[i].strip() for i in bki) in keys]
+    return bvals, notes, ""
+
+
+def _relative_agg(table, chk, rows, nums, ref, col, brows, kc, foot, pct):
     # each row's verdict is against the limit the aggregate is held to,
     # once that is known; until then none is measured
     per = [(_label(table, r, n), foot.show(v) if v is not None else "",
@@ -1126,30 +1357,11 @@ def _relative_agg(table, chk, rows, nums, ref, col, brows, kc, foot, pct):
         return Result(chk, "", UNMEASURED, 0, len(per), foot.own,
                       "nothing numeric to take the %s of" % chk.agg, per)
     agg = stats.AGGS[chk.agg]([repr(v) for v in vals])
-    notes = []
-    if isinstance(kc, str):
-        bvals = [v for _, v in brows if v is not None]
-        notes.append("the baseline's rows are not matched host by host: "
-                     + kc)
-    else:
-        keys = set(k for k, _, _ in _keyed(table, rows, kc, nums))
-        base = _ref_by_key(ref, col, brows, kc)
-        missing = sorted(",".join(k) for k in keys if k not in base)
-        if missing:
-            return Result(chk, foot.show(agg), UNMEASURED, len(vals),
-                          len(per), foot.own, "%d not in %s, so the %s "
-                          "would be over other hosts: %s" % (
-                              len(missing), ref.describe(), chk.agg,
-                              _names([(x,) for x in missing])), per)
-        if ref.bl is not None:
-            bvals = [blmod.median(base[k]) for k in keys]
-            notes.append("the %s of each host's median over the baseline's "
-                         "runs; no rank test for a figure over hosts"
-                         % chk.agg)
-        else:
-            bki = [ref.table.index(k) for k in kc]
-            bvals = [v for r, v in brows if v is not None and
-                     tuple(r[i].strip() for i in bki) in keys]
+    bvals, notes, missing = _baseline_values(table, chk, rows, nums, ref,
+                                             col, brows, kc)
+    if missing:
+        return Result(chk, foot.show(agg), UNMEASURED, len(vals), len(per),
+                      foot.own, missing, per)
     if not bvals:
         return Result(chk, foot.show(agg), UNMEASURED, len(vals), len(per),
                       foot.own, "%s measured no %s" % (ref.describe(),

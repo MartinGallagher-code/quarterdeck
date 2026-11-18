@@ -790,6 +790,199 @@ t_baseline_qualified() {
     assert_contains "$(cat v.csv)" "decided on medians (the rank test wants 3 values"
 }
 
+# QD-050: cv, skew, kurtosis and zmax -- spread and shape over the rows
+
+shape_data() {
+    printf 'host,v,rtt,zero,same,two\na,1,1ms,0,5,1\nb,2,2ms,0,5,2\nc,3,3ms,1,5,\nd,4,4000us,-1,5,\ne,100,0.1s,0,6,\n' > d.csv
+}
+
+t_shape_known_values() {
+    shape_data
+    # 1, 2, 3, 4, 100 worked by hand: mean 22, deviations -21 -20 -19 -18
+    # 78, their squares sum to 7610.
+    #   cv: the sample stdev sqrt(7610/4) = 43.618, over 22 = 1.983
+    #   skew (adjusted Fisher-Pearson, Excel's SKEW): m2 = 7610/5 = 1522,
+    #     m3 = 444600/5 = 88920; g1 = 88920 / 1522^1.5 = 1.4975, and
+    #     G1 = g1 sqrt(5*4)/3 = 2.232
+    #   kurtosis (sample excess, Excel's KURT): m4 = 37604834/5, g2 =
+    #     m4/m2^2 - 3 = 0.24671; G2 = (6 g2 + 6) * 4 / (3*2) = 4.987
+    #   zmax: median 3, |x - 3| = 2 1 0 1 97, MAD 1; e's 0.6745*97 = 65.43
+    limits t.tsv 'C|v|<=|0.05|||cv|' 'S|v|<|3|||skew|' 'K|v|>=|5|||kurtosis|' \
+        'Z|v|<=|3.5|||zmax|' 'Z2|v|between|60|70||zmax|' 'C2|v|within|2|+-1%||cv|' \
+        'S2|v|>|2.2|||skew|' 'K2|v|<=|4.99|||kurtosis|'
+    qd_rc check d.csv --against t.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(verdict C)" "fail|1.983|5/5"
+    assert_eq "$(verdict S)" "pass|2.232|5/5"
+    assert_eq "$(verdict K)" "fail|4.987|5/5"
+    assert_eq "$(verdict Z)" "fail|65.43|5/5"
+    assert_eq "$(verdict Z2)" "pass|65.43|5/5"
+    assert_eq "$(verdict C2)" "pass|1.983|5/5"
+    assert_eq "$(verdict S2)" "pass|2.232|5/5"
+    assert_eq "$(verdict K2)" "pass|4.987|5/5"
+    # the note names the worst host; the figures carry no unit
+    assert_eq "$(field Z note)" "worst |z|: e (robust z +65.4; median 3, MAD 1)"
+    assert_eq "$(field C unit)" ""
+    # a column in units is read on one scale, and the unit does not scale
+    # the figure: 1ms..0.1s is 1..100 in ms, so the same four figures
+    limits u.tsv 'C|rtt|<=|0.05|||cv|' 'S|rtt|<|3|||skew|' 'K|rtt|>=|5|||kurtosis|' \
+        'Z|rtt|<=|3.5|||zmax|'
+    qd_rc check d.csv --against u.tsv --format csv -o v.csv
+    assert_eq "$(verdict C)" "fail|1.983|5/5"
+    assert_eq "$(verdict S)" "pass|2.232|5/5"
+    assert_eq "$(verdict K)" "fail|4.987|5/5"
+    assert_eq "$(verdict Z)" "fail|65.43|5/5"
+    assert_eq "$(field Z unit)" ""
+    # --each: a zmax row is its host's own robust z, held to the limit by
+    # its size; a cv row carries the fleet's verdict
+    qd_rc check d.csv --against t.tsv --each --format csv -o e.csv
+    assert_contains "$(cat e.csv)" "Z,a,v,-1.349,<= 3.5,,pass"
+    assert_contains "$(cat e.csv)" "Z,e,v,65.43,<= 3.5,,fail"
+    assert_contains "$(cat e.csv)" "C,a,v,1,<= 0.05,,fail"
+}
+
+t_shape_not_measured() {
+    shape_data
+    limits t.tsv 'C1|v|<=|1||host=a|cv|' 'S2|two|<=|1|||skew|' 'K3|v|<=|1||v<10 and host!=d|kurtosis|' \
+        'Z2|two|<=|3.5|||zmax|' 'C0|zero|<=|1|||cv|' 'Z0|same|<=|3.5|||zmax|' \
+        'S0|same|<=|1||host!=e|skew|' 'K0|same|<=|1||host!=e|kurtosis|' 'ZB|two|<=|3.5||host=a|zmax|'
+    qd_rc check d.csv --against t.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    # blank is never a pass: each says why, and none shows a figure
+    assert_eq "$(verdict C1)" "not measured||1/1"
+    assert_eq "$(field C1 note)" "cv wants 2 values or more, and has 1"
+    assert_eq "$(verdict S2)" "not measured||2/5"
+    assert_contains "$(field S2 note)" "skew wants 3 values or more, and has 2"
+    assert_contains "$(field S2 note)" "not measured: c, d, e"
+    assert_eq "$(field K3 note)" "kurtosis wants 4 values or more, and has 3"
+    assert_contains "$(field Z2 note)" "zmax wants 3 values or more, and has 2"
+    assert_eq "$(verdict C0)" "not measured||5/5"
+    assert_eq "$(field C0 note)" "the mean is 0, so cv (stdev / mean) is not defined"
+    assert_eq "$(verdict Z0)" "not measured||5/5"
+    assert_contains "$(field Z0 note)" "the MAD is 0"
+    assert_eq "$(field S0 note)" "every value is the same, so skew is not defined"
+    assert_eq "$(field K0 note)" "every value is the same, so kurtosis is not defined"
+    # a figure over some rows but not all is shown, and not passed
+    limits b.tsv 'C|two|<=|1|||cv|'
+    qd_rc check d.csv --against b.tsv --format csv -o v.csv
+    assert_eq "$(verdict C)" "not measured|0.4714|2/5"
+    assert_contains "$(field C note)" "cv over 2 of 5 (cv would pass); not measured: c, d, e"
+    qd_rc check d.csv --against t.tsv --format junit -o v.xml
+    assert_contains "$(junit v.xml)" "Z0|zmax of same <= 3.5|error|not measured: the MAD is 0"
+}
+
+t_shape_units_refused() {
+    shape_data
+    for row in 'C|v|<=|5%|||cv|' 'S|v|<=|1ms|||skew|' 'K|v|between|1|2s||kurtosis|' \
+        'Z|v|<=|3.5|||zmax|us' 'Z|v|<=|baseline+2ms|||zmax|' 'S|v|within|1|+-2us||skew|' \
+        'Z|v|within|baseline|+-1ms||zmax|'; do
+        limits t.tsv 'OK|v|<=|1000||||' "$row"
+        qd_rc check d.csv --against t.tsv > out 2>&1
+        assert_status "$QD_RC" 2
+        assert_contains "$(cat out)" "t.tsv, check 2 ("
+    done
+    limits t.tsv 'Z|v|<=|3.5|||zmax|us'
+    qd_rc check d.csv --against t.tsv > out 2>&1
+    assert_contains "$(cat out)" "check 1 (Z): zmax is unitless, so its limit takes no unit (unit us)"
+    # a percentage tolerance, or of the baseline, is a share, not a unit
+    limits t.tsv 'C|v|within|2|+-10%||cv|' 'Z|v|<=|baseline+10%|||zmax|'
+    qd_rc check d.csv --against t.tsv --baseline d.csv --format csv -o v.csv
+    assert_eq "$(verdict C | cut -d'|' -f1)" "pass"
+    assert_eq "$(verdict Z | cut -d'|' -f1)" "pass"
+}
+
+t_shape_zmax_is_qd_outliers() {
+    printf 'host,mbps\nn1,940\nn2,951\nn3,948\nn4,612\nn5,955\nn6,944\nn7,990\n' > d.csv
+    limits t.tsv 'Z|mbps|<=|3.5|||zmax|'
+    qd_rc check d.csv --against t.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    out="$(qd outliers d.csv mbps --format csv)"
+    worst="$(printf '%s\n' "$out" | sed -n 2p)"
+    # the same host, and the same score: outliers' robust_z to one place
+    assert_eq "$(printf '%s' "$worst" | cut -d, -f1)" "n4"
+    assert_contains "$(field Z note)" "worst |z|: n4 (robust z $(printf '%s' "$worst" | cut -d, -f4);"
+    assert_eq "$("$PY" -c 'import sys; print("%.1f" % -float(sys.argv[1]))' "$(field Z observed)")" \
+        "$(printf '%s' "$worst" | cut -d, -f4)"
+    # hosts that repeat: each host's median, as outliers takes them
+    printf 'host,v\na,1\na,2\nb,2\nb,3\nc,3\nc,3\nd,50\nd,60\n' > r.csv
+    limits t.tsv 'Z|v|<=|3.5|||zmax|'
+    qd_rc check r.csv --against t.tsv --format csv -o v.csv
+    out="$(qd outliers r.csv v --format csv | sed -n 2p)"
+    assert_eq "$(printf '%s' "$out" | cut -d, -f1,4)" "d,+47.0"
+    assert_eq "$(verdict Z)" "fail|46.99|8/8"
+    assert_contains "$(field Z note)" "worst |z|: d (robust z +47.0; median 2.75, MAD 0.75, per host)"
+}
+
+t_shape_old_files_unchanged() {
+    # a thresholds file gives the same rows with the new aggregates beside
+    # it as without (and t_unchanged_without_the_new_columns pins the
+    # bytes of one without)
+    data
+    limits old.tsv 'R1|mbps|>=|900||status=ok||' 'R2|temp|between|20|45|rack=r1|max|' \
+        'R3|rtt|<=|250||||us' 'R4|mem|<=|1.5G||status=ok|p99|' 'R5|temp|<=|45|||stdev|'
+    qd_rc check d.csv --against old.tsv --format csv -o before.csv
+    cp old.tsv new.tsv
+    printf 'N1\ttemp\t<=\t1\t\t\tcv\t\nN2\ttemp\t<=\t3.5\t\t\tzmax\t\n' >> new.tsv
+    qd_rc check d.csv --against new.tsv --format csv -o after.csv
+    assert_eq "$(grep -v '^N' after.csv)" "$(cat before.csv)"
+    qd_rc check d.csv --against old.tsv --each --format csv -o before.csv
+    qd_rc check d.csv --against new.tsv --each --format csv -o after.csv
+    assert_eq "$(grep -v '^N' after.csv)" "$(cat before.csv)"
+}
+
+t_shape_junit_waivers_severity_keep() {
+    shape_data
+    printf 'req\tcolumn\top\tlimit\tagg\tseverity\nZ\tv\t<=\t3.5\tzmax\tlow\nC\tv\t<=\t3\tcv\t\n' > t.tsv
+    qd_rc check d.csv --against t.tsv --format junit -o v.xml
+    assert_status "$QD_RC" 1
+    got="$(junit v.xml)"
+    assert_contains "$got" "testsuite tests=2 failures=1 errors=0 skipped=0"
+    assert_contains "$got" "Z|zmax of v <= 3.5|failure|observed 65.43; want <= 3.5"
+    qd_rc check d.csv --against t.tsv --each --format junit -o e.xml
+    assert_contains "$(junit e.xml)" "|failure|observed 65.43; want <= 3.5"
+    # a low failure under --fail-level high is let off, as any other
+    qd_rc check d.csv --against t.tsv --fail-level high > out
+    assert_status "$QD_RC" 0
+    # a waiver over every row excuses the figure
+    waivers w.tsv 'Z|e is a known slow host||||QA'
+    qd_rc check d.csv --against t.tsv --waivers w.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 0
+    assert_eq "$(verdict Z | cut -d'|' -f1)" "waived"
+    qd_rc check d.csv --against t.tsv --keep > out
+    assert_contains "$(cat out)" "filed as"
+    assert_contains "$(qd show latest --format csv)" "Z,v,zmax,,65.43,<= 3.5,,5/5,fail"
+}
+
+t_shape_baseline() {
+    printf 'host,v\na,100\nb,101\nc,99\nd,100\ne,102\n' > before.csv
+    printf 'host,v\na,100\nb,101\nc,99\nd,100\ne,130\n' > after.csv
+    # the baseline's figure over the same hosts: cv 0.01136, zmax 1.349
+    limits t.tsv 'C|v|<=|baseline+0.05|||cv|' 'Z|v|<=|baseline+2|||zmax|' \
+        'P|v|<=|baseline+50%|||cv|' 'W|v|within|baseline|+-1||skew|'
+    qd_rc check after.csv --against t.tsv --baseline before.csv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(verdict C)" "fail|0.1267|5/5"
+    assert_eq "$(field C limit)" "<= baseline+0.05 (<= 0.06136)"
+    assert_eq "$(field C baseline)" "0.01136"
+    assert_eq "$(verdict Z)" "fail|20.23|5/5"
+    assert_eq "$(field Z limit)" "<= baseline+2 (<= 3.349)"
+    assert_eq "$(field P limit)" "<= baseline+50% (<= 0.01703)"
+    # against itself, nothing moved
+    qd_rc check before.csv --against t.tsv --baseline before.csv > out
+    assert_status "$QD_RC" 0
+    assert_contains "$(cat out)" "4 pass, 0 fail, 0 not measured"
+    # a host the baseline lacks: a figure over other hosts is not measured
+    printf 'host,v\na,100\nb,101\nc,99\nd,100\nnew,500\n' > n.csv
+    qd_rc check n.csv --against t.tsv --baseline before.csv --format csv -o v.csv
+    assert_eq "$(verdict Z)" "not measured||5/5"
+    assert_contains "$(field Z note)" "1 not in run before.csv, so the zmax would be over other hosts: new"
+    # a baseline whose own figure cannot be had is not measured either
+    printf 'host,v\na,5\nb,5\nc,5\nd,5\ne,5\n' > flat.csv
+    qd_rc check after.csv --against t.tsv --baseline flat.csv --format csv -o v.csv
+    assert_eq "$(verdict Z | cut -d'|' -f1)" "not measured"
+    assert_contains "$(field Z note)" "in run flat.csv: the MAD is 0"
+}
+
 run_test "pass, fail and the exit status"       t_pass_fail_and_exit_status
 run_test "blank is never a pass"                t_blank_is_never_a_pass
 run_test "every op"                             t_every_op
@@ -815,4 +1008,11 @@ run_test "baseline: where and units"           t_baseline_where_and_units
 run_test "baseline: old files, bad limits"     t_baseline_old_files_and_bad_limits
 run_test "baseline: waivers, severity, junit, keep" t_baseline_waivers_severity_junit_keep
 run_test "baseline: a qualified baseline"      t_baseline_qualified
+run_test "shape: known values"                 t_shape_known_values
+run_test "shape: not measured, and why"        t_shape_not_measured
+run_test "shape: a unit is refused"            t_shape_units_refused
+run_test "shape: zmax is qd outliers' z"       t_shape_zmax_is_qd_outliers
+run_test "shape: old files unchanged"          t_shape_old_files_unchanged
+run_test "shape: junit, waivers, severity, keep" t_shape_junit_waivers_severity_keep
+run_test "shape: against a baseline"           t_shape_baseline
 finish
