@@ -5,7 +5,7 @@ Prometheus/OpenMetrics text, and JUnit XML of qd check's verdicts.
 
 Both write a file and nothing else -- qd makes no network call and holds
 no token.  Send the file with curl or let the other side's file reader
-pick it up (README, "Sending a run to Splunk or Prometheus").
+pick it up (README: "Into Splunk, Prometheus or a notebook").
 
 The rule that holds through every reader holds here too: a blank cell is
 not measured, so it is left out of the event or the sample, never written

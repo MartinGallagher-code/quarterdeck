@@ -5,6 +5,76 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.25.3 — 2026-11-18
+
+Every README pointer in qd's code names a section the README has, and a
+check keeps it so (QD-046).
+
+### Fixed
+- **A pointer into the README had gone stale.** `quarterdeck/exporters.py`
+  sent readers to "Sending a run to Splunk or Prometheus", a section since
+  renamed "Into Splunk, Prometheus or a notebook". It names the section as
+  it is now.
+- **The five pointers are written one way:** `README: "Section"`, on one
+  line. `qd import --map` and `qd join --map` now point at "Telemetry
+  exports", the part of `qd join`'s section that explains a column map;
+  `qd check --against` at "Against requirements: qd check"; `policy.py` at
+  "Allow-lists and read-only", as before.
+- **`tests/check.sh --help` left out the last line of its own header.**
+  It prints all of it.
+
+### Tests
+- **`tests/check_readme_pointers.py`** (new), run by `tests/check.sh` and
+  by `tests/test_help.sh`: every `README` in `quarterdeck/*.py`, the page's
+  files and `qd` is a pointer of that shape, and names a heading of the
+  README (compared without backticks, case or runs of spaces; a `#`
+  comment inside an example's code block is not a heading). It is also
+  run on a copy with the stale pointer put back, with a heading renamed,
+  with a pointer at an example's comment, in the old `(README, "X")`
+  style and cut over two lines, so it is shown to fail on each. Its list
+  of manual files is one line, for when the manual has more than one.
+
+0.25.1 and 0.25.2 are in the same pull request and are not published on
+their own.
+
+## 0.25.2 — 2026-11-18
+
+`qd hints` is tested: it prints every hint, and every command it
+suggests still parses (QD-045).
+
+### Tests
+- **`qd hints` had no test.** `tests/test_help.sh` now runs it and checks
+  that it prints one line a hint, and `tests/help_unit.py hints` takes
+  every `qd` command out of `HINTS` (31 of them, in 27 hints) and parses
+  each with qd's own parser, as `qd` would: a renamed flag or verb fails
+  the suite instead of leaving a hint that no longer works. How a hint is
+  read: notes in parentheses are not commands; commands are split at
+  `->`, `;` and `or`; `...` and words in capitals stand for values;
+  `campaign` and `doe` are cut at `--`, as `main()` cuts them. It is also
+  run with a flag and a verb misspelt, so it is shown to fail. Every hint
+  parsed as it was: nothing in `qd hints` changed.
+
+0.25.1 is in the same pull request and is not published on its own.
+
+## 0.25.1 — 2026-11-18
+
+`qd --help` lists `qd store`, and a test keeps it listing every command
+(QD-043). This pull request first took 0.23.1, which QD-039 and QD-037
+reached `main` past first.
+
+### Fixed
+- **`qd --help` had no line for `qd store`**, the named stores' commands
+  (`new`, `ls`, `use`, `rename`, `rm`, `clear`, `export`, `import`), though
+  `qd doctor` and every "no store" message point to `qd store use` and
+  `qd store ls`. It is listed now, after `qd rm`.
+
+### Tests
+- A new suite, `tests/test_help.sh`, with `tests/help_unit.py` beside it:
+  every verb the parser registers has a usage line on `qd --help`. It is
+  also run on cards with a line taken out (`store`, a verb run together
+  with others, a verb after a spaced `|`, and `run`, which campaign's and
+  doe's own `run` must not stand in for), so it is shown to fail.
+
 ## 0.25.0 — 2026-11-18
 
 A command given no hosts runs on this machine (QD-037). This pull

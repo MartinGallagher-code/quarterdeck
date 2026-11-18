@@ -11,6 +11,8 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
        qd doe plan|run|status|analyze          designed experiments
        qd log [RUN]                            what the store holds
        qd rm RUN... --yes                      delete runs (store clear: all)
+       qd store new|ls|use|rename|rm|clear|export|import
+                                               named stores: pick one, move one
        qd view [RUN]                           full-screen; ] [ page the store
        qd show|stats|freq|hist|outliers|pivot|trend RUN ...
        qd diff [OLD] NEW                       what changed between two
@@ -5242,8 +5244,8 @@ def build_parser():
                    "sample) or a wide one (a column a metric)")
     g.add_argument("--map", metavar="FILE",
                    help="which column is which: time, host, metric, value "
-                   "or metrics, time_format, tz (README: qd join); implies "
-                   "--telemetry")
+                   "or metrics, time_format, tz; implies --telemetry "
+                   "(README: \"Telemetry exports\")")
     g.add_argument("--alias", metavar="FILE",
                    help="lines NAME ALIAS...: keep each ALIAS's samples "
                    "under NAME, the run's name for it; implies --telemetry")
@@ -5353,7 +5355,8 @@ def build_parser():
     sp.add_argument("ref", metavar="RUN")
     sp.add_argument("--against", required=True, metavar="FILE",
                     help="thresholds: req, column, op, limit [limit2, where, "
-                    "agg, unit, note, severity] (README: qd check)")
+                    "agg, unit, note, severity] "
+                    "(README: \"Against requirements: qd check\")")
     sp.add_argument("--waivers", default=env("WAIVERS"), metavar="FILE",
                     help="excuse failures: req, justification [expires, "
                     "where, expect, granted_by] (QD_WAIVERS)")
@@ -5471,8 +5474,8 @@ def build_parser():
                     help="only these metrics; * and ? match (default every "
                     "one)")
     sp.add_argument("--map", metavar="FILE",
-                    help="which column of the export is which (README: qd "
-                    "join)")
+                    help="which column of the export is which "
+                    "(README: \"Telemetry exports\")")
     sp.add_argument("--alias", metavar="FILE",
                     help="lines NAME ALIAS...: the run's name for a host, "
                     "then what the telemetry calls it")
