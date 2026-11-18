@@ -59,7 +59,8 @@ RUN is latest, latest~1, a run id or a unique part of one, a run's
 --name, ds:NAME for a whole provost dataset, or a file or directory to read
 without filing it.  Add :TABLE to pick one of a run's tables (latest:hosts),
 and @STORE to read it in another registered store (kernel@wr02,
-latest:hosts@wr01; reading commands only).
+latest:hosts@wr01; reading commands only).  Every form, an example each,
+and the words every command assumes: docs/concepts.md.
 
 Everything is kept in provost's store (provost ls, provost source N):
 --store, QD_STORE, else provost's own choice.  binnacle (pip install

@@ -12,7 +12,9 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 **New to qd? Start with [Getting started](docs/getting-started.md)
 (docs/getting-started.md):** ten minutes, a question a step, on a made-up
 fleet's week that `qd demo` files for you. No hosts, ssh or network
-needed.
+needed. The words every command assumes (run, dataset, capture, store
+...) and every way to name a run are on one page:
+[Concepts](docs/concepts.md).
 
 The quarterdeck is where a ship is commanded from: the binnacle's
 instruments are read there and the log is kept there. This one does that
@@ -90,6 +92,10 @@ qd outliers facts mem.available_pct      # who is far from everybody else
 qd compare facts -c cpu.busy_pct --last 5    # the last five runs, host by host
 qd web                                   # all of it, in a browser
 ```
+
+`A` is the column `uname -r` fills: provost names a field it found no
+name for `A`, `B`, ... as a spreadsheet does (see
+[Concepts](docs/concepts.md#the-objects)).
 
 ```text
 qd run -- uname -r: 48 hosts, 46 ok, 2 unreachable   [provost: uname: A]
@@ -314,18 +320,10 @@ straight away.
   name. `qd store rm` deletes the copy and leaves the store on the other
   machine as it was.
 
-Name a run the way you'd say it:
-
-| Reference | Means |
-|---|---|
-| `latest`, `latest~1`, `prev` | the newest run, the one before it |
-| `20261029-142233-uname` | that run; any unique part of an id works too |
-| `kernel` | the newest run named `kernel` (`--name`, a probe's name) |
-| `latest:hosts` | one table of a run: `data` (the default), `hosts` |
-| `ds:uname` | a whole provost dataset: every run that ever filed into it |
-| `results.tsv`, `reports/` | a file or directory, read without filing it |
-| `kernel@wr02`, `latest:hosts@wr01` | any of the above, read in the registered store `wr02` |
-
+Every way to name a run (`latest`, `latest~1`, `prev`, an id or part of
+one, a run's name, `ds:NAME`, `RUN:TABLE`, a file, `RUN@STORE`) is set
+out, with an example each, in
+[Concepts: Naming a run](docs/concepts.md#naming-a-run).
 `qd log` lists the runs and `qd log RUN` describes one.
 
 **Runs from different stores side by side**: add `@STORE` to a reference

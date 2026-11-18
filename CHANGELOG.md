@@ -5,6 +5,47 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.27.1 — 2026-11-18
+
+A Concepts page: the words and run references every qd command assumes,
+in one place, checked against qd itself (QD-042).
+
+### Added
+- **`docs/concepts.md`** (new): run, pass, table (`data`, `hosts`), row,
+  capture, dataset and column, with provost's `A`, `B`, ... for a field
+  it found no name for (linked to provost's rule, not restated); the
+  store, the active, a named and a remote store; blank; how to name a
+  run; peer group, baseline, campaign, requirement, waiver and
+  telemetry; and exit status 0, 1 (a finding) and 2. A sentence or two
+  and one example each, and a link to the manual's section. A small
+  plain-text picture (60 columns) of run, hosts, captures, rows and
+  dataset. The sdist ships it (`MANIFEST.in`).
+
+### Changed
+- **The run-reference table moved** from README's "Named stores" to the
+  page's "Naming a run", with an example each against the demo store and
+  the forms the table had left out (`last`, `~N`, `prev~N`, a bare
+  dataset name). "Named stores" links to it and keeps `@STORE`'s details.
+- **README:** the front matter links the page, and the first `qd freq
+  latest A` is followed by what `A` is.
+- **`docs/getting-started.md`:** "Four words" links the page.
+- **`qd --help`:** the RUN paragraph ends with a pointer to
+  `docs/concepts.md`.
+
+### Tests
+- **`tests/test_concepts.sh`** (new suite, in `TIMES`) with
+  **`tests/concepts_unit.py`**: every `qd` command on the page parses
+  with `build_parser()`; every reference form `quarterdeck/store.py`
+  resolves (read from `Store.resolve()`'s pattern, prefixes and returns,
+  `split_ref()`, `split_store()` and `load_ref()`) is in the page's
+  table, and nothing the resolver does not take; the page's links, and
+  the links to it from README.md and docs/, land (files and anchors;
+  provost's docs too where `QD_PROVOST` is a clone); and README,
+  the walkthrough and `qd --help` point at it. Each check is also run on
+  a broken copy.
+- **`tests/test_demo.sh`**: the walkthrough case runs every "Naming a
+  run" example against the demo store, each exiting 0 as the page says.
+
 ## 0.25.3 — 2026-11-18
 
 Every README pointer in qd's code names a section the README has, and a
