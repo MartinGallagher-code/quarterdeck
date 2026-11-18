@@ -63,7 +63,12 @@ RUN_COLUMNS = ("run", "kind", "name", "command", "created", "finished",
                "captures", "tool", "ran", "version", "cwd", "qd", "notes",
                "group", "part", "factors", "operator", "operator_host",
                "ssh_user", "ssh_key", "sudo", "via", "sched_job",
-               "not_run", "rerun_of")
+               "not_run", "rerun_of", "timeout_s", "pushed", "host_list")
+# timeout_s, pushed and host_list (QD-061): qd run's --timeout, how many
+# files it pushed (--push, --script), and the host files its list was read
+# from (absolute paths, one a line; blank when anything else named a
+# host) -- what `qd again` needs to run it again exactly.  Blank in a run
+# filed before 0.32.0, and in any fan-out but qd run's
 # preamble (QD-038): what the host's login shell printed before the
 # command, cut from its answer; blank in a run filed before 0.23.0
 HOST_COLUMNS = ("run", "host", "addr", "pass", "ts", "status", "rc",
@@ -78,7 +83,7 @@ OUTCOMES = ("ok", "failed", "timeout", "unreachable", "push-failed",
 TEXT_COLUMNS = ("command", "ran", "version", "cwd", "notes", "error",
                 "stderr", "preamble", "attrs", "factors", "operator",
                 "operator_host",
-                "ssh_user", "ssh_key",
+                "ssh_user", "ssh_key", "host_list",
                 # qd.peers and qd.baselines: column names and group values
                 # are anyone's words (a facts run's cpu.model)
                 "note", "by", "source", "peer", "key", "key_cols", "column")

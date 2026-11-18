@@ -409,8 +409,14 @@ def is_local(addr, hostname=None):
 
 
 def collect_hosts(servers=None, inline=None, layout=None, selectors=None,
-                  first=None, manifest_argv=None, allow_none=False):
+                  first=None, manifest_argv=None, allow_none=False,
+                  files=None):
     """Every way of naming a fleet, expanded, in order, without repeats.
+
+    files: a list, when given, that gets each host file read, as an
+    absolute path, and None for anything else that named hosts (a range,
+    -S, stdin, a layout) -- what a run records so `qd again` (QD-061)
+    reads the same list again.
 
     When nothing names one -- no -s, -S or --layout, no QD_SERVERS, no
     hosts.txt or servers.txt here -- that is an error, or with
@@ -422,16 +428,26 @@ def collect_hosts(servers=None, inline=None, layout=None, selectors=None,
     # A spec on the command line reads as a host file's line does:
     # `-s 'web[1-2] rack=r1'` is two hosts in rack r1, never a host called
     # "web1 rack" at the address r1.
-    for spec in (servers or []):
+    said = files if files is not None else []
+
+    def read(spec):
         got = read_host_file(spec)
+        said.append(os.path.abspath(spec) if got is not None and
+                    spec != "-" else None)
+        return got
+
+    for spec in (servers or []):
+        got = read(spec)
         if got is not None:
             entries.extend(got)
         else:
             entries.extend(parse_lines(spec))
     for spec in (inline or []):
+        said.append(None)
         entries.extend(parse_lines(spec))
     from_layout = []
     if layout:
+        said.append(None)
         from_layout = layout_hosts(layout, selectors, manifest_argv)
     elif selectors:
         die("--select needs --layout FILE to select from")
@@ -439,7 +455,7 @@ def collect_hosts(servers=None, inline=None, layout=None, selectors=None,
         default = env("SERVERS")
         if default:
             named = True
-            got = read_host_file(default)
+            got = read(default)
             if got is None:
                 entries.extend(parse_lines(default))
             else:
@@ -448,7 +464,7 @@ def collect_hosts(servers=None, inline=None, layout=None, selectors=None,
             for name in ("hosts.txt", "servers.txt"):
                 if os.path.isfile(name):
                     named = True
-                    entries.extend(read_host_file(name))
+                    entries.extend(read(name))
                     break
     if not entries and not from_layout:
         if allow_none and not named:
