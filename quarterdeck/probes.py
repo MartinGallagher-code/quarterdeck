@@ -27,9 +27,21 @@ copies of them:
 
 A probe that is not available here (its tool not installed) says what to
 install instead of running half a fleet.
+
+And the user's own (QD-054): `qd probe add NAME -- COMMAND` gives a command
+of theirs a name, kept in probes.json beside qd's config.json -- never in a
+store, so a store brought from another machine brings no commands to run on
+this fleet.  A saved probe is not one qd ships: it runs exactly as `qd run
+--name NAME -- COMMAND` would, its command checked by the allow-list,
+read-only and the mutation guard like any other.
 """
 
+import io
+import json
 import os
+import re
+import tempfile
+import time
 
 from .common import die
 
@@ -318,11 +330,16 @@ GROUPS = {
 
 
 def get(name):
+    """A probe's catalogue entry, qd's own first: a saved probe is
+    (name, "saved", its command, its note, "")."""
     for p in CATALOGUE:
         if p[0] == name:
             return p
+    mine = load_saved()
+    if name in mine:
+        return saved_entry(name, mine[name])
     die("no probe %r: `qd probe` lists them (%s)" % (
-        name, ", ".join(NAMES + sorted(GROUPS))))
+        name, ", ".join(NAMES + sorted(mine) + sorted(GROUPS))))
 
 
 def expand(names):
@@ -333,6 +350,115 @@ def expand(names):
             if m not in out:
                 out.append(m)
     return out
+
+
+# ---------------------------------------------------------------------------
+# the user's own (QD-054)
+# ---------------------------------------------------------------------------
+
+# the words `qd probe` takes in a probe's place, and a run reference's
+RESERVED = ("add", "rm", "latest")
+SAVED_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def saved_path():
+    """probes.json, beside config.json (stores.config_path)."""
+    from . import stores
+    return os.path.join(os.path.dirname(stores.config_path()), "probes.json")
+
+
+def load_saved():
+    """{NAME: {"command": ..., "note": ..., "added": ...}}; {} with no
+    file."""
+    p = saved_path()
+    if not os.path.isfile(p):
+        return {}
+    try:
+        with io.open(p, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError) as exc:
+        die("cannot read your saved probes %s: %s (fix or remove it)"
+            % (p, exc))
+    probes = doc.get("probes") if isinstance(doc, dict) else None
+    if not isinstance(probes, dict) or not all(
+            isinstance(v, dict) and isinstance(v.get("command"), str)
+            and v["command"].strip() for v in probes.values()):
+        die("your saved probes %s are not qd's: {\"probes\": {NAME: "
+            "{\"command\": ...}}} (fix or remove it)" % p)
+    return probes
+
+
+def save_saved(probes):
+    """Written whole and renamed into place, as config.json is."""
+    p = saved_path()
+    d = os.path.dirname(p)
+    try:
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".probes.", dir=d)
+        with os.fdopen(fd, "w") as fh:
+            json.dump({"probes": probes}, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+        os.replace(tmp, p)
+    except OSError as exc:
+        die("cannot write your saved probes %s: %s" % (p, exc))
+
+
+def saved_entry(name, d):
+    return (name, "saved", d["command"], d.get("note") or "", "")
+
+
+def check_saved_name(name):
+    """A saved probe's name is the name of its runs: refused, exit 2, when
+    it is not one provost takes as it is, or is taken by qd's own."""
+    from .filing import dataset_name
+    if not SAVED_RE.match(name or "") or ".." in name or \
+            dataset_name(name) != name:
+        die("a saved probe's name is a run's name: letters, digits, '.', "
+            "'_' and '-', starting and ending with a letter or digit, at "
+            "most 64: %r is not one" % (name or ""))
+    if name in NAMES or name in GROUPS:
+        die("%r is a probe qd ships%s: give yours another name" % (
+            name, " (a group)" if name in GROUPS else ""))
+    if name in RESERVED:
+        die("%r is a word qd probe takes itself: give your probe another "
+            "name" % name)
+    return name
+
+
+def add_saved(name, command, note=None, replace=False):
+    """-> (the entry saved, the one it replaced or None)."""
+    check_saved_name(name)
+    if not command.strip():
+        die("nothing to save: put the command after --, e.g.\n"
+            "  qd probe add %s -- uname -r" % name)
+    mine = load_saved()
+    old = mine.get(name)
+    if old is not None and not replace:
+        die("you have a probe %r already (%s): add --replace to save over "
+            "it" % (name, old["command"]))
+    mine[name] = {"command": command, "note": note or "",
+                  "added": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                         time.gmtime())}
+    save_saved(mine)
+    return mine[name], old
+
+
+def rm_saved(names):
+    mine = load_saved()
+    for n in names:
+        if n not in mine:
+            if n in NAMES or n in GROUPS:
+                die("%r is a probe qd ships, not one of yours: there is "
+                    "nothing to remove" % n)
+            die("you have no probe %r (`qd probe` lists yours)" % n)
+    gone = [(n, mine.pop(n)) for n in names]
+    save_saved(mine)
+    return gone
+
+
+def is_saved(p):
+    return p[1] == "saved"
+
 
 
 def script_path(module):
@@ -352,7 +478,7 @@ def available(p):
     """(True, how) or (False, what to install)."""
     from . import tools
     name, kind, how, _, needs = p
-    if kind == "command":
+    if kind in ("command", "saved"):
         return True, "shell"
     if kind == "script":
         path = script_path(how[0])

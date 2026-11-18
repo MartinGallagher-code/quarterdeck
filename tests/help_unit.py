@@ -107,7 +107,7 @@ def hint_commands(text):
 def complaint(parser, argv):
     """What argparse says about argv, or None when it parses."""
     argv = cli.glue_sort(argv)
-    if argv and argv[0] in ("campaign", "doe") and "--" in argv:
+    if argv and argv[0] in ("campaign", "doe", "probe") and "--" in argv:
         argv = argv[:argv.index("--")]
     err = io.StringIO()
     try:

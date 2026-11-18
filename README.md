@@ -781,9 +781,12 @@ qd probe facts inventory --read-only -s hosts.txt       # probes still run
   `uname *` does not allow `uname -r; reboot`. A command no pattern
   matches is refused, with exit 2, unless `--confirm` is given *and*
   someone at the terminal types `CONFIRM`; with nothing attached to the
-  terminal it is refused outright. The probes qd ships run by name.
-- **`--read-only`** (`QD_READ_ONLY=1`): only the probes and allow-listed
-  commands run, and no confirmation lifts it. `--push`, `--script` and
+  terminal it is refused outright. The probes qd ships run by name;
+  your own (`qd probe add`) do not: their command must match, as `qd
+  run`'s does.
+- **`--read-only`** (`QD_READ_ONLY=1`): only the probes qd ships and
+  allow-listed commands run, and no confirmation lifts it. A probe you
+  saved is a command like any other here. `--push`, `--script` and
   `--sudo` are refused, and so is `qd do`, whose tools deploy agents and
   servers to the hosts.
 - **On record:** every run under a policy says so in its notes (`qd log
@@ -1020,6 +1023,87 @@ host without what a probe asks says so (`listen_tool: none`, `system_state:
 no systemd`, `nvidia_smi: absent`), and a value it could not read is left
 out: blank, never 0 or "unknown". They were run against Debian 12, Ubuntu
 24.04, Rocky 9 and Alpine 3.20 over real ssh.
+
+### Your own probes: `qd probe add`
+
+A command you run often can have a name, and be asked for by it like the
+probes qd ships:
+
+```bash
+qd probe add NAME [--note TEXT] -- COMMAND   # save it (--replace to save over one of yours)
+qd probe                                     # listed beside qd's own, kind "yours", the command in full
+qd probe NAME -s hosts.txt                   # run it: a run named NAME
+qd probe rm NAME                             # forget it
+```
+
+`qd probe NAME` runs a saved probe exactly as `qd run --name NAME --
+COMMAND` would: on every host, with every fleet option `qd probe` takes
+(`--jobs`, `--timeout`, `--every`, `--count`, `--retries`, `--via`,
+`--sudo`, `--dry-run` ...), filed as a run named after the probe, so `qd
+show NAME`, `qd compare NAME --last 5` and `qd check NAME` find it. Its
+notes say `your probe NAME`. Named beside qd's own (`qd probe os
+fio-randread`), it runs after them, a run of its own.
+
+- **The name** is the run's: letters, digits, `.`, `_` and `-`, starting
+  and ending with a letter or digit, at most 64. A probe or group qd ships
+  (`facts`, `inventory` ...) and the words `add`, `rm` and `latest` are
+  refused, exit 2, and so is `add` over a name you have saved already,
+  unless `--replace`.
+- **Where it is kept:** `probes.json` beside qd's own config, in
+  `~/.config/quarterdeck/` (`$XDG_CONFIG_HOME/quarterdeck/`). Never in a
+  store: a store exported from another machine, or read from one, brings
+  its runs, never a command to run on your fleet. Your probes go with your
+  account, not with the data.
+- **It is not a probe qd ships.** "The probes qd ships run by name" does
+  not extend to it: under `--allow` its command has to match a pattern
+  (its name is not enough), under `--read-only` with no allow-list it is
+  refused, and the mutation guard reads its command, so a saved `rm -rf`
+  needs `--yes` every time it runs (`add` warns). A probe asked beside qd's
+  own is checked before any of them runs. A saved probe is never a way
+  around a policy.
+
+**A worked example: fio.** [fio](https://fio.readthedocs.io/) measures
+storage, and `--output-format=json` makes its answer one JSON document,
+which provost files as a row a host:
+
+```bash
+qd probe add fio-randread --note "4k random reads, 30 s, in /var/tmp" -- \
+  fio --name=randread --rw=randread --bs=4k --size=256M --runtime=30 --time_based --directory=/var/tmp --direct=1 --ioengine=libaio --iodepth=4 --output-format=json
+qd probe fio-randread -s hosts.txt
+qd show fio-randread --cols host,jobs.0.read.iops,jobs.0.read.bw,jobs.0.read.clat_ns.percentile.99.000000
+qd compare fio-randread -c jobs.0.read.iops --last 5
+qd check fio-randread --against fio-limits.tsv
+```
+
+The columns are fio's JSON keys, flattened by provost with dots, a list's
+elements numbered from 0. The ones to read first:
+
+| Column | What |
+|---|---|
+| `jobs.0.read.iops` | read IOPS (`write.`, `trim.` alike) |
+| `jobs.0.read.bw` | bandwidth in KiB/s (`bw_bytes`: bytes/s) |
+| `jobs.0.read.clat_ns.percentile.99.000000` | completion latency's 99th percentile, in ns (`.50.000000`, `.99.900000` ...) |
+| `jobs.0.read.lat_ns.mean` | total latency's mean, in ns (`min`, `max`, `stddev`) |
+| `jobs.0.usr_cpu`, `jobs.0.sys_cpu` | fio's own CPU, percent |
+| `disk_util.0.util` | the device's utilisation, percent (`disk_util.0.name` says which) |
+
+A limit on IOPS and one on the tail, for `qd check` (the latency column
+carries no unit, so the limit says ns):
+
+```text
+req    column                                    op  limit   agg  unit
+STO-1  jobs.0.read.iops                          >=  20000   min
+STO-2  jobs.0.read.clat_ns.percentile.99.000000  <=  250000  max  ns
+```
+
+fio needs a writable directory with room on each host, and loads the
+disk while it runs: keep `--size` small, use `/var/tmp` (not a tmpfs
+`/tmp`), and do not point it at a busy host's data disk. `--rw=randwrite`
+or `write` writes `--size` bytes into `--directory` (fio leaves the file
+there unless `--unlink=1`), so a saved write test is one an allow-list
+should name on purpose. provost reads fio's `"fio version"` and `"job
+options"` keys, which have a space in them, as a key and a value (a `fio`
+column of `version fio-3.36`): the figures above are not affected.
 
 ---
 
