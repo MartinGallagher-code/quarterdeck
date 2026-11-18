@@ -186,11 +186,12 @@ t_read_only_and_allow_see_a_saved_probes_command() {
     qdf_rc probe os -s hosts.txt -q --read-only > out 2>&1
     assert_status "$QD_RC" 0
     assert_contains "$(qd log os)" "policy: read-only"
-    # asked beside qd's own, it is refused before any of them runs
-    qd rm os --yes > /dev/null
+    # asked beside qd's own, it is refused before any of them runs: no
+    # new os run is filed (compared, not deleted, so any provost will do)
+    before=$(qd log os)
     qdf_rc probe os fio-randread -s hosts.txt -q --read-only 2> err
     assert_status "$QD_RC" 2
-    no_run_named os
+    assert_eq "$(qd log os)" "$before"
     # an allow-list that names its name, or another command, does not
     # allow it; a pattern that matches its command does
     printf 'fio-randread\nfio --name=seqwrite *\n' > names.txt
