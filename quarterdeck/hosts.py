@@ -352,10 +352,73 @@ def layout_hosts(layout, selectors, manifest_argv):
     return hosts
 
 
+# What a command that needs hosts says when nothing names any.
+NO_HOSTS = ("no hosts given (use --servers FILE, --servers 'node[01-09]', "
+            "-S a,b,c or --layout floor.dc --select SEL; hosts.txt and "
+            "servers.txt are used if present)")
+
+# The address of the host a bare command runs on (QD-037).
+LOCAL_ADDR = "127.0.0.1"
+
+
+def local_name(hostname=None):
+    """This machine's name as a row gives it (QD-037): the hostname up to
+    its first dot, so a later fleet run that names this machine lines up
+    with it in `qd diff` and `qd trend`; localhost when there is none."""
+    if hostname is None:
+        try:
+            hostname = socket.gethostname()
+        except OSError:
+            hostname = ""
+    name = (hostname or "").strip()
+    if not name:
+        return "localhost"
+    if _is_address(name):
+        return name
+    return name.split(".", 1)[0] or "localhost"
+
+
+def local_host():
+    """The fleet when nothing names one: this machine, one host, no
+    attributes."""
+    return Host(local_name(), LOCAL_ADDR)
+
+
+def is_local(addr, hostname=None):
+    """Whether `addr` is this machine: a loopback address, localhost, or
+    the hostname (whole, or up to its first dot)."""
+    a = (addr or "").strip().strip("[]").lower()
+    if a in ("localhost", "localhost.localdomain", "localhost6"):
+        return True
+    try:
+        return socket.inet_pton(socket.AF_INET, a)[0:1] == b"\x7f"
+    except (OSError, ValueError):
+        pass
+    try:
+        return socket.inet_pton(socket.AF_INET6, a) == \
+            socket.inet_pton(socket.AF_INET6, "::1")
+    except (OSError, ValueError):
+        pass
+    if hostname is None:
+        try:
+            hostname = socket.gethostname()
+        except OSError:
+            hostname = ""
+    hostname = (hostname or "").strip().lower()
+    return bool(a) and a in (hostname, hostname.split(".", 1)[0])
+
+
 def collect_hosts(servers=None, inline=None, layout=None, selectors=None,
-                  first=None, manifest_argv=None):
-    """Every way of naming a fleet, expanded, in order, without repeats."""
+                  first=None, manifest_argv=None, allow_none=False):
+    """Every way of naming a fleet, expanded, in order, without repeats.
+
+    When nothing names one -- no -s, -S or --layout, no QD_SERVERS, no
+    hosts.txt or servers.txt here -- that is an error, or with
+    `allow_none` None, so the caller can choose a fleet itself (QD-037).
+    Something that names hosts and holds none (an empty hosts.txt) is
+    always an error."""
     entries = []
+    named = bool(servers or inline or layout)
     # A spec on the command line reads as a host file's line does:
     # `-s 'web[1-2] rack=r1'` is two hosts in rack r1, never a host called
     # "web1 rack" at the address r1.
@@ -375,6 +438,7 @@ def collect_hosts(servers=None, inline=None, layout=None, selectors=None,
     if not entries and not from_layout:
         default = env("SERVERS")
         if default:
+            named = True
             got = read_host_file(default)
             if got is None:
                 entries.extend(parse_lines(default))
@@ -383,12 +447,13 @@ def collect_hosts(servers=None, inline=None, layout=None, selectors=None,
         else:
             for name in ("hosts.txt", "servers.txt"):
                 if os.path.isfile(name):
+                    named = True
                     entries.extend(read_host_file(name))
                     break
     if not entries and not from_layout:
-        die("no hosts given (use --servers FILE, --servers 'node[01-09]', "
-            "-S a,b,c or --layout floor.dc --select SEL; hosts.txt and "
-            "servers.txt are used if present)")
+        if allow_none and not named:
+            return None
+        die(NO_HOSTS)
     hosts, seen = [], set()
     for tok, attrs in entries:
         for one in expand_range(tok):

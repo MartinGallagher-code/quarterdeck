@@ -35,6 +35,7 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
 
 Examples:
   qd run --servers hosts.txt -- uname -r
+  qd run -- uptime                      no hosts named: this machine, no ssh
   qd run --via srun -- nvidia-smi -L    every node of the Slurm allocation
   qd probe facts inventory -s hosts.txt
   qd compare facts -c cpu.busy_pct --last 5
@@ -225,12 +226,21 @@ def manifest_argv():
     return tools.find_tool("manifest")
 
 
-def collect(args):
+def collect(args, local=True):
+    """The hosts a command runs on: --rerun's, --via srun's allocation, or
+    every way of naming a fleet (hostmod.collect_hosts).  When nothing
+    names one, this machine (QD-037), unless `local` is False: `qd split`
+    and `qd campaign new` over one workstation are more likely a forgotten
+    -s than meant, so they keep refusing."""
     if getattr(args, "rerun", None):
         if args.servers or args.server or args.layout or args.select:
             die("--rerun is the host list -- the hosts that were not ok in "
                 "the run it names -- so it takes no -s, -S or --layout")
         hs = rerun_hosts(args)
+        if not getattr(args, "via", None) and \
+                getattr(args, "_rerun_via", None) == "local":
+            # a run on this machine is rerun the way it ran
+            args.via = "local"
         return hs[:args.first] if args.first is not None else hs
     if getattr(args, "via", None) == "srun" and not (
             args.servers or args.server or args.layout or args.select
@@ -240,10 +250,41 @@ def collect(args):
         hs = launch.allocation_hosts(launch.need_allocation(
             launch.allocation()))
         return hs[:args.first] if args.first is not None else hs
-    return hostmod.collect_hosts(
+    hs = hostmod.collect_hosts(
         servers=args.servers, inline=args.server, layout=args.layout,
         selectors=args.select, first=args.first,
-        manifest_argv=manifest_argv() if args.layout else None)
+        manifest_argv=manifest_argv() if args.layout else None,
+        allow_none=True)
+    if hs is None:
+        if not local:
+            die(hostmod.NO_HOSTS)
+        hs = this_machine(args)
+    return hs
+
+
+def this_machine(args):
+    """The fleet when nothing names one (QD-037): this machine, one host,
+    reached by --via local unless --via or QD_VIA says otherwise.  qd says
+    so, once, unless --via local named it; and --sudo is refused on it
+    unless it was named, so a forgotten -s never runs a command as root
+    here."""
+    h = hostmod.local_host()
+    given = getattr(args, "via", None)
+    if hasattr(args, "via") and not given:
+        args.via = "local"
+    if getattr(args, "sudo", False) and given != "local":
+        die("--sudo with no hosts named would run the command as root on "
+            "this machine, %s: name it to mean it (-S localhost, or --via "
+            "local), or name the hosts (-s FILE, -S a,b,c)" % h.name)
+    if given != "local" and not getattr(args, "_local_said", False):
+        args._local_said = True
+        how = "" if not hasattr(args, "via") else \
+            ", reached without ssh (--via local)" if not given else \
+            ", reached by --via %s at %s" % (given, h.addr)
+        warn("no hosts named, so the fleet is this machine, %s%s; name "
+             "hosts with -s FILE, -S a,b,c, QD_SERVERS or a hosts.txt here"
+             % (h.name, how))
+    return [h]
 
 
 def rerun_hosts(args):
@@ -252,7 +293,7 @@ def rerun_hosts(args):
     their addresses and attributes, in RUN's order.  The last try counts
     (--retries): a host that answered on its second try is ok.  Sets
     args._rerun_of, which the new run's qd.runs row carries."""
-    hs, seen, ids = [], set(), []
+    hs, seen, ids, vias = [], set(), [], set()
     for ref in args.rerun:
         st, r = ref_store(args, ref)
         e = st.resolve(r)
@@ -261,6 +302,7 @@ def rerun_hosts(args):
                 "a campaign's part or a design point): nothing to rerun"
                 % (ref, shown_id(e)))
         ids.append(e.id)
+        vias.add(e.meta.get("via") or "ssh")
         rows = e.store.host_rows(e.id)
         last = max([int(h.get("pass") or 1) for h in rows] or [1])
         final, order = {}, []
@@ -283,6 +325,7 @@ def rerun_hosts(args):
                 "%s=%s" % (name, addr) if addr else name,
                 storemod.split_attrs(h.get("attrs"))))
     args._rerun_of = ids
+    args._rerun_via = vias.pop() if len(vias) == 1 else None
     if not hs:
         die("nothing to rerun: every host in %s answered ok"
             % ", ".join(ids), 0)
@@ -574,16 +617,20 @@ def new_runner(args, hs=None):
     if via == "srun" and args.user:
         warn("--user (QD_SSH_USER) is not used with --via srun: srun runs "
              "as you")
+    elif via == "local" and args.user:
+        warn("--user (QD_SSH_USER) is not used with --via local: the "
+             "command runs here, as you")
     ssh_config, reuse = ssh_config_of(args), None
     if via == "ssh":
         reuse = reuse_of(args)
     elif ssh_config or getattr(args, "reuse", False):
-        # pdsh and clush start their own ssh, and srun none
+        # pdsh and clush start their own ssh, and srun and local none
         warn("--ssh-config and --reuse are ssh's: --via %s does not use "
              "them" % via)
         ssh_config = None
     runner = launch.make(via, ssh=args.ssh, scp=args.scp,
-                         user=None if via == "srun" else args.user,
+                         user=None if via in ("srun", "local")
+                         else args.user,
                          timeout=args.timeout, max_output=args.max_output,
                          remote_dir=args.remote_dir, sudo=args.sudo,
                          ssh_config=ssh_config, reuse=reuse,
@@ -914,6 +961,8 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
                                         not args.keep_remote, k, stdin),
             *retry),
         args.jobs, count, args.every or 0, gate=gate, many=many, stop=stop)
+    if interrupted:
+        launch.stop_local()
     if not results:
         die("interrupted before any pass started; nothing was kept", 130)
     stopped = stop.why if stop is not None else None
@@ -994,6 +1043,8 @@ def fleet_runs_together(args, hs, specs, extra=None):
         results, interrupted = fleet.run_passes(
             tasks, fleet.with_retries(one, *retry), args.jobs, gate=gate,
             stop=stop, skip=skip)
+        if interrupted:
+            launch.stop_local()
         if not results:
             die("interrupted before any host answered; nothing was kept",
                 130)
@@ -3440,7 +3491,7 @@ def cmd_split(args):
         st = store_of(args)
         hs = hosts_of_run(st.resolve(args.split_answers))
     else:
-        hs = collect(args)
+        hs = collect(args, local=False)
     groups, how = split_groups(args, hs, st)
     fmt = args.format or "text"
     if fmt != "text":
@@ -4020,7 +4071,7 @@ def cmd_campaign(args):
         if args.name in camp.load_all(st):
             die("there is a campaign %s already (`%s campaign status %s`)"
                 % (args.name, PROG, args.name))
-        hs = collect(args)
+        hs = collect(args, local=False)
         groups, how = split_groups(args, hs, st)
         groups = [(g, members) for g, members in groups if members]
         pool = os.path.abspath(args.pool) if args.pool else \
@@ -4607,6 +4658,7 @@ def cmd_doctor(args):
     via = via_of(args)
     line, ok = launcher_line(via, [r[0] for r in rows if r[1] == "ok"])
     lines.append("  launcher  %s" % line)
+    lines.append("  hosts     %s" % bare_hosts(args))
     ssh_ok = True
     if args.host:
         ssh_ok = doctor_ssh(args, lines)
@@ -4629,12 +4681,37 @@ def cmd_doctor(args):
     return 0 if ok and ssh_ok else 1
 
 
+def bare_hosts(args):
+    """Where, for `qd doctor`, a command run here with no -s, -S, --layout
+    or --rerun gets its hosts: --via srun's allocation, QD_SERVERS, a
+    hosts.txt or servers.txt in this directory, or this machine (QD-037),
+    in that order."""
+    via = getattr(args, "via", None)
+    servers = env("SERVERS")
+    if via == "srun" and not servers:
+        return "the Slurm allocation's nodes (--via srun)"
+    if servers:
+        return "QD_SERVERS (%s)" % servers
+    for name in ("hosts.txt", "servers.txt"):
+        if os.path.isfile(name):
+            return "%s in this directory" % name
+    return ("none named here, so a command runs on this machine, %s, %s"
+            % (hostmod.local_name(), "without ssh (--via local)"
+               if via in (None, "local") else "by --via %s at %s"
+               % (via, hostmod.LOCAL_ADDR)))
+
+
 def launcher_line(via, here):
     """What `qd doctor` says of the launcher --via picks, and whether it
     can run from here."""
     if via == "ssh":
-        return ("ssh, scp for pushed files (--via or QD_VIA for srun, pdsh "
-                "or clush)", True)
+        return ("ssh, scp for pushed files (--via or QD_VIA for srun, pdsh, "
+                "clush or local)", True)
+    if via == "local":
+        if not shutil.which("sh"):
+            return "local: no sh here to run a command with", False
+        return ("local: this machine only, without ssh (sh -c here, cp for "
+                "pushed files)", True)
     if via == "srun":
         alloc = launch.allocation()
         if "srun" not in here:
@@ -4856,7 +4933,8 @@ def add_hosts(p):
     g.add_argument("-s", "--servers", action="append", metavar="FILE|SPEC",
                    help="a host file, a range like node[01-24], or - for "
                    "stdin; repeatable (QD_SERVERS; hosts.txt or "
-                   "servers.txt if present)")
+                   "servers.txt if present; none: this machine, by --via "
+                   "local)")
     g.add_argument("-S", "--server", action="append", metavar="a,b,c",
                    help="hosts inline, repeatable")
     g.add_argument("--layout", metavar="FILE",
@@ -4929,10 +5007,11 @@ def seconds(text):
 
 def add_ssh(sp):
     g = sp.add_argument_group("ssh")
-    g.add_argument("--via", default=env("VIA", "ssh"), metavar="LAUNCHER",
+    g.add_argument("--via", default=env("VIA"), metavar="LAUNCHER",
                    help="how the hosts are reached: ssh (default), srun "
                    "(inside a Slurm allocation; its nodes by default), "
-                   "pdsh or clush (QD_VIA)")
+                   "pdsh, clush, or local: this machine without ssh, the "
+                   "default when no hosts are named (QD_VIA)")
     g.add_argument("-u", "--user", default=env("SSH_USER"),
                    help="ssh user (QD_SSH_USER; default: your ssh config)")
     g.add_argument("-j", "--jobs", type=positive,
@@ -5777,9 +5856,10 @@ def build_parser():
     g.add_argument("--ssh-config", default=env("SSH_CONFIG"), metavar="FILE",
                    help="ssh reads FILE (ssh -F), not ~/.ssh/config "
                    "(QD_SSH_CONFIG)")
-    sp.add_argument("--via", default=env("VIA", "ssh"), metavar="LAUNCHER",
-                    help="check this launcher: ssh (default), srun, pdsh "
-                    "or clush (QD_VIA); exit 1 if it cannot run from here")
+    sp.add_argument("--via", default=env("VIA"), metavar="LAUNCHER",
+                    help="check this launcher: ssh (default), srun, pdsh, "
+                    "clush or local (QD_VIA); exit 1 if it cannot run from "
+                    "here")
     sp.set_defaults(fn=cmd_doctor)
     sp = verb("hints", "what you want to know -> the command")
     sp.set_defaults(fn=cmd_hints)
@@ -5880,6 +5960,8 @@ def main(argv=None):
         # --reuse's masters, however the command ended
         if getattr(args, "_reuse", None) is not None:
             args._reuse.close(getattr(args, "jobs", 32) or 32)
+        # and what --via local still has running here (Ctrl-C)
+        launch.stop_local()
 
 
 if __name__ == "__main__":

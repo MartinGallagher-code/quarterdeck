@@ -111,6 +111,9 @@ qd run -- uname -r: 48 hosts, 46 ok, 2 unreachable   [provost: uname: A]
     * qd view latest                     explore it full-screen
 ```
 
+No host list yet? `qd run -- uptime` in a directory without one runs on
+this machine alone, without ssh (see *No hosts named: this machine*).
+
 ### A fleet to learn on: `qd demo`
 
 ```bash
@@ -197,7 +200,7 @@ each run, and `qd web` puts it in the run's header.
 | `ssh_user` | `--user`, else what your ssh config gives each host (`ssh -G`); hosts with users of their own give each, comma-separated | a fan-out |
 | `ssh_key` | the fingerprint of each key qd offered: the `-i` keys (or `IdentityFile`) in `--ssh`, else your agent's (`ssh-add -l`). Never the key itself | a fan-out |
 | `sudo` | `yes` or `no` | a fan-out |
-| `via` | how the hosts were reached: `ssh`, `srun`, `pdsh` or `clush` | a fan-out |
+| `via` | how the hosts were reached: `ssh`, `srun`, `pdsh`, `clush` or `local` | a fan-out |
 | `sched_job` | the Slurm job `--via srun` ran in (each answer carries it as `sched.job`) | `--via srun` |
 
 Anything qd cannot find out is blank, never a guess: an ssh without `-G`
@@ -400,7 +403,8 @@ qd run --layout floor.dc --select 'rack[1-3]' -- cat /proc/loadavg
 Host lists use the grammar mx, iperf_orchestrator, agree and dcprobe
 already read: one `name[=addr[:port]]` per line, `#` comments, and ranges
 that expand (`node[01-24]`, `rack[a-c]-n[1,3]`). `hosts.txt` or
-`servers.txt` in the current directory is used if you name none.
+`servers.txt` in the current directory is used if you name none, and
+with neither, the fleet is this machine (below).
 
 `key=value` words after a host are its **attributes**, as dcprobe reads
 them:
@@ -439,7 +443,37 @@ such columns; `qd hosts --csv`'s shape (`host,addr,port`, then
 attributes) is read back with its attributes. To carry a run's
 attributes over, use `--rerun` (below).
 
-### Reaching the hosts: ssh, srun, pdsh or clush
+#### No hosts named: this machine
+
+With no `-s`, `-S`, `--layout` or `--rerun`, no `QD_SERVERS`, and no
+`hosts.txt` or `servers.txt` in the directory, `qd run`, `qd probe`,
+`qd doe run` and `qd hosts` run on this machine: one host, named as its
+hostname is up to the first dot (so a later fleet run that names this
+machine lines up with it in `qd diff` and `qd trend`), at 127.0.0.1, and
+reached without ssh (`--via local`, below). qd says so on stderr, once,
+with how to name hosts. It is the quickest way to try a command or a
+probe:
+
+```bash
+qd run -- uptime      # qd: no hosts named, so the fleet is this machine, ws01, reached without ssh (--via local); ...
+qd probe facts        # why-slow's readings of this machine
+```
+
+- Anything that names hosts wins, as before, `--via srun`'s allocation
+  included. An empty `hosts.txt` names no hosts and is still an error.
+- `qd split` and `qd campaign new` still refuse (`no hosts given`): one
+  workstation cut in parts is more likely a forgotten `-s` than meant.
+- `--sudo` is refused on it unless you name it (`-S localhost`, or
+  `--via local`), so a forgotten `-s` never runs a command as root here.
+- `--via` or `QD_VIA` given, that launcher reaches it at 127.0.0.1
+  instead (over ssh, that needs an sshd here and a key to yourself).
+- `--rerun` of a run made this way reaches its host the same way again.
+- `qd hosts --plain > servers.txt` in such a directory writes this
+  machine (`ws01=127.0.0.1`), which a later run reaches by ssh, as it
+  does any host it is given. `qd doctor` says where a command run here
+  would get its hosts.
+
+### Reaching the hosts: ssh, srun, pdsh, clush or local
 
 ssh is the default: one connection per host, `--jobs` at a time. Where a
 test event reaches its nodes some other way, `--via` (`QD_VIA`) changes
@@ -460,6 +494,7 @@ QD_VIA=clush qd probe inventory -s 'node[01-64]'
 | `srun` | inside a Slurm allocation: one step per host, `srun --overlap -N1 -n1 -w NODE sh -c CMD` | through the step's own stdin, a step per file |
 | `pdsh` | one `pdsh -w a,b,c -f JOBS` for every host | `pdcp` (which must be on the hosts too) |
 | `clush` | one `clush -w a,b,c -f JOBS` for every host | `clush --copy` |
+| `local` | this machine only: `sh -c CMD` here, no ssh | `cp`; stdin straight in |
 
 **srun.** qd runs only inside an allocation it is given (`salloc`,
 `sbatch`, or `SLURM_JOB_ID` set to one of yours); it never asks Slurm for
@@ -498,10 +533,26 @@ fan-out (`-f`), `--timeout` each host's limit (`-u`), and `--user` its
 - Some pdsh builds merge a host's stderr into its stdout, or cut very long
   lines; qd keeps what pdsh gives it.
 
+**local.** This machine, without ssh: the launcher a command gets when
+no hosts are named (*No hosts named: this machine*), and one you can
+name (`--via local`, `QD_VIA=local`) for a host list that is this
+machine: `localhost`, a 127.x address, `::1` or its hostname, once, with
+no port. Any other host is refused before anything runs. The command
+runs as `sh -c CMD` in a session of its own, as sshd would start it on a
+host, so the rest is as over ssh: pushed files go by `cp` into a
+directory of the run's own in `--remote-dir`, which only that run
+removes; stdin, `--timeout` and `--max-output` (the command stopped with
+everything it started), `--every`, `--retries` and the allow-list all
+behave the same. Ctrl-C, or a TERM or HUP to qd, stops the command too,
+since nothing else would. It runs as you (`--user` is not used) and in
+the directory qd was started from.
+
 The probes that are tools driving the fleet themselves (`health`,
 `preflight`, `reach`) still reach it over ssh, and say so. `qd doctor
---via srun` (or pdsh, clush) checks the launcher: found here, and for
-srun, the allocation qd is in.
+--via srun` (or pdsh, clush, local) checks the launcher: found here, and
+for srun, the allocation qd is in. `qd doctor` also says where a command
+run here would get its hosts: `--via srun`'s allocation, `QD_SERVERS`, a
+`hosts.txt` or `servers.txt` in the directory, or this machine.
 
 ### What comes back
 
@@ -557,7 +608,9 @@ command's:
 
 It is the same through every launcher (pdsh and clush get a start line on
 each host; with srun, what a node prints ahead of the task, such as a
-TaskProlog's `print` lines, is cut the same way) and for qd's own calls
+TaskProlog's `print` lines, is cut the same way; `--via local` starts
+`sh -c` here, which reads no startup files, so there is seldom anything
+to cut) and for qd's own calls
 on a host: the mkdir, copy, chmod and cleanup of `--push` and `--script`,
 and the stop, so a failed push's row says the push's own error. The line
 is written before `sudo` starts, so what sudo says is the command's.
@@ -679,7 +732,7 @@ design's points run through the same fan-out and take the same flags.
 | `--script FILE -- ARGS` | push FILE, run it with ARGS, remove it again |
 | `--push FILE` | copy a file over first (repeatable); the command runs beside it, in a directory of the run's own in `--remote-dir` |
 | `--sudo` | run under `sudo -n` |
-| `--dry-run` | print the ssh (or srun) command per host, or the one pdsh or clush call, less the lines qd puts ahead of the command (where it starts, see *What the login shell says first*; for ssh, how to stop it, see *When a host takes too long*); contact nothing |
+| `--dry-run` | print the ssh (or srun, or local `sh -c`) command per host, or the one pdsh or clush call, less the lines qd puts ahead of the command (where it starts, see *What the login shell says first*; for ssh, how to stop it, see *When a host takes too long*); contact nothing |
 | `--first N` | the first N hosts only, the canary before the fleet |
 | `--limit N` | refuse to run wider than N hosts without `--yes` |
 | `--no-store` | print the answers, keep nothing |
@@ -864,8 +917,8 @@ sshd, a push run on one host went from five logins to one
 
 | Flag | Variable | Default |
 |---|---|---|
-| `--servers` | `QD_SERVERS` | `hosts.txt` or `servers.txt` |
-| `--via` | `QD_VIA` | `ssh`; or `srun`, `pdsh`, `clush` (see Reaching the hosts) |
+| `--servers` | `QD_SERVERS` | `hosts.txt` or `servers.txt`; with neither, this machine |
+| `--via` | `QD_VIA` | `ssh`, or `local` when no hosts are named; or `srun`, `pdsh`, `clush`, `local` (see Reaching the hosts) |
 | `--user` | `QD_SSH_USER` | your ssh config |
 | `--jobs` | `QD_JOBS` | 32 hosts at once |
 | `--timeout` | `QD_TIMEOUT` | 60 s per host; past it the command is stopped on the host and reported |

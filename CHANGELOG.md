@@ -5,6 +5,40 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.25.0 — 2026-11-18
+
+A command given no hosts runs on this machine (QD-037). This pull
+request first took 0.23.0, then 0.24.0, which QD-038 and QD-039 reached
+`main` with first.
+
+### Added
+- **No hosts named: this machine.** With no `-s`, `-S`, `--layout` or
+  `--rerun`, no `QD_SERVERS` and no `hosts.txt` or `servers.txt` in the
+  directory, `qd run`, `qd probe`, `qd doe run` and `qd hosts` run on
+  this machine: one host, named as its hostname is up to the first dot,
+  at 127.0.0.1, reached without ssh. qd says so once on stderr. Before,
+  they stopped with "no hosts given". `qd split` and `qd campaign new`
+  still do, and `--sudo` is refused on that host unless it is named
+  (`-S localhost`, or `--via local`). Everything that names hosts wins
+  as before, `--via srun`'s allocation included, and a `--via` or
+  `QD_VIA` given reaches the host by that launcher at 127.0.0.1.
+- **`--via local`** (`QD_VIA=local`): this machine without ssh, `sh -c
+  CMD` in a session of its own as sshd would start it. Pushed files go
+  by `cp` into the run's own directory, removed afterwards as over ssh;
+  stdin, `--timeout` and `--max-output` (the command stopped with all it
+  started), `--every`, `--retries` and the allow-list behave as over
+  ssh, and Ctrl-C (or a TERM or HUP to qd) stops the command as well. A
+  host list naming any other host, a port, or this machine twice is
+  refused before anything runs; `--user` is warned about and not used.
+  The run's `via` is `local`, and `--rerun` of such a run stays local.
+- `qd doctor` says where a command run in this directory would get its
+  hosts (`--via srun`'s allocation, `QD_SERVERS`, `hosts.txt` or
+  `servers.txt`, or this machine), and checks `--via local`.
+
+### Changed
+- `--via`'s default is no longer written as `ssh`: not given, it is ssh
+  for hosts that are named and local for this machine when none are.
+
 ## 0.24.0 — 2026-11-17
 
 `qd demo`, and a ten-minute walkthrough on it, so qd can be learned with
