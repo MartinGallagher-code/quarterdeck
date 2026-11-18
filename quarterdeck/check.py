@@ -948,9 +948,10 @@ def _key_columns(table, ref):
         from .diff import auto_key
         return auto_key(table, b)
     for primary in ("host", "ssh_host", "target", "name", "src"):
-        if table.has(primary) and b.has(primary):
+        if table.has(primary, prefix=False) and b.has(primary, prefix=False):
             return [primary] + [c for c in SECONDARY if c != primary and
-                                table.has(c) and b.has(c)]
+                                table.has(c, prefix=False) and
+                                b.has(c, prefix=False)]
     return "no host column the run and %s share to match rows on" % (
         ref.describe())
 

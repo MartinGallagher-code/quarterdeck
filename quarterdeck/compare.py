@@ -81,7 +81,8 @@ def _key_for(tables, key):
                 t.index(k)
         return key
     k = auto_key(tables[0], tables[-1])
-    return [c for c in k if all(t.has(c) for t in tables)] or k
+    return [c for c in k if all(t.has(c, prefix=False) for t in tables)] \
+        or k
 
 
 def compare(tables, column=None, key=None, drift=5.0, agg="median",

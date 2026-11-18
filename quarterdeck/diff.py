@@ -33,8 +33,11 @@ SECONDARY = ("dir", "peer", "layer", "rule_id", "line_no", "test", "probe",
 
 
 def auto_key(a, b):
+    # by name only: `n` is provost's record number, and as a prefix it
+    # was the one column starting with n -- net.tcp_retrans_pct -- which
+    # matched rows on a measurement, so every host was gone and new
     def both(c):
-        return a.has(c) and b.has(c)
+        return a.has(c, prefix=False) and b.has(c, prefix=False)
     if a.is_results() and b.is_results():
         return ["test", "target"] + [c for c in ("peer", "dir", "layer")
                                      if both(c)]

@@ -1,0 +1,52 @@
+# demo-facts, morning 5: what each demo host's why-slow --facts
+# said (a few of its readings).  One section a host: ==> NAME STATUS
+# SECONDS <==, then its answer exactly as it came back.
+
+==> demo-r1n01 ok 2.29 <==
+{"cpu.busy_pct": 42.4, "cpu.count": 64, "cpu.iowait_pct": 0.1, "cpu.load1": 27.46, "fs.fullest_pct": 42.4, "mem.available_pct": 73.9, "mem.total_kb": 527958076, "net.tcp_retrans_pct": 0.017, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 3456724, "therm.max_temp_c": 61}
+==> demo-r1n02 ok 2.10 <==
+{"cpu.busy_pct": 48.4, "cpu.count": 64, "cpu.iowait_pct": 0.4, "cpu.load1": 31.65, "fs.fullest_pct": 45.6, "mem.available_pct": 73.2, "mem.total_kb": 527958076, "net.tcp_retrans_pct": 0.048, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 1939346, "therm.max_temp_c": 59}
+==> demo-r1n03 ok 2.34 <==
+{"cpu.busy_pct": 47.5, "cpu.count": 64, "cpu.iowait_pct": 0.4, "cpu.load1": 32.62, "fs.fullest_pct": 45.9, "mem.available_pct": 77.5, "mem.total_kb": 527958076, "net.tcp_retrans_pct": 0.023, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 2906526, "therm.max_temp_c": 59}
+==> demo-r1n04 ok 2.29 <==
+{"cpu.busy_pct": 48.9, "cpu.count": 64, "cpu.iowait_pct": 0.2, "cpu.load1": 29.81, "fs.fullest_pct": 46.6, "mem.available_pct": 72.1, "mem.total_kb": 527958076, "net.tcp_retrans_pct": 0.023, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 2600729, "therm.max_temp_c": 61}
+==> demo-r1n05 ok 2.37 <==
+{"cpu.busy_pct": 45.5, "cpu.count": 64, "cpu.iowait_pct": 0.6, "cpu.load1": 28.1, "fs.fullest_pct": 45.2, "mem.available_pct": 73.3, "mem.total_kb": 527958076, "net.tcp_retrans_pct": 0.047, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 3807566, "therm.max_temp_c": 59}
+==> demo-r1n06 ok 2.31 <==
+{"cpu.busy_pct": 48.3, "cpu.count": 64, "cpu.iowait_pct": 0.5, "cpu.load1": 31.18, "fs.fullest_pct": 56.5, "mem.available_pct": 78.6, "mem.total_kb": 527958076, "net.tcp_retrans_pct": 0.021, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 3678730, "therm.max_temp_c": 61}
+==> demo-r1n07 ok 2.10 <==
+{"cpu.busy_pct": 47.6, "cpu.count": 64, "cpu.iowait_pct": 0.3, "cpu.load1": 31.1, "fs.fullest_pct": 57.8, "mem.available_pct": 78.5, "mem.total_kb": 527958076, "net.tcp_retrans_pct": 0.033, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 2913957, "therm.max_temp_c": 61}
+==> demo-r1n08 ok 2.06 <==
+{"cpu.busy_pct": 39.2, "cpu.count": 64, "cpu.iowait_pct": 0.4, "cpu.load1": 23.08, "fs.fullest_pct": 42.6, "mem.available_pct": 74.4, "mem.total_kb": 527958076, "net.tcp_retrans_pct": 0.04, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 2709243, "therm.max_temp_c": 65}
+==> demo-r1n09 ok 2.26 <==
+{"cpu.busy_pct": 14.2, "cpu.count": 32, "cpu.iowait_pct": 2.7, "cpu.load1": 4.1, "fs.fullest_pct": 67.0, "mem.available_pct": 76.7, "mem.total_kb": 263979040, "net.tcp_retrans_pct": 0.023, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 3264032, "therm.max_temp_c": 50}
+==> demo-r1n10 ok 2.10 <==
+{"cpu.busy_pct": 11.7, "cpu.count": 32, "cpu.iowait_pct": 2.7, "cpu.load1": 3.48, "fs.fullest_pct": 64.8, "mem.available_pct": 71.2, "mem.total_kb": 263979040, "net.tcp_retrans_pct": 0.043, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 1980162, "therm.max_temp_c": 51}
+==> demo-r1n11 ok 2.10 <==
+{"cpu.busy_pct": 11.3, "cpu.count": 32, "cpu.iowait_pct": 1.8, "cpu.load1": 3.87, "fs.fullest_pct": 64.5, "mem.available_pct": 75.8, "mem.total_kb": 263979040, "net.tcp_retrans_pct": 0.011, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 3451289, "therm.max_temp_c": 54}
+==> demo-r1n12 ok 2.11 <==
+{"cpu.busy_pct": 9.5, "cpu.count": 32, "cpu.iowait_pct": 2.5, "cpu.load1": 3.26, "fs.fullest_pct": 64.0, "mem.available_pct": 75.3, "mem.total_kb": 263979040, "net.tcp_retrans_pct": 0.041, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 2537233, "therm.max_temp_c": 49}
+==> demo-r2n01 ok 2.38 <==
+{"cpu.busy_pct": 41.3, "cpu.count": 64, "cpu.iowait_pct": 0.5, "cpu.load1": 23.99, "fs.fullest_pct": 54.2, "mem.available_pct": 71.9, "mem.total_kb": 527958076, "net.tcp_retrans_pct": 0.025, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 3320039, "therm.max_temp_c": 59}
+==> demo-r2n02 ok 2.07 <==
+{"cpu.busy_pct": 48.9, "cpu.count": 64, "cpu.iowait_pct": 0.4, "cpu.load1": 32.2, "fs.fullest_pct": 55.2, "mem.available_pct": 78.2, "mem.total_kb": 527958076, "net.tcp_retrans_pct": 0.034, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 3474646, "therm.max_temp_c": 66}
+==> demo-r2n03 ok 2.33 <==
+{"cpu.busy_pct": 39.0, "cpu.count": 64, "cpu.iowait_pct": 0.5, "cpu.load1": 26.25, "fs.fullest_pct": 44.9, "mem.available_pct": 72.7, "mem.total_kb": 527958076, "net.tcp_retrans_pct": 0.038, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 2187641, "therm.max_temp_c": 58}
+==> demo-r2n04 ok 2.17 <==
+{"cpu.busy_pct": 45.5, "cpu.count": 64, "cpu.iowait_pct": 0.2, "cpu.load1": 27.13, "fs.fullest_pct": 40.1, "mem.available_pct": 77.9, "mem.total_kb": 527958076, "net.tcp_retrans_pct": 0.05, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 2173992, "therm.max_temp_c": 60}
+==> demo-r2n05 ok 2.27 <==
+{"cpu.busy_pct": 49.4, "cpu.count": 64, "cpu.iowait_pct": 0.5, "cpu.load1": 34.48, "fs.fullest_pct": 50.0, "mem.available_pct": 78.8, "mem.total_kb": 527958076, "net.tcp_retrans_pct": 0.021, "sys.kernel": "6.8.0-31-generic", "sys.uptime_s": 2618694, "therm.max_temp_c": 65}
+==> demo-r2n06 ok 2.14 <==
+{"cpu.busy_pct": 41.9, "cpu.count": 64, "cpu.iowait_pct": 0.3, "cpu.load1": 24.88, "fs.fullest_pct": 49.4, "mem.available_pct": 72.5, "mem.total_kb": 527958076, "net.tcp_retrans_pct": 0.028, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 3119096, "therm.max_temp_c": 64}
+==> demo-r2n07 ok 2.05 <==
+{"cpu.busy_pct": 41.2, "cpu.count": 64, "cpu.iowait_pct": 0.2, "cpu.load1": 27.38, "fs.fullest_pct": 54.5, "mem.available_pct": 15.4, "mem.total_kb": 527958076, "net.tcp_retrans_pct": 0.037, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 2311776, "therm.max_temp_c": 61}
+==> demo-r2n08 ok 2.40 <==
+{"cpu.busy_pct": 37.8, "cpu.count": 64, "cpu.iowait_pct": 0.6, "cpu.load1": 25.56, "fs.fullest_pct": 51.6, "mem.available_pct": 77.8, "mem.total_kb": 527958076, "net.tcp_retrans_pct": 0.015, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 3828113, "therm.max_temp_c": 62}
+==> demo-r2n09 ok 2.11 <==
+{"cpu.busy_pct": 11.0, "cpu.count": 32, "cpu.iowait_pct": 1.6, "cpu.load1": 3.78, "fs.fullest_pct": 61.8, "mem.available_pct": 75.5, "mem.total_kb": 263979040, "net.tcp_retrans_pct": 0.027, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 2049965, "therm.max_temp_c": 51}
+==> demo-r2n10 ok 2.19 <==
+{"cpu.busy_pct": 11.3, "cpu.count": 32, "cpu.iowait_pct": 1.9, "cpu.load1": 3.66, "fs.fullest_pct": 63.5, "mem.available_pct": 73.5, "mem.total_kb": 263979040, "net.tcp_retrans_pct": 0.043, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 3466035, "therm.max_temp_c": 54}
+==> demo-r2n11 ok 2.22 <==
+{"cpu.busy_pct": 12.0, "cpu.count": 32, "cpu.iowait_pct": 1.9, "cpu.load1": 3.79, "fs.fullest_pct": 65.9, "mem.available_pct": 72.6, "mem.total_kb": 263979040, "net.tcp_retrans_pct": 0.017, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 3781362, "therm.max_temp_c": 48}
+==> demo-r2n12 ok 2.19 <==
+{"cpu.busy_pct": 11.0, "cpu.count": 32, "cpu.iowait_pct": 1.7, "cpu.load1": 3.59, "fs.fullest_pct": 61.4, "mem.available_pct": 71.2, "mem.total_kb": 263979040, "net.tcp_retrans_pct": 0.05, "sys.kernel": "6.8.0-48-generic", "sys.uptime_s": 2147479, "therm.max_temp_c": 52}

@@ -10,17 +10,18 @@
 #
 # What it runs, in order: the version check, the Python 3.6 compile check,
 # vermin, shellcheck, that every suite is in exactly one of CI's shares,
-# node --check on the page, reuse lint, a wheel build with twine check, and
-# the whole suite on both of provost's paths (with `batch`, then
-# QD_PROVOST_BATCH=0), one suite per core at a time (QD_TEST_JOBS=N for N,
-# 1 for the serial run).  A check whose tool is not installed is skipped
-# and said so, never failed; the summary at the end names every one.
+# node --check on the page, reuse lint, a wheel build with twine check
+# (installed in a venv of its own, which files `qd demo`), and the whole
+# suite on both of provost's paths (with `batch`, then QD_PROVOST_BATCH=0),
+# one suite per core at a time (QD_TEST_JOBS=N for N, 1 for the serial
+# run).  A check whose tool is not installed is skipped and said so, never
+# failed; the summary at the end names every one.
 # Exit status: 0 when nothing failed, 1 when something did, 2 on bad usage.
 #
 # The batch run checks every store a case leaves with `provost store check`
 # (QD_STORE_CHECK=1), where this provost has one.  Left to CI: the suite
 # under a real Python 3.6, under each of 3.9-3.13, under PyPI's provost
-# 2.1.0, and the installed wheel's smoke test.
+# 2.1.0, and the rest of the installed wheel's smoke test.
 
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
@@ -30,7 +31,7 @@ quick=0
 case "${1:-}" in
     "") ;;
     --quick) quick=1 ;;
-    -h|--help) sed -n '5,22p' tests/check.sh | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '5,24p' tests/check.sh | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "usage: check.sh [--quick]" >&2; exit 2 ;;
 esac
 
@@ -88,12 +89,28 @@ else
     skip "REUSE compliance" "pip install reuse"
 fi
 
-# build the wheel somewhere else, so the tree is left as it was found
+# build the wheel somewhere else, so the tree is left as it was found;
+# then install it in a venv of its own and file qd demo from it, in a home
+# of its own, which proves the demo's answers are package data (QD-039)
 build_wheel() {
-    local out rc
+    local out rc pv
     out=$(mktemp -d) || return 1
-    "$PY" -m build --outdir "$out" . && "$PY" -m twine check "$out"/*
+    "$PY" -m build --outdir "$out" . && "$PY" -m twine check "$out"/*.whl "$out"/*.tar.gz
     rc=$?
+    if [ "$rc" -eq 0 ]; then
+        pv="${QD_PROVOST:-$(command -v provost 2> /dev/null || true)}"
+        "$PY" -m venv "$out/venv" &&
+            "$out/venv/bin/pip" install -q --no-deps "$out"/*.whl &&
+            "$out/venv/bin/qd" demo --limits | grep -q '^req,column,op,limit' &&
+            if [ -n "$pv" ]; then
+                (cd "$out" && env -u XDG_DATA_HOME -u XDG_CONFIG_HOME \
+                    -u XDG_CACHE_HOME HOME="$out/home" QD_PROVOST="$pv" \
+                    "$out/venv/bin/qd" demo | grep '7 runs of 24 hosts')
+            else
+                echo "no provost here: the wheel's qd demo was not filed"
+            fi
+        rc=$?
+    fi
     rm -rf "$out" build quarterdeck.egg-info
     return $rc
 }

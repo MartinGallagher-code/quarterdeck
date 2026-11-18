@@ -1,0 +1,4 @@
+req,column,op,limit,agg,note
+NET-001,mbps,>=,9000,each,
+NET-002,mbps,>=,9300,median,the fleet as a whole: 9.3 Gb/s
+NET-003,status,in,ok,each,every host answered

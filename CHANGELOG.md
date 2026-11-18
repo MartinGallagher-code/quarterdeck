@@ -5,10 +5,11 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
-## 0.24.0 — 2026-11-17
+## 0.25.0 — 2026-11-18
 
 A command given no hosts runs on this machine (QD-037). This pull
-request first took 0.23.0, which QD-038 reached `main` with first.
+request first took 0.23.0, then 0.24.0, which QD-038 and QD-039 reached
+`main` with first.
 
 ### Added
 - **No hosts named: this machine.** With no `-s`, `-S`, `--layout` or
@@ -37,6 +38,58 @@ request first took 0.23.0, which QD-038 reached `main` with first.
 ### Changed
 - `--via`'s default is no longer written as `ssh`: not given, it is ssh
   for hosts that are named and local for this machine when none are.
+
+## 0.24.0 — 2026-11-17
+
+`qd demo`, and a ten-minute walkthrough on it, so qd can be learned with
+no fleet (QD-039).
+
+### Added
+- **`qd demo`** files a store named `demo`: 24 made-up hosts
+  (`demo-r1n01` to `demo-r2n12`, two racks, two SKUs) asked three things
+  over a week, why-slow's readings every morning (`demo-facts`), `uname
+  -r` (`demo-kernel`) and a throughput test (`demo-iperf`), with a host
+  that did not answer, a kernel that disagrees, a host whose free memory
+  slides day by day and a slow host planted for the read side to find.
+  Nothing runs and nothing needs ssh, a network or a host list: the
+  answers ship with qd as text (`quarterdeck/demo/`), and a stand-in
+  launcher plays them back through the same code as `qd run`, provost
+  filing every answer, so `provost store check` passes on the store and
+  every command reads it. The stand-in is no `--via` choice, and nothing
+  but `qd demo` reaches it. Each run is filed as having started at its
+  time in the week (UTC), so its run id is the same on every machine.
+  `qd demo` leaves the active store and `~/.provost` alone; run again, it
+  shows the demo it filed; `--rebuild` files it afresh; a store named
+  `demo` that is not qd's is never touched; a demo stopped part-way
+  leaves nothing behind. `qd demo --limits` prints its requirements, a
+  CSV for `qd check --against`.
+- **[Getting started](docs/getting-started.md)**, linked from the top of
+  the README and from "Thirty seconds": the core loop on the demo, one
+  question a step (who runs which kernel, who did not answer, who is far
+  from the rest, did it get worse, when did it start, does it meet spec),
+  each with the command and what it prints; four words (run, capture,
+  dataset, store) and how a command names a run; the move to a real fleet
+  (a host list, key-based ssh, `qd doctor`, a store of its own, `qd run`);
+  and a map of every command by what it is for.
+- `tests/test_demo.sh` runs every command on that page, on a fresh home
+  with no ssh on `PATH`, and fails when one prints anything but what the
+  page shows (`tests/walkthrough.py`; `QD_WALKTHROUGH_UPDATE=1` writes the
+  output back after a change meant to alter it), and checks the findings
+  the demo was built for, the stand-in's reach, and the package data.
+- `qd --help` and `qd hints` name `qd demo` and the walkthrough, and `qd
+  doctor`'s WHAT TO DO NEXT suggests `qd demo` when the store has no runs.
+- The CI wheel job and `tests/check.sh` install the wheel and run `qd
+  demo` from it, which proves the answers are package data.
+
+### Fixed
+- **`qd diff`, `qd compare`, `qd changes` and `qd check --baseline` no
+  longer match rows on a column they only guessed by its first letters.**
+  The key a table's rows are matched on is `host` and the columns that
+  repeat within a host (`n`, provost's record number, among them); each was
+  looked for as a column name could be typed, a unique prefix included, so
+  in a table whose only column starting with `n` was `net.tcp_retrans_pct`,
+  that measurement became part of the key and every host came out gone
+  and new. A key column is now found by its name alone.
 
 ## 0.23.0 — 2026-11-17
 

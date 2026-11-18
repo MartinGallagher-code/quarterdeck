@@ -1,0 +1,52 @@
+# demo-kernel: what each demo host said to `uname -r`.  One section a
+# host: ==> NAME STATUS SECONDS <==, then its answer (for a host that
+# did not answer, what ssh said instead).
+
+==> demo-r1n01 ok 0.26 <==
+6.8.0-48-generic
+==> demo-r1n02 ok 0.37 <==
+6.8.0-48-generic
+==> demo-r1n03 ok 0.31 <==
+6.8.0-48-generic
+==> demo-r1n04 ok 0.32 <==
+6.8.0-48-generic
+==> demo-r1n05 ok 0.21 <==
+6.8.0-48-generic
+==> demo-r1n06 ok 0.32 <==
+6.8.0-48-generic
+==> demo-r1n07 ok 0.24 <==
+6.8.0-48-generic
+==> demo-r1n08 ok 0.32 <==
+6.8.0-48-generic
+==> demo-r1n09 unreachable 8.03 <==
+ssh: connect to host demo-r1n09 port 22: Connection timed out
+==> demo-r1n10 ok 0.37 <==
+6.8.0-48-generic
+==> demo-r1n11 ok 0.27 <==
+6.8.0-48-generic
+==> demo-r1n12 ok 0.34 <==
+6.8.0-48-generic
+==> demo-r2n01 ok 0.21 <==
+6.8.0-48-generic
+==> demo-r2n02 ok 0.34 <==
+6.8.0-48-generic
+==> demo-r2n03 ok 0.24 <==
+6.8.0-48-generic
+==> demo-r2n04 ok 0.28 <==
+6.8.0-48-generic
+==> demo-r2n05 ok 0.30 <==
+6.8.0-31-generic
+==> demo-r2n06 ok 0.35 <==
+6.8.0-48-generic
+==> demo-r2n07 ok 0.29 <==
+6.8.0-48-generic
+==> demo-r2n08 ok 0.37 <==
+6.8.0-48-generic
+==> demo-r2n09 ok 0.38 <==
+6.8.0-48-generic
+==> demo-r2n10 ok 0.36 <==
+6.8.0-48-generic
+==> demo-r2n11 ok 0.38 <==
+6.8.0-48-generic
+==> demo-r2n12 ok 0.27 <==
+6.8.0-48-generic

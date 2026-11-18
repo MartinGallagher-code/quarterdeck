@@ -29,6 +29,8 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
                                                Splunk HEC, OpenMetrics
        qd web                                  the store in a browser
        qd floor RUN --layout floor.dc          paint it on the floor plan
+       qd demo                                 a made-up fleet's week, in
+                                               the store demo, to learn on
        qd hosts | doctor [HOST] | hints | help
 
 Examples:
@@ -68,6 +70,10 @@ Exit status
       differs, a change qd changes found, a check that failed (qd
       report: any finding it records)
   2   usage error, or something could not be read or written
+
+New to qd?  `qd demo`, then the ten-minute walkthrough, which needs no
+fleet: docs/getting-started.md, or
+https://github.com/MartinGallagher-code/quarterdeck/blob/main/docs/getting-started.md
 
 Full manual: https://github.com/MartinGallagher-code/quarterdeck#readme
 """
@@ -421,8 +427,13 @@ def outcome_counts(results):
     return counts
 
 
-def new_run_id(st, label):
-    stamp = time.strftime("%Y%m%d-%H%M%S")
+def new_run_id(st, label, at=None):
+    """A run's id: when it ran, in this machine's time, and its label.
+    `at` (seconds since the epoch) is a time a caller gives the run --
+    qd demo's, never a flag's -- written in UTC, so it is the same id on
+    every machine."""
+    stamp = time.strftime("%Y%m%d-%H%M%S") if at is None else \
+        time.strftime("%Y%m%d-%H%M%S", time.gmtime(at))
     base = "%s-%s" % (stamp, tablemod.slug(label or "")[:32].strip("_")
                       or "run")
     taken = st.run_ids()
@@ -881,7 +892,7 @@ def failing_plan(args, stop, retry):
 
 
 def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
-              store=True, stdin=None):
+              store=True, stdin=None, runner=None, at=None):
     """Run `command` on every host, as args says (ssh, jobs, timeout,
     passes), and file what came back as one run named `label`.
 
@@ -889,7 +900,13 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
     run and host -- a campaign's part, a design point's factors -- so they
     are columns of provost's rows too.  extra: fields of the qd.runs row
     (group, part, factors).  stdin: a local file fed to the command on
-    every host.  Returns a Job, or None for --dry-run."""
+    every host.  Returns a Job, or None for --dry-run.
+
+    runner and at are qd demo's (quarterdeck/demo.py), and no flag or
+    variable reaches them: a launcher that answers from the demo's own
+    files instead of --via's, and the time the run is filed as having
+    started (seconds since the epoch), its id, created and finished read
+    from that and from its hosts' answers rather than from the clock."""
     if args.count < 0 or (args.count == 0 and not args.every):
         die("--count wants 1 or more (0, meaning until Ctrl-C, needs "
             "--every)")
@@ -907,7 +924,8 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
     if getattr(args, "_rerun_of", None):
         extra = dict(extra or {})
         extra["rerun_of"] = ",".join(args._rerun_of)
-    runner = new_runner(args, hs)
+    if runner is None:
+        runner = new_runner(args, hs)
     if args.dry_run:
         check_ssh_setup(runner)
         for ln in failing_plan(args, stop, retry):
@@ -926,8 +944,8 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
     count = args.count if args.count else 10 ** 9
     if st is not None:
         extra = dict(whoran.fan_out(runner, hs, args.jobs), **(extra or {}))
-    t0 = time.time()
-    created = now_iso()
+    t0 = time.time() if at is None else at
+    created = now_iso(t0)
     many = None
     if runner.batched:
         def many(hosts, k, label):
@@ -951,7 +969,13 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
     if push and args.keep_remote:
         warn("the pushed files are left on each host in %s"
              % runner.work_dir)
-    took = round(time.time() - t0, 2)
+    if at is None:
+        took = round(time.time() - t0, 2)
+    else:
+        # as long as its slowest host took, and finished then
+        took = round(max([r.started + r.duration for r in tries(results)
+                          if r.started is not None] or [at]) - at, 2)
+        extra = dict(extra or {}, finished=now_iso(at + took))
     passes = max(r.pass_no for r in results)
     if st is None:
         say_preamble(results)
@@ -960,7 +984,7 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
     # a part of a campaign or a design point carries its part in its id:
     # two workers on one campaign finish parts in the same second
     part = (extra or {}).get("part")
-    rid = new_run_id(st, ("%s-%s" % (label, part)) if part else label)
+    rid = new_run_id(st, ("%s-%s" % (label, part)) if part else label, at)
     b = filing.Batch()
     ncap = add_answers(b, rid, label, results, passes, context)
     add_own_tables(b, rid, label, command, created, took, hs, results,
@@ -4642,8 +4666,14 @@ def cmd_doctor(args):
                        if tools.install_hint(m)))
     if via == "ssh" and "ssh" in missing:
         hints.insert(0, "ssh/scp are needed for qd run: install openssh")
-    if hints:
-        lines.extend(next_steps([("", h) for h in hints]))
+    tips = [("", h) for h in hints]
+    if not book.exists() or not book.entries():
+        # nothing to read back yet: the demo is something to learn on
+        tips.append(("%s demo" % PROG, "nothing in this store yet: a "
+                     "made-up fleet's week to learn on, no fleet needed "
+                     "(docs/getting-started.md)"))
+    if tips:
+        lines.extend(next_steps(tips))
     sys.stdout.write(render.page(lines))
     if via == "ssh":
         return 1 if "ssh" in missing or "scp" in missing or not ssh_ok \
@@ -4811,6 +4841,8 @@ def doctor_ssh(args, lines):
 
 
 HINTS = [
+    ("New to qd? Somewhere to try it, no fleet needed",
+     "qd demo   (then docs/getting-started.md: ten minutes, a question a step)"),
     ("Is my host list even real?",
      "qd run --servers hosts.txt -- true            (then: reachable hosts.txt -i)"),
     ("What does every host say about X?",
@@ -4858,6 +4890,15 @@ HINTS = [
     ("Look around", "qd view   (everything: ] [ page, Enter opens)"),
     ("On the floor plan", "qd floor latest --layout floor.dc"),
 ]
+
+
+def cmd_demo(args):
+    """qd demo: the store `demo`, a made-up fleet's week (demo.py)."""
+    from . import demo
+    if getattr(args, "store", None):
+        die("qd demo files into the store named demo, and no other: "
+            "--store is for the commands that read it (qd log --store demo)")
+    return demo.cmd_demo(sys.modules[__name__], args)
 
 
 def cmd_hints(args):
@@ -5822,6 +5863,14 @@ def build_parser():
     sp.set_defaults(fn=cmd_doctor)
     sp = verb("hints", "what you want to know -> the command")
     sp.set_defaults(fn=cmd_hints)
+    sp = verb("demo", "file a made-up fleet's week in the store demo, to "
+              "learn qd on: no hosts, ssh or network needed")
+    sp.add_argument("--rebuild", action="store_true",
+                    help="delete the demo store and file it again")
+    sp.add_argument("--limits", action="store_true",
+                    help="print the demo's requirements, a CSV for qd check "
+                    "--against, and file nothing")
+    sp.set_defaults(fn=cmd_demo)
     sp = verb("help", "every verb and every flag")
     sp.set_defaults(fn=None)
     return p, sub

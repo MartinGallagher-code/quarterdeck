@@ -235,13 +235,15 @@ class Table(object):
 
     # -- columns ------------------------------------------------------------
 
-    def has(self, name):
-        return self.find(name) is not None
+    def has(self, name, prefix=True):
+        return self.find(name, prefix) is not None
 
-    def find(self, name):
+    def find(self, name, prefix=True):
         """The column index for a name, or None.  Exact, then
         case-insensitive, then as a slug (`rtt (us)` is `rtt_us`), then a
-        unique prefix of one."""
+        unique prefix of one -- unless not `prefix`: a column qd looks for
+        by its own name (a key it guesses, `host` or `n`) is that column
+        or none, never the one column that happens to start with it."""
         if name in self.columns:
             return self.columns.index(name)
         low = name.lower()
@@ -252,7 +254,7 @@ class Table(object):
         for i, c in enumerate(self.columns):
             if slug(c) == s:
                 return i
-        if s:
+        if s and prefix:
             hits = [i for i, c in enumerate(self.columns)
                     if slug(c).startswith(s)]
             if len(hits) == 1:
