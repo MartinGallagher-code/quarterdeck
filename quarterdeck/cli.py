@@ -33,7 +33,7 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
        qd floor RUN --layout floor.dc          paint it on the floor plan
        qd demo                                 a made-up fleet's week, in
                                                the store demo, to learn on
-       qd hosts | doctor [HOST] | hints | help
+       qd hosts | doctor [HOST] | hints | help [VERB]
 
 Examples:
   qd run --servers hosts.txt -- uname -r
@@ -82,6 +82,7 @@ Full manual: https://github.com/MartinGallagher-code/quarterdeck#readme
 
 import argparse
 import datetime
+import difflib
 import os
 import re
 import shlex
@@ -5877,7 +5878,10 @@ def build_parser():
                     help="print the demo's requirements, a CSV for qd check "
                     "--against, and file nothing")
     sp.set_defaults(fn=cmd_demo)
-    sp = verb("help", "every verb and every flag")
+    sp = verb("help", "every verb and every flag; with VERB, that verb's "
+              "help, as qd VERB --help prints it")
+    sp.add_argument("topic", nargs="?", metavar="VERB",
+                    help="the verb to print the help of")
     sp.set_defaults(fn=None)
     return p, sub
 
@@ -5891,6 +5895,21 @@ def full_help(parser, sub):
         parts.append(sp.format_help().rstrip())
         parts.append("")
     return "\n".join(parts) + "\n"
+
+
+def verb_help(sub, name):
+    """`qd help NAME`: what `qd NAME --help` prints, or exit 2 naming the
+    verbs closest to NAME."""
+    sp = sub.choices.get(name)
+    if sp is not None:
+        sys.stdout.write(sp.format_help())
+        return 0
+    verbs = [v for v in sub.choices if v != "help"]
+    close = difflib.get_close_matches(name, verbs, n=3, cutoff=0.6) or \
+        difflib.get_close_matches(name, verbs, n=3, cutoff=0)
+    warn("no verb %r; the closest: %s; qd --help lists them all"
+         % (name, ", ".join(close)))
+    return 2
 
 
 def glue_sort(argv):
@@ -5941,6 +5960,8 @@ def main(argv=None):
         sys.stdout.write(__doc__.lstrip())
         return 0
     if args.verb == "help":
+        if args.topic is not None:
+            return verb_help(sub, args.topic)
         sys.stdout.write(full_help(parser, sub))
         return 0
     if tail is not None:

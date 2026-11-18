@@ -6,8 +6,9 @@
 # line for every verb the parser registers (QD-043), every command `qd
 # hints` suggests still parses (QD-045), and every README pointer in qd's
 # code names a section the README has (QD-046,
-# tests/check_readme_pointers.py, which tests/check.sh also runs).  Each
-# check is also run on a broken copy, to show it can fail.
+# tests/check_readme_pointers.py, which tests/check.sh also runs), and `qd
+# help VERB` prints what `qd VERB --help` does (QD-044).  Each check is
+# also run on a broken copy, to show it can fail.
 # tests/help_unit.py does the reading for the first two.
 
 set -u
@@ -19,6 +20,12 @@ unit() {
     OUT="$("$PY" "$QD_DIR/tests/help_unit.py" "$QD_DIR" "$@")"
     RC=$?
     set -e
+}
+
+# unit_count: how many verbs build_parser() registers
+unit_count() {
+    "$PY" -c 'import sys; sys.path.insert(0, sys.argv[1])
+from quarterdeck import cli; print(len(cli.build_parser()[1].choices))' "$QD_DIR"
 }
 
 t_card_lists_every_verb() {
@@ -156,8 +163,50 @@ t_readme_pointer_check_refuses_a_pointer_it_cannot_read() {
     assert_status "$RC" 2
 }
 
+t_help_verb_is_the_verbs_help() {
+    # every verb, through main(), both ways
+    unit verb-help
+    assert_status "$RC" 0
+    assert_eq "$OUT" "ok $(unit_count)"
+    unit verb-help cut
+    assert_status "$RC" 1
+    assert_contains "$OUT" "run: qd help run and qd run --help differ"
+    # and through qd itself: run, and the two whose lists main() cuts at --
+    for v in run campaign doe; do
+        qd "$v" --help > want.txt
+        qd help "$v" > got.txt
+        assert_eq "$(cat got.txt)" "$(cat want.txt)"
+        assert_contains "$(head -n 1 got.txt)" "usage: qd $v "
+    done
+    # a global option before VERB does not break the parse
+    qd help --store elsewhere run > got.txt
+    qd run --help > want.txt
+    assert_eq "$(cat got.txt)" "$(cat want.txt)"
+    # bare qd help is still everything, and the card names qd help VERB
+    out="$(qd help)"
+    assert_contains "$out" "usage: qd run "
+    assert_contains "$out" "usage: qd web "
+    assert_contains "$(qd --help)" "| hints | help [VERB]"
+}
+
+t_help_unknown_verb_names_the_closest() {
+    qd_rc help stat 2> err.txt > out.txt
+    assert_status "$QD_RC" 2
+    assert_eq "$(cat err.txt)" \
+        "qd: no verb 'stat'; the closest: stats; qd --help lists them all"
+    assert_eq "$(cat out.txt)" ""
+    # nothing close: the three nearest all the same
+    qd_rc help nosuch 2> err.txt
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err.txt)" "qd: no verb 'nosuch'; the closest: "
+    assert_contains "$(cat err.txt)" "; qd --help lists them all"
+    assert_eq "$(tr -cd ',' < err.txt)" ",,"
+}
+
 run_test "qd --help lists every verb"                  t_card_lists_every_verb
 run_test "the card check names a verb with no line"    t_card_check_names_a_verb_with_no_line
+run_test "qd help VERB prints qd VERB --help"         t_help_verb_is_the_verbs_help
+run_test "qd help NOSUCH names the closest verbs"     t_help_unknown_verb_names_the_closest
 run_test "qd hints prints every hint"                  t_hints_prints_every_hint
 run_test "every command qd hints suggests parses"      t_hints_every_command_parses
 run_test "the hints check fails on a bad flag or verb" t_hints_check_fails_on_a_bad_flag_or_verb

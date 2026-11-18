@@ -40,6 +40,31 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
   2, 3, 4, 100; not measured; units refused; zmax against `qd outliers`;
   a file's old rows unchanged beside new ones; JUnit, waivers, severity,
   `--keep`; `--baseline`).
+## 0.26.0 — 2026-11-18
+
+`qd help VERB` prints that verb's help, as `qd VERB --help` does, instead
+of an error (QD-044).
+
+### Added
+- **`qd help VERB`** prints exactly what `qd VERB --help` prints and exits
+  0, for every verb (`campaign` and `doe` included: `main()` cuts only their
+  own argument lists at `--`). A global option before VERB is fine (`qd
+  help --store x run`). An unknown VERB exits 2 naming the three closest
+  verbs (`difflib`, standard library) and pointing to `qd --help`: `qd
+  help stat` says `the closest: stats`. Bare `qd help` still prints every
+  verb's help (`quarterdeck/cli.py`: `verb_help()`, the help verb's
+  optional `VERB`).
+- **`qd --help`** shows `help [VERB]` on its last usage line, and the
+  README says once, under the install lines, that `qd help VERB` gives one
+  verb's flags.
+
+### Tests
+- **`tests/test_help.sh`**: `qd help VERB prints qd VERB --help` (every
+  verb `build_parser()` registers, through `main()` both ways by
+  `tests/help_unit.py verb-help`, and its `cut` mutation to show it fails;
+  `run`, `campaign` and `doe` through `qd` itself; a global option before
+  VERB; bare `qd help`; the card's line) and `qd help NOSUCH names the
+  closest verbs`. `TIMES` gives the help suite 5 seconds.
 
 ## 0.25.3 — 2026-11-18
 
