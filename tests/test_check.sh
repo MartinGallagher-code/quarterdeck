@@ -1110,7 +1110,7 @@ t_rule_none_unchanged() {
     # no rule, a blank QD_RULE, and the weight column taken away: the same
     qd_rc check r.csv --against r.tsv > a.txt 2> /dev/null
     assert_status "$QD_RC" 1
-    QD_RULE= qd_rc check r.csv --against r.tsv > b.txt 2> /dev/null
+    QD_RULE='' qd_rc check r.csv --against r.tsv > b.txt 2> /dev/null
     assert_status "$QD_RC" 1
     cut -f1-5 r.tsv > n.tsv
     qd_rc check r.csv --against n.tsv > c.txt 2> /dev/null
