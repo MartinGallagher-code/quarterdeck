@@ -3,8 +3,10 @@
 # SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # The help qd gives, checked against qd itself: `qd --help` has a usage
-# line for every verb the parser registers (QD-043), every command `qd
-# hints` suggests still parses (QD-045), and every README pointer in qd's
+# line for every verb the parser registers (QD-043), under the goal
+# headings, in at most 50 lines of 80 columns with six examples at most
+# (QD-040), every command `qd hints` suggests still parses (QD-045), its
+# headings are the card's (QD-040), and every README pointer in qd's
 # code names a section the README has (QD-046,
 # tests/check_readme_pointers.py, which tests/check.sh also runs), and `qd
 # help VERB` prints what `qd VERB --help` does (QD-044).  Each check is
@@ -35,6 +37,22 @@ t_card_lists_every_verb() {
     assert_eq "$OUT" "ok"
     # the store's commands, which every "no store" message names
     assert_contains "$(cat card.txt)" "qd store new|ls|use|rename|rm|clear|export|import"
+    # what the card keeps besides the commands (QD-040)
+    for want in "RUN: latest" "QD_STORE" "Exit status" "qd demo" \
+        "docs/getting-started.md" "Full manual: " "qd hints | doctor"; do
+        assert_contains "$(cat card.txt)" "$want"
+    done
+}
+
+t_card_fits_a_screen() {
+    qd --help > card.txt
+    lines="$(wc -l < card.txt | tr -d ' ')"
+    [ "$lines" -le 50 ] || fail "qd --help is $lines lines, over 50"
+    assert_eq "$(awk 'length > 80' card.txt)" ""
+    # the core loop's examples: six at most
+    n="$(sed -n '/^The core loop:/,/^$/p' card.txt | grep -c '^  qd ')"
+    [ "$n" -ge 1 ] && [ "$n" -le 6 ] || fail "$n example lines"
+    assert_eq "$(grep -c '^Examples' card.txt)" "0"
 }
 
 t_card_check_names_a_verb_with_no_line() {
@@ -44,31 +62,51 @@ t_card_check_names_a_verb_with_no_line() {
     assert_status "$RC" 1
     assert_eq "$OUT" "store"
     # one of the run-together verbs
-    sed 's/|outliers|/|/' card.txt > no-outliers.txt
+    sed 's/|outliers RUN/ RUN/' card.txt > no-outliers.txt
     unit card no-outliers.txt
     assert_status "$RC" 1
     assert_eq "$OUT" "outliers"
     # one of the verbs after a spaced |
-    sed 's/| hints |/|/' card.txt > no-hints.txt
-    unit card no-hints.txt
+    sed 's/| doctor \[HOST\] //' card.txt > no-doctor.txt
+    unit card no-doctor.txt
     assert_status "$RC" 1
-    assert_eq "$OUT" "hints"
-    # run's own line gone: campaign's and doe's `run` sub-commands do not
-    # stand in for it
-    sed 's/^Usage: qd run .*/Usage:/' card.txt > no-run.txt
+    assert_eq "$OUT" "doctor"
+    # run's own line gone: campaign's and doe's `run` sub-commands, and
+    # the core loop's example, do not stand in for it
+    grep -v '^  qd run \[HOSTS\]' card.txt > no-run.txt
     unit card no-run.txt
     assert_status "$RC" 1
     assert_eq "$OUT" "run"
+    # a verb on two lines
+    sed 's/^  qd diff /  qd diff|web /' card.txt > twice.txt
+    unit card twice.txt
+    assert_status "$RC" 1
+    assert_eq "$OUT" "twice: web"
+    # the headings out of order, or one renamed
+    awk '$0 == "Over time" { $0 = "Later" } { print }' card.txt > renamed.txt
+    unit card renamed.txt
+    assert_status "$RC" 1
+    assert_contains "$OUT" "headings: Run, Read it back, Judge and report,"
+    # an example that no longer parses
+    sed 's/^  qd freq latest A /  qd freq latest A --srevers/' card.txt > bad-example.txt
+    unit card bad-example.txt
+    assert_status "$RC" 1
+    assert_contains "$OUT" "example: qd freq latest A --srevers"
 }
 
 t_hints_prints_every_hint() {
     qd hints > hints.txt
     unit hints-count
     assert_status "$RC" 0
-    # a title, a blank line, then one line a hint
-    assert_eq "$(wc -l < hints.txt | tr -d ' ')" "$((OUT + 2))"
+    # one line a hint, under the card's headings, in the card's order
+    assert_eq "$(grep -c '^  ' hints.txt)" "$OUT"
     assert_contains "$(head -n 1 hints.txt)" "hints -- what you want to know"
     assert_contains "$(cat hints.txt)" "qd outliers latest COLUMN"
+    unit groups
+    assert_eq "$(sed -n '2,$p' hints.txt | grep -v '^  ' | grep -v '^$')" "$OUT"
+    # and those are the card's own
+    qd --help > card.txt
+    assert_eq "$(grep -Fx -f <(printf '%s\n' "$OUT") card.txt)" "$OUT"
 }
 
 t_hints_every_command_parses() {
@@ -186,7 +224,7 @@ t_help_verb_is_the_verbs_help() {
     out="$(qd help)"
     assert_contains "$out" "usage: qd run "
     assert_contains "$out" "usage: qd web "
-    assert_contains "$(qd --help)" "| hints | help [VERB]"
+    assert_contains "$(qd --help)" "| demo | help [VERB]"
 }
 
 t_help_unknown_verb_names_the_closest() {
@@ -204,6 +242,7 @@ t_help_unknown_verb_names_the_closest() {
 }
 
 run_test "qd --help lists every verb"                  t_card_lists_every_verb
+run_test "qd --help fits a screen"                     t_card_fits_a_screen
 run_test "the card check names a verb with no line"    t_card_check_names_a_verb_with_no_line
 run_test "qd help VERB prints qd VERB --help"         t_help_verb_is_the_verbs_help
 run_test "qd help NOSUCH names the closest verbs"     t_help_unknown_verb_names_the_closest
