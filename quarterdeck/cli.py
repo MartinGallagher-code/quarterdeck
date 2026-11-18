@@ -15,6 +15,8 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
                                                named stores: pick one, move one
        qd view [RUN]                           full-screen; ] [ page the store
        qd show|stats|freq|hist|outliers|pivot|trend RUN ...
+       qd odd [RUN]                            which hosts are unlike the
+                                               rest, in any column, ranked
        qd diff [OLD] NEW                       what changed between two
        qd compare RUN --last N -c COL          N runs side by side
        qd changes RUN -c COL [--last N]        where each host's level moved
@@ -1900,15 +1902,11 @@ def cmd_outliers(args):
     return 0
 
 
-def report_categorical(args, t, s):
-    """outliers --categorical: within each group of hosts that ought to be
-    alike, the value most of them have, and every host that has another
-    (QD-034)."""
-    from . import differs
-    cols = [c.strip() for c in args.column.split(",") if c.strip()] \
-        if args.column else None
-    match = [c.strip() for c in args.match.split(",") if c.strip()] \
-        if args.match else None
+def categorical_groups(args, s):
+    """The groups --categorical compares hosts within: the --peers group,
+    else the rack, else the whole fleet.  (row -> group or None, the
+    group's column name, how it is said, the columns grouped by -- which
+    are not compared within the groups).  qd odd shares it."""
     pg = peers_of(args)
     if pg is not None:
         at = pg.assigner(s)
@@ -1926,6 +1924,19 @@ def report_categorical(args, t, s):
             "NAME groups them)"
     # what the hosts are grouped by is not compared within the groups
     by = [s.colname(b) for b in pg.by if s.has(b)] if pg is not None else []
+    return at, gname, how, by
+
+
+def report_categorical(args, t, s):
+    """outliers --categorical: within each group of hosts that ought to be
+    alike, the value most of them have, and every host that has another
+    (QD-034)."""
+    from . import differs
+    cols = [c.strip() for c in args.column.split(",") if c.strip()] \
+        if args.column else None
+    match = [c.strip() for c in args.match.split(",") if c.strip()] \
+        if args.match else None
+    at, gname, how, by = categorical_groups(args, s)
     res = differs.find(s, at, cols, match, gname, by)
     differ = [r for r in res.rows if r[-1] == differs.DIFFERS]
     split = [r for r in res.rows if r[-1] == differs.SPLIT]
@@ -2187,6 +2198,321 @@ def report_peer_outliers(args, t, s, col, per, method, k, pg):
         lines.append("  %s in no peer group of %s: left out" % (
             plural(none, "row"), pg.name))
     return lines, ot
+
+
+# ---------------------------------------------------------------------------
+# odd: every column at once, the hosts unlike the rest (QD-062)
+# ---------------------------------------------------------------------------
+#
+# `qd outliers` asks about one column, and a newcomer does not know which
+# to ask about.  qd odd runs the same two checks over every column of a
+# run -- numbers by the median and MAD (stats.outliers, or
+# stats.peer_outliers with --peers), words by the value most of the group
+# has (differs.find, grouped as --categorical groups) -- and ranks what
+# they find.  The two are ranked apart: a robust z has no ceiling and a
+# rarity is a share, and one scale for both would rank by the choice of
+# scale, not by how odd a host is.
+
+ODD_LISTS = ("numbers", "values")
+ODD_COLUMNS = ["list", "group", "host", "column", "value", "typical",
+               "score", "agree"]
+
+
+class OddResult(object):
+    def __init__(self):
+        self.numbers = []       # (column, group, row of stats.outliers)
+        self.values = []        # (column, group, host, value, typical,
+        #                          agree, measured, rarity)
+        self.checked_numbers = []
+        self.checked_values = []
+        self.agree = []         # every host says the same
+        self.blank = []         # fewer than half the rows measured it
+        self.identities = []    # per-host identities, left out
+        self.mixed_tests = []   # value, in a results table of several tests
+        self.no_host = []       # words, in a table with no host column
+        self.split = []         # (group, column): no majority
+        self.not_ok = []        # (host, status): did not answer in the run
+        self.none = 0           # rows in no peer group
+        self.how = ""           # what the words are compared within
+
+    def found(self):
+        return bool(self.numbers or self.values)
+
+    def hosts(self):
+        return set([r[2][0] for r in self.numbers] +
+                   [r[2] for r in self.values])
+
+
+def odd_find(args, s):
+    """Every column of s worth reading, through the outlier code that
+    `qd outliers` and `qd outliers --categorical` use; an OddResult."""
+    from . import differs
+    res = OddResult()
+    pg = peers_of(args)
+    at, gname, res.how, by = categorical_groups(args, s)
+    hc = differs.host_column(s)
+    match = differs.match_columns(s) if hc else []
+    cand, ident = differs.default_columns(
+        s, set(match) | set([gname]) | set(by))
+    if "capture" in s.columns or "stdout" in s.columns:
+        # a qd run: what the hosts said, not the host list's attributes
+        said = set(data_columns(s))
+        cand = [c for c in cand if c in said]
+        ident = [c for c in ident if c in said]
+    res.identities = ident
+    nrows = len(s.rows)
+    nums, words = [], []
+    for c in cand:
+        kind = s.kind(c)
+        filled = [v.strip() for v in s.values(c) if v.strip()]
+        # blank is not measured: a column most rows left blank is not
+        # read, and in the rest a blank is no value of its own
+        if kind == "empty" or len(filled) * 2 < nrows:
+            res.blank.append(c)
+            continue
+        if kind == "num":
+            distinct = set(v for v in s.numbers(c) if v is not None)
+        else:
+            distinct = set(filled)
+        if len(distinct) < 2:
+            res.agree.append(c)
+        elif kind != "num":
+            (words if hc else res.no_host).append(c)
+        elif s.is_results() and c == "value" and \
+                len(set(s.values("test"))) > 1:
+            res.mixed_tests.append(c)
+        else:
+            nums.append(c)
+    groups = None
+    if pg is not None:
+        groups, res.none = pg.split(s)
+    for c in nums:
+        per = stats.default_per(s, c)
+        if groups is not None:
+            got, _ = stats.peer_outliers(groups, c, per, args.z)
+        else:
+            got = [("", r) for r in stats.outliers(s, c, per, args.z)[0]]
+        res.checked_numbers.append(c)
+        res.numbers.extend((c, g, r) for g, r in got)
+    if words:
+        found = differs.find(s, at, words, None, gname, by)
+        if pg is None:
+            res.none = found.none
+        res.checked_values = list(words)
+        same = {}
+        for r in found.rows:
+            if r[-1] == differs.DIFFERS:
+                k = (r[0], r[1], r[2], r[4])
+                same[k] = same.get(k, 0) + 1
+        for g, m, c, h, v, maj, agree, measured, verdict in found.rows:
+            if verdict == differs.SPLIT:
+                if (g, c) not in res.split:
+                    res.split.append((g, c))
+                continue
+            rarity = 1.0 - float(same[(g, m, c, v)]) / int(measured)
+            res.values.append((c, g, h + ("/" + m if m else ""), v, maj,
+                               int(agree), int(measured), rarity))
+    # the ranking: numbers by how far out, in robust z; with the fleet in
+    # exact agreement (MAD 0, every difference infinitely far), the column
+    # fewer hosts differ in first
+    hits = {}
+    for c, g, r in res.numbers:
+        hits[(c, g)] = hits.get((c, g), 0) + 1
+    res.numbers.sort(key=lambda x: (-abs(x[2][4]), hits[(x[0], x[1])],
+                                    x[0], str(x[1]), str(x[2][0])))
+    # words by rarity: the share of the group that says something else
+    res.values.sort(key=lambda x: (-x[7], -x[6], x[0], str(x[1]), x[2]))
+    if s.has("status"):
+        hi = s.index(hc) if hc else None
+        si = s.index("status")
+        for n, r in enumerate(s.rows, 1):
+            st = r[si].strip()
+            if st and st != fleet.OK:
+                res.not_ok.append((r[hi] if hi is not None
+                                   else "row %d" % n, st))
+    return res
+
+
+def odd_score(score):
+    if abs(score) == float("inf"):
+        return "+inf" if score > 0 else "-inf"
+    return "%+.1f" % score
+
+
+def odd_table(res, top):
+    rows = []
+    for c, g, (key, v, med, rel, score, side) in res.numbers[:top]:
+        rows.append(["numbers", g, str(key), c, stats.fmt_num(v),
+                     stats.fmt_num(med), odd_score(score), ""])
+    for c, g, h, v, maj, agree, measured, rarity in res.values[:top]:
+        rows.append(["values", g, h, c, v, maj,
+                     "%.0f%%" % (100.0 * rarity),
+                     "%d of %d" % (agree, measured)])
+    return tablemod.Table(list(ODD_COLUMNS), rows, "odd")
+
+
+def odd_names(cols, lim=6):
+    return ", ".join(cols[:lim]) + (" ..." if len(cols) > lim else "")
+
+
+def odd_command(args, column, words=False):
+    """The `qd outliers` that shows one column of what qd odd found."""
+    argv = ["qd", "outliers", args.ref or "latest", column]
+    if words:
+        argv.append("--categorical")
+    elif args.z != env_float("Z", 3.5):
+        argv.extend(["--z", stats.fmt_num(args.z)])
+    if args.peers:
+        argv.extend(["--peers", args.peers])
+    for w in args.where or []:
+        argv.extend(["--where", w])
+    if args.store:
+        argv.extend(["--store", args.store])
+    return " ".join(shlex.quote(a) for a in argv)
+
+
+def odd_next_steps(args, s, res):
+    tips = []
+    # the top column of each list, then each list's next: two at most
+    tops = []
+    for words, rows in ((False, res.numbers), (True, res.values)):
+        cols = []
+        for r in rows:
+            if r[0] not in cols:
+                cols.append(r[0])
+        tops.append([(words, c) for c in cols[:2]])
+    picks = []
+    for depth in range(2):
+        for cols in tops:
+            if len(cols) > depth and len(picks) < 2:
+                picks.append(cols[depth])
+    for words, c in picks:
+        tips.append((odd_command(args, c, words),
+                     "every host's %s against %s, in full" % (
+                         c, "its peers" if args.peers else "the rest")))
+    first = None
+    if res.numbers and s.has("host"):
+        first = str(res.numbers[0][2][0])
+    elif res.values and s.has("host"):
+        first = res.values[0][2].split("/")[0]
+    ref = args.ref or "latest"
+    extra = ["--store", args.store] if args.store else []
+    if first:
+        argv = ["qd", "show", ref, "--where", "host=" + first,
+                "--vertical"] + extra
+        tips.append((" ".join(shlex.quote(a) for a in argv),
+                     "everything %s said" % first))
+    if not res.found():
+        argv = ["qd", "stats", ref] + extra
+        tips.append((" ".join(shlex.quote(a) for a in argv),
+                     "every column's centre and spread"))
+    return next_steps(tips)
+
+
+def cmd_odd(args):
+    """qd odd [RUN]: the hosts unlike the rest, in any column, ranked."""
+    t = load(args)
+    s = subset(args, t)
+    res = odd_find(args, s)
+    top = args.top
+    ot = odd_table(res, top)
+    pg_how = None
+    if args.peers:
+        pg_how = res.how
+    hosts = res.hosts()
+    ncols = len(res.checked_numbers) + len(res.checked_values)
+    found_in = set(r[0] for r in res.numbers) | set(r[0] for r in res.values)
+    lines = ["%s odd -- %s (%s): %s %s, in %d of %s checked" % (
+        PROG, source_name(t), scope(args, t, s), plural(len(hosts), "host"),
+        "stands out" if len(hosts) == 1 else "stand out", len(found_in),
+        plural(ncols, "column")), ""]
+    if res.numbers:
+        lines.append("  Numbers far from the rest: robust z beyond %s, "
+                     "against %s" % (
+                         stats.fmt_num(args.z),
+                         "the whole run's median" if pg_how is None else
+                         "the median of each host's " + pg_how))
+        nt = ot.derive(rows=[r for r in ot.rows if r[0] == "numbers"])
+        keep = (["group"] if args.peers else []) + \
+            ["host", "column", "value", "typical", "score"]
+        nt = tablemod.Table(
+            [("robust_z" if c == "score" else
+              (args.peers if c == "group" else c)) for c in keep],
+            [[r[ODD_COLUMNS.index(c)] for c in keep] for r in nt.rows],
+            "odd")
+        lines.extend(render.render_table(nt, width=width_of(args),
+                                         indent="  "))
+        if len(res.numbers) > top:
+            lines.append("  ... and %d more (--top N shows more)"
+                         % (len(res.numbers) - top))
+        lines.append("")
+    if res.values:
+        lines.append("  Values unlike the rest of their %s: rarity is the "
+                     "share of it that says otherwise" % (
+                         "group" if res.how.startswith("the whole")
+                         else res.how))
+        vt = [r for r in ot.rows if r[0] == "values"]
+        keep = ["group", "host", "column", "value", "typical", "score",
+                "agree"]
+        if res.how.startswith("the whole"):
+            keep = keep[1:]
+        gcol = args.peers or "rack"
+        vt = tablemod.Table(
+            [("rarity" if c == "score" else gcol if c == "group" else c)
+             for c in keep],
+            [[r[ODD_COLUMNS.index(c)] for c in keep] for r in vt],
+            "odd")
+        lines.extend(render.render_table(vt, width=width_of(args),
+                                         indent="  "))
+        if len(res.values) > top:
+            lines.append("  ... and %d more (--top N shows more)"
+                         % (len(res.values) - top))
+        lines.append("")
+    if not res.found():
+        lines.append("  none: no host stands out in %s" % (
+            "any of the %s checked" % plural(ncols, "column") if ncols
+            else "any column: none had two values to compare"))
+        lines.append("")
+    lines.append("  checked: %s of numbers%s" % (
+        plural(len(res.checked_numbers), "column"),
+        " (%s)" % odd_names(res.checked_numbers)
+        if res.checked_numbers else ""))
+    lines.append("           %s of words%s" % (
+        plural(len(res.checked_values), "column"),
+        (" (%s), within each %s" % (odd_names(res.checked_values), res.how))
+        if res.checked_values else ""))
+    skipped = []
+    if res.agree:
+        skipped.append("every host agrees in %s" % odd_names(res.agree))
+    if res.blank:
+        skipped.append("mostly blank: %s" % odd_names(res.blank))
+    if res.identities:
+        skipped.append("per-host identities: %s" % odd_names(res.identities))
+    if res.mixed_tests:
+        skipped.append("value mixes tests (qd outliers RUN value --where "
+                       "test=NAME)")
+    if res.no_host:
+        skipped.append("words, with no host column to name: %s"
+                       % odd_names(res.no_host))
+    if skipped:
+        lines.append("  not checked: " + "; ".join(skipped))
+    if res.split:
+        lines.append("  split with no majority, so no host is the odd one: "
+                     "%s" % ", ".join(
+                         "%s in %s" % (c, g) if g != "(all)" else c
+                         for g, c in res.split[:6]) +
+                     (" ..." if len(res.split) > 6 else ""))
+    if res.not_ok:
+        lines.append("  did not answer in this run, so not measured: %s" % (
+            ", ".join("%s (%s)" % hs for hs in res.not_ok[:6]) +
+            (" ..." if len(res.not_ok) > 6 else "")))
+    if res.none:
+        lines.append("  %s in no %s: left out" % (
+            plural(res.none, "row"),
+            ("peer group of " + args.peers) if args.peers else "rack"))
+    lines.extend(odd_next_steps(args, s, res))
+    emit(args, ot, lines)
+    return 1 if res.found() else 0
 
 
 def cmd_pivot(args):
@@ -4876,6 +5202,7 @@ HINTS = [
     ("Half the fleet against the other half", "qd split -s hosts.txt --ab --out ab/"),
     ("What were temperature and power doing meanwhile?",
      "qd join RUN splunk-export.csv --window +-30 --agg mean,max"),
+    ("Who is odd, and in what? Every column at once", "qd odd latest"),
     ("Who is far from the rest?", "qd outliers latest COLUMN"),
     ("Who is far from their own peers?",
      "qd peers define sku --by sku; qd outliers latest COLUMN --peers sku"),
@@ -5350,6 +5677,23 @@ def build_parser():
     add_query(sp, sort=False)
     add_format(sp)
     sp.set_defaults(fn=cmd_outliers)
+
+    sp = verb("odd", "which hosts are unlike the rest, in any column: "
+              "every column's outliers at once, ranked")
+    sp.add_argument("ref", metavar="RUN", nargs="?",
+                    help="the run to read (default: latest)")
+    sp.add_argument("--top", type=positive, default=20, metavar="N",
+                    help="list at most N hosts of each kind, numbers and "
+                    "values (20)")
+    sp.add_argument("--peers", metavar="NAME",
+                    help="each host against its own peer group of NAME, not "
+                    "the whole run (numbers) or its rack (values)")
+    sp.add_argument("--z", type=float, default=env_float("Z", 3.5),
+                    help="robust z-score past which a number is out "
+                    "(QD_Z, 3.5)")
+    add_query(sp, sort=False)
+    add_format(sp)
+    sp.set_defaults(fn=cmd_odd)
 
     sp = verb("check", "pass or fail against a thresholds file, by "
               "requirement")
