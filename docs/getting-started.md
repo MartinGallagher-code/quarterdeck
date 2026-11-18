@@ -294,7 +294,9 @@ qd web             # the same store in a browser, with charts
 
 ## Your own fleet
 
-Four things, once:
+`qd setup` does the first three of these four, asking at each step (it
+asks nothing when stdin is not a terminal, and says what to run instead).
+By hand, four things, once:
 
 ```bash
 # 1. a host list: a host a line, attributes after it (they become columns)
@@ -327,7 +329,7 @@ what it can, `qd store rm demo --delete` removes it.
 
 | What for | Commands |
 |---|---|
-| Starting out | `qd demo`, `qd hints`, `qd doctor`, `qd help` |
+| Starting out | `qd demo`, `qd setup` (your own fleet, the first time: a store, a host list, who answers), `qd hints`, `qd doctor`, `qd help` |
 | Asking the fleet | `qd hosts` (the host list), `qd run` (a command), `qd probe` (by name: facts, sysctl, gpu ...), `qd do` (a toolchain tool, run here), `qd import` (output already on disk) |
 | Seeing what came back | `qd log` (the runs), `qd show` (a table), `qd view` (full-screen), `qd web` (a browser) |
 | Is the fleet consistent? | `qd freq` (who said which), `qd stats` (centre and spread), `qd hist`, `qd outliers` (far from the rest), `qd pivot` (long to wide), `qd peers` (hosts that should agree, named) |

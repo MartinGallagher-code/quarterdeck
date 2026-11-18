@@ -5,6 +5,59 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.36.0 — 2026-11-18
+
+`qd setup`: a first-run guide that checks this machine, makes and selects
+a store, finds or writes the host list, and tests every host (QD-063,
+from the design in QD-057).
+
+### Added
+- **`qd setup [HOSTS] [--yes] [--store-name NAME]`** (new
+  `quarterdeck/firstrun.py`; `cmd_setup` and the verb in
+  `quarterdeck/cli.py`). Four steps, each a plain command called as that
+  command runs, so `--store`, `--via`, `--sudo` and every `QD_*` variable
+  mean what they mean there: `qd doctor`'s report; when no store is active
+  (or the demo is), an offer to make `main` and select it (`qd store new`,
+  `qd store use`); the host list as `qd run` finds it, or an offer to write
+  `hosts.txt` from typed names; `qd run -- true` on every host, keeping
+  nothing, with each host that did not answer listed with why and what to
+  do for its kind of failure (a key, a host key, a name that does not
+  resolve, a host that is down, a timeout, a login that fails). Then a
+  summary, and WHAT TO DO NEXT naming `qd ask -- uname -r`, `qd survey`
+  (`qd run` and `qd probe facts inventory` in a qd without them yet) and
+  `qd demo`.
+- **It asks only at a terminal**, checking `sys.stdin.isatty()` before
+  every question: with stdin not a terminal it checks everything, changes
+  nothing that needs an answer, and says what to run instead. `--yes`
+  answers the store's question for a script; it never writes `hosts.txt`
+  and never picks among stores already registered. `hosts.txt` is created
+  (`open(..., "x")`), never overwritten, and the active store is changed
+  only when asked. The test run is filed nowhere, so a second `qd setup`
+  changes nothing and reports every step done.
+- **Exit status:** 0 when this machine is ready (`qd doctor` exits 0 and
+  provost is here) and every host answered; 1 when it is not ready or a
+  host did not answer, the summary naming the step; 2 on a usage error, a
+  host list that cannot be read, or a write that was refused.
+- **`qd --help`** has a `qd setup` line, and its "New to qd?" note names
+  it; **`qd hints`** has a hint for it; the README has "Your own fleet,
+  the first time: `qd setup`"; `docs/getting-started.md` names it in "Your
+  own fleet" and in its map of every command.
+
+### Tests
+- **`tests/test_setup.sh`** (new, 9 cases), each an account of its own
+  with no `QD_STORE` and the fake fleet: a fresh account with stdin from
+  `/dev/null` asks nothing and changes nothing; `--yes` makes and selects
+  `main`, and a second run changes neither qd's config nor the store; a
+  store already active, and stores registered with none active, are left
+  as they are; the demo active is replaced only when asked; an unreachable
+  host and one whose name does not resolve are each listed with why and
+  what to do, exit 1; a bad `--store-name`, an empty `hosts.txt` and a
+  `hosts.txt` already there exit 2 or are refused, the file unchanged;
+  driven at a terminal by Python's `pty`, it asks, makes the store and
+  writes `hosts.txt` from the answers, and a run after it finds it all
+  done. Every command it lists under WHAT TO DO NEXT parses with
+  `build_parser()`. `TIMES` gives the setup suite 20 seconds.
+
 ## 0.26.0 — 2026-11-18
 
 `qd help VERB` prints that verb's help, as `qd VERB --help` does, instead

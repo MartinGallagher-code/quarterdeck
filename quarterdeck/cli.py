@@ -33,6 +33,9 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
        qd floor RUN --layout floor.dc          paint it on the floor plan
        qd demo                                 a made-up fleet's week, in
                                                the store demo, to learn on
+       qd setup [HOSTS] [--yes]                first run: check this
+                                               machine, make a store, test
+                                               the hosts
        qd hosts | doctor [HOST] | hints | help [VERB]
 
 Examples:
@@ -73,8 +76,8 @@ Exit status
       report: any finding it records)
   2   usage error, or something could not be read or written
 
-New to qd?  `qd demo`, then the ten-minute walkthrough, which needs no
-fleet: docs/getting-started.md, or
+New to qd?  `qd setup` for your own fleet; `qd demo`, then the
+ten-minute walkthrough, which needs no fleet: docs/getting-started.md, or
 https://github.com/MartinGallagher-code/quarterdeck/blob/main/docs/getting-started.md
 
 Full manual: https://github.com/MartinGallagher-code/quarterdeck#readme
@@ -4846,6 +4849,8 @@ def doctor_ssh(args, lines):
 HINTS = [
     ("New to qd? Somewhere to try it, no fleet needed",
      "qd demo   (then docs/getting-started.md: ten minutes, a question a step)"),
+    ("First time on my own fleet: a store, a host list, who answers?",
+     "qd setup   (or qd setup -s hosts.txt --yes in a script)"),
     ("Is my host list even real?",
      "qd run --servers hosts.txt -- true            (then: reachable hosts.txt -i)"),
     ("What does every host say about X?",
@@ -4902,6 +4907,12 @@ def cmd_demo(args):
         die("qd demo files into the store named demo, and no other: "
             "--store is for the commands that read it (qd log --store demo)")
     return demo.cmd_demo(sys.modules[__name__], args)
+
+
+def cmd_setup(args):
+    """qd setup: the first-run guide (firstrun.py)."""
+    from . import firstrun
+    return firstrun.cmd_setup(sys.modules[__name__], args)
 
 
 def cmd_hints(args):
@@ -5865,6 +5876,20 @@ def build_parser():
                     "clush or local (QD_VIA); exit 1 if it cannot run from "
                     "here")
     sp.set_defaults(fn=cmd_doctor)
+    sp = verb("setup", "first run: check this machine (qd doctor), make "
+              "and select a store if none is active, find the host list "
+              "or offer to write hosts.txt, and run true on every host; "
+              "asks only at a terminal")
+    add_hosts(sp)
+    add_ssh(sp)
+    g = sp.add_argument_group("setup")
+    g.add_argument("--yes", action="store_true",
+                   help="make and select the store without asking, for a "
+                   "script; it never writes hosts.txt, and never picks "
+                   "among stores already registered")
+    g.add_argument("--store-name", metavar="NAME",
+                   help="the store to make when none is active (main)")
+    sp.set_defaults(fn=cmd_setup)
     sp = verb("hints", "what you want to know -> the command")
     sp.set_defaults(fn=cmd_hints)
     sp = verb("demo", "file a made-up fleet's week in the store demo, to "
