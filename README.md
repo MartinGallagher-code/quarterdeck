@@ -1021,6 +1021,43 @@ no systemd`, `nvidia_smi: absent`), and a value it could not read is left
 out: blank, never 0 or "unknown". They were run against Debian 12, Ubuntu
 24.04, Rocky 9 and Alpine 3.20 over real ssh.
 
+### Every host, and who stands out: `qd survey`
+
+```bash
+qd survey -s hosts.txt      # qd probe facts inventory, then one screen
+qd survey                   # no hosts named: this machine
+```
+
+`qd survey` asks every host the standard questions -- it runs `qd probe
+facts inventory`, the same runs under the same names, with the same host
+options, `--store`, `--via` and `--sudo` -- and then prints one screen, about
+40 lines at most for any fleet, in place of each probe's report:
+
+- **WHAT MOST HOSTS SAY**: for a fixed, short list -- `os` and `kernel`
+  (from `os`), `bios_version` and `cpu_model` (from `firmware`),
+  `cpu.count` and `mem.total_kb` (from `facts`) -- the most common value,
+  and how many hosts said it of those that measured it. A blank is not
+  measured: not a value, and not counted.
+- **WHO DIFFERS FROM THE REST**: those columns, as `qd outliers RUN
+  COLS --categorical` holds each host against the majority of its rack.
+- **FAR FROM THE MEDIAN**: `facts`' `cpu.busy_pct`, `cpu.load1`,
+  `cpu.iowait_pct`, `mem.available_pct`, `fs.fullest_pct`,
+  `net.tcp_retrans_pct` and `therm.max_temp_c`, and `packages`' count, by
+  the median and MAD, as `qd outliers` reports them.
+- **DID NOT ANSWER**: the hosts that did not answer every probe, and why.
+
+Each section names three hosts and counts the rest. `FOUND` says what
+stood out and which step found it, and WHAT TO DO NEXT lists the plain
+commands, with real column names, to see all of it: `qd probe facts
+inventory ...`, `qd freq os kernel`, `qd outliers os os,kernel
+--categorical`, `qd outliers facts mem.available_pct`.
+
+Without binnacle here, `facts` is skipped and named, with how to get it
+(`pip install binnacle`), and the rest runs. With no hosts named it
+surveys this machine, which has nothing to compare against: `qd demo`
+makes a practice fleet for that. Exit status: 0 when every host answered
+and nothing stands out, 1 otherwise, 2 on a usage error.
+
 ---
 
 ## Cutting a host list: `qd split`

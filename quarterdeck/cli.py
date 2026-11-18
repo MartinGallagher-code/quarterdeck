@@ -4,6 +4,8 @@
 
 Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
        qd probe [NAME...] [HOSTS]              ask by name: facts, sysctl, gpu
+       qd survey [HOSTS]                       every host asked the standard
+                                               questions: who stands out
        qd do  [OPTIONS] -- TOOL ARGS...        mx, iperf, agree, reckon, ...
        qd import PATH...                       output already on disk
        qd split [HOSTS] --by rack|--into N...  one host list into several
@@ -3576,9 +3578,20 @@ def cmd_probe(args):
             missing.append("%s (%s)" % (n, where))
     if missing:
         die("not available here: %s" % "; ".join(missing))
+    return run_probes(args, names)[0]
+
+
+def run_probes(args, names, say=True):
+    """Ask the fleet the probes `names` (expanded, every one available
+    here): those run on the hosts all together, each filed as a run of
+    its own name, then the tools that drive the fleet themselves.  say:
+    print each run's report, as qd probe does (qd survey prints its own).
+    Returns (worst exit status, {name: Job} for the runs on the hosts)."""
+    from . import probes
     hs = collect(args)
     check_limit(args, hs)
     worst = 0
+    done = {}
     # the probes run on the hosts: (name, what, command, stdin)
     on_hosts = []
     for n in names:
@@ -3606,7 +3619,10 @@ def cmd_probe(args):
     for (name, what, _, _), job in zip(on_hosts, jobs):
         if job is None:
             continue
-        report_run(args, what, hs, job, title="%s probe %s" % (PROG, name))
+        done[name] = job
+        if say:
+            report_run(args, what, hs, job, title="%s probe %s" % (PROG,
+                                                                   name))
         worst = max(worst, job.rc)
     # tools drive the fleet themselves, from here, one after another
     for n in names:
@@ -3617,7 +3633,7 @@ def cmd_probe(args):
                      "itself: --via %s does not apply to it"
                      % (name, how[0], via_of(args)))
             worst = max(worst, probe_tool(args, name, how, hs))
-    return worst
+    return worst, done
 
 
 def probe_tool(args, name, how, hs):
@@ -4866,7 +4882,8 @@ HINTS = [
      "qd do -- reckon floor.dc --mx reports/ --overlay reckon.tsv"),
     ("How is every host doing right now?",
      "qd do -- dcprobe scan --servers hosts.txt -o host_status.tsv"),
-    ("Everything about every host", "qd probe facts inventory -s hosts.txt"),
+    ("Everything about every host, and who stands out",
+     "qd survey -s hosts.txt   or   qd probe facts inventory -s hosts.txt"),
     ("Has it changed over the last five runs?",
      "qd compare NAME -c COLUMN --last 5"),
     ("A rack at a time, and know where I got to",
@@ -4902,6 +4919,13 @@ def cmd_demo(args):
         die("qd demo files into the store named demo, and no other: "
             "--store is for the commands that read it (qd log --store demo)")
     return demo.cmd_demo(sys.modules[__name__], args)
+
+
+def cmd_survey(args):
+    """qd survey: every host asked the standard questions, and one screen
+    of who stands out (survey.py, QD-060)."""
+    from . import survey
+    return survey.cmd_survey(sys.modules[__name__], args)
 
 
 def cmd_hints(args):
@@ -5664,6 +5688,11 @@ def build_parser():
     sp.add_argument("names", nargs="*", metavar="PROBE")
     add_fleet(sp, preview=12)
     sp.set_defaults(fn=cmd_probe)
+
+    sp = verb("survey", "ask every host the standard questions (facts, "
+              "inventory); one screen of who stands out")
+    add_fleet(sp, preview=0)
+    sp.set_defaults(fn=cmd_survey)
 
     sp = verb("rm", "delete runs from the store: their answers, tables "
               "and rows (--yes)")

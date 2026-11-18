@@ -5,6 +5,47 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.35.0 — 2026-11-18
+
+`qd survey [HOSTS]`: every host asked the standard questions, and one
+screen of who stands out (QD-060, from QD-057's beginner layer).
+
+### Added
+- **`qd survey`** runs `qd probe facts inventory` -- the same runs, under
+  the same names, with `qd run`'s host options -- and prints, in about 40
+  lines at most for any fleet: the values most hosts share (`os`,
+  `kernel`, `bios_version`, `cpu_model`, `cpu.count`, `mem.total_kb`: a
+  fixed list, blanks not counted), the hosts that differ from the rest of
+  their rack in them (`outliers --categorical`), the numeric outliers by
+  median and MAD (`facts`' load, memory, disk, retransmit and temperature
+  readings, and `packages`' count), and the hosts that did not answer.
+  Each section names three hosts and counts the rest; `FOUND` names the
+  step that found each thing; WHAT TO DO NEXT lists the plain `probe`,
+  `freq` and `outliers` commands with real column names. binnacle missing
+  skips `facts`, named with how to get it; no hosts named surveys this
+  machine and points to `qd demo`. Exit 0 when every host answered and
+  nothing stands out, 1 otherwise, 2 on a usage error
+  (`quarterdeck/survey.py`, new; `quarterdeck/cli.py`: `cmd_survey`, the
+  `survey` verb, and `run_probes()`, `qd probe`'s fan-out taken out of
+  `cmd_probe` so the survey runs exactly it). Nothing is recounted: the
+  figures are `stats.freq`, `report_categorical` and `stats.outliers`,
+  each given the Namespace qd's own parser makes from the command printed
+  for it.
+- **`qd --help`** lists `qd survey [HOSTS]`; **`qd hints`**' "Everything
+  about every host" names it beside `qd probe facts inventory`; README's
+  "Every host, and who stands out: `qd survey`"; `docs/getting-started.md`'s
+  map of every command (`tests/test_demo.sh` requires every verb there).
+
+### Tests
+- **`tests/test_survey.sh`** (new, in `TIMES`): on the fake fleet, with a
+  stand-in `uname -r` and a stand-in binnacle: one odd kernel, one numeric
+  outlier and one unreachable host are named, exit 1, with the step that
+  found each; the runs filed match `qd probe facts inventory`'s; binnacle
+  missing is a skip, exit 0; no hosts is this machine, pointing to `qd
+  demo`; every WHAT TO DO NEXT command parses and the read ones run; 16
+  hosts with four of each finding stay within 40 lines; usage errors exit
+  2; the card, hints and `qd help survey` name it.
+
 ## 0.26.0 — 2026-11-18
 
 `qd help VERB` prints that verb's help, as `qd VERB --help` does, instead
