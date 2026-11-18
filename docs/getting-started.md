@@ -328,7 +328,7 @@ what it can, `qd store rm demo --delete` removes it.
 | What for | Commands |
 |---|---|
 | Starting out | `qd demo`, `qd hints`, `qd doctor`, `qd help` |
-| Asking the fleet | `qd hosts` (the host list), `qd run` (a command), `qd probe` (by name: facts, sysctl, gpu ...), `qd do` (a toolchain tool, run here), `qd import` (output already on disk) |
+| Asking the fleet | `qd hosts` (the host list), `qd run` (a command), `qd ask` (a command, then who agrees and who differs), `qd probe` (by name: facts, sysctl, gpu ...), `qd do` (a toolchain tool, run here), `qd import` (output already on disk) |
 | Seeing what came back | `qd log` (the runs), `qd show` (a table), `qd view` (full-screen), `qd web` (a browser) |
 | Is the fleet consistent? | `qd freq` (who said which), `qd stats` (centre and spread), `qd hist`, `qd outliers` (far from the rest), `qd pivot` (long to wide), `qd peers` (hosts that should agree, named) |
 | Did it get worse? | `qd diff` (two runs), `qd compare` (N runs), `qd changes` (when it stepped), `qd trend` (a sparkline a host), `qd baseline` (blessed runs to compare with) |

@@ -5,6 +5,58 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.31.0 — 2026-11-18
+
+`qd ask [HOSTS] -- CMD` runs CMD on every host, files the run as `qd run`
+does, and prints who agrees and who differs: `qd run`, then `qd freq
+latest A`, in one step (QD-059, from the beginner design QD-057).
+
+### Added
+- **`qd ask`**: the run is `qd run`'s own (`start_run()`, the part of
+  `cmd_run` before it reports, now shared), so filing, `--store`, `--via`,
+  `--sudo`, `--rerun`, `--retries`, `--max-fail`, the safety options and
+  every `QD_*` variable behave as in `qd run`; with no hosts named it is
+  this machine, by `--via local` (QD-037). It prints the run's summary
+  line, then ANSWERS: each distinct answer, most common first, with its
+  count and its hosts (past eight, `(+N more)`), counted by `stats.freq`
+  as `qd freq` counts; the hosts that answered with nothing, apart (blank
+  is not measured); DID NOT ANSWER, each host with its status and why; a
+  verdict, ALIKE or NOT ALIKE, naming the step that found something ("1
+  host did not answer (the run)", "2 different answers (the count)"); and
+  WHAT TO DO NEXT: `qd freq latest A`, `qd show latest`, `qd view latest`,
+  and for hosts that did not answer `qd show latest --where status!=ok`
+  and `qd run --rerun latest -- ...`. An answer provost read as more than
+  one column has no single value to count: it says so and prints `qd
+  run`'s summary instead. Exit 0 when every host answered alike, 1 when a
+  host did not answer or the answers differ, 2 on a usage error. One pass,
+  always kept: no `--every`, `--count` or `--no-store` (`qd run` has them).
+  (`quarterdeck/cli.py`: `cmd_ask`, `ask_answer_lines`, `ask_next_steps`,
+  the `ask` verb in `build_parser()`.)
+- **`qd --help`** has a usage line and an example for `qd ask`, and `qd
+  hints`' "What does every host say about X?" now suggests it. README:
+  *Who agrees, who differs: `qd ask`*, a line in *Thirty seconds*, and
+  the exit-status table; `docs/getting-started.md`'s map of every command
+  names it (under "Asking the fleet").
+
+### Changed
+- `report_run()`'s summary line and its DID NOT ANSWER block are now
+  `run_head_lines()` and `did_not_answer_lines()`, which `qd ask` shares;
+  `qd run`'s output is unchanged. "nothing to run" names the verb typed
+  (`qd ask ... -- uptime` from `qd ask`).
+
+### Tests
+- **`tests/test_ask.sh`** (new, in `TIMES`): every host agreeing (0); two
+  answers, most common first, with counts and hosts (1, "the count"); a
+  host unreachable and a failed command, listed with status and reason
+  (1, "the run"); both at once; a three-column answer falling back to `qd
+  run`'s summary; hosts that printed nothing; a long host list cut short;
+  its run compared with `qd run`'s for the same command and hosts through
+  `qd log`, the rows, `qd.runs` and `qd.hosts`; no hosts named (this
+  machine, no ssh); `qd run`'s host options (`--first`, `--name`,
+  `--dry-run`, `--limit`, `--rerun`, `--retries`, `--max-fail`, `--sudo`);
+  usage errors (2); the card and the hints. Every WHAT TO DO NEXT command
+  is parsed by `build_parser()`.
+
 ## 0.26.0 — 2026-11-18
 
 `qd help VERB` prints that verb's help, as `qd VERB --help` does, instead
