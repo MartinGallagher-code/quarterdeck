@@ -83,6 +83,7 @@ PYEOF
 
 # a sudo on the fake hosts' PATH that runs the command, as sudo -n does
 fake_sudo() {
+    # shellcheck disable=SC2016  # expanded when the stand-in sudo runs
     printf '#!/bin/sh\n[ "$1" = -n ] && shift\necho "$*" >> "$FAKE_ROOT/sudo.log"\nexec "$@"\n' \
         > "$FAKE_BIN/sudo"
     chmod +x "$FAKE_BIN/sudo"
@@ -270,7 +271,7 @@ t_what_cannot_be_rerun_is_refused() {
     assert_status "$QD_RC" 2
     assert_contains "$(cat err)" "no runs in the store"
     # qd do: a tool run here
-    qd do -- echo hi > /dev/null
+    qd "do" -- echo hi > /dev/null
     qd_rc again 2> err
     assert_status "$QD_RC" 2
     assert_contains "$(cat err)" "is a qd do run, which ran a tool here: run it again with \`qd do -- echo hi\`"
