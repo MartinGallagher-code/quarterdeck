@@ -8,6 +8,7 @@ unit.
     help_unit.py QD_DIR hints [flag|verb]
     help_unit.py QD_DIR hints-count
     help_unit.py QD_DIR verb-help [cut]
+    help_unit.py QD_DIR start FILE
 
 card: FILE is what `qd --help` printed.  Its command list is the lines
 under its headings, from the first heading to the first blank line; the
@@ -43,6 +44,15 @@ text, which starts with the verb's usage line (QD-044).  Prints one line
 per verb where they differ and exits 1; prints "ok N", N the verbs
 checked, when none does.  cut runs it with `qd help VERB` losing its last
 line, to show it fails.
+
+start: FILE is what bare `qd` printed, the start card (QD-058).  Every
+qd command on it, after its first line (the title), must name a verb
+build_parser() registers and parse as `qd` would parse it.  A command is
+a stretch of a line, between runs of two or more spaces, that starts
+`qd ` or follows a label and a colon ("Ideas: qd hints").  Prints one
+line per command that does not ("not a verb: ask: qd ask -- uname -r",
+or the command and argparse's complaint) and exits 1; prints "ok N", N
+the commands checked, when every one does.
 
 Standard library only, Python 3.6 on.
 """
@@ -218,8 +228,49 @@ def case_verb_help(mutation=None):
     return 0
 
 
+START_CMD = re.compile(r"(?:^|:\s)(qd\s.*)$")
+
+
+def start_commands(text):
+    """The qd commands on the start card, as written."""
+    cmds = []
+    for line in text.splitlines()[1:]:
+        for seg in re.split(r"\s{2,}", line.strip()):
+            m = START_CMD.search(seg)
+            if m:
+                cmds.append(m.group(1))
+    return cmds
+
+
+def case_start(path):
+    with open(path) as f:
+        cmds = start_commands(f.read())
+    parser, _ = cli.build_parser()
+    names = verbs()
+    bad = []
+    if not cmds:
+        bad.append("no qd command on the card")
+    for seg in cmds:
+        argv = shlex.split(seg)[1:]
+        words = [a for a in argv if not a.startswith("-")]
+        if words and words[0] not in names and \
+                not (argv[0] in ("-h", "--help")):
+            bad.append("not a verb: %s: %s" % (words[0], seg))
+            continue
+        why = complaint(parser, argv)
+        if why:
+            bad.append("%s: %s" % (seg, why))
+    if bad:
+        sys.stdout.write("".join(b + "\n" for b in bad))
+        return 1
+    print("ok %d" % len(cmds))
+    return 0
+
+
 def main():
     case = sys.argv[2]
+    if case == "start":
+        return case_start(sys.argv[3])
     if case == "card":
         return case_card(sys.argv[3])
     if case == "hints":

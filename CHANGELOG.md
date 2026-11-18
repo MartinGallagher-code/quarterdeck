@@ -5,6 +5,38 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.33.0 — 2026-11-18
+
+Bare `qd` prints a short start card for newcomers in place of the full
+card, which `qd --help` and `qd -h` still print (QD-058).
+
+### Changed
+- **Bare `qd`'s output changes**: it prints the start card, 12 lines of
+  at most 80 columns (`qd demo`, `qd run -- uname -r`, `qd log`, `qd show
+  latest`, `qd web`, and where to go next: `qd --help`, `qd help VERB`,
+  `qd hints`), not the 49-line reference card. A script that ran bare
+  `qd` for the full card should run `qd --help`; none was found in
+  quarterdeck or provost (`quarterdeck/cli.py`: `START`, `main()`).
+- The beginner commands QD-057 designed (`setup`, `ask`, `survey`,
+  `again`, `odd`) go on the start card as each lands; until `qd ask`
+  does, `qd run -- uname -r` stands in for it. A comment above `START`
+  says where each goes.
+
+### Added
+- **`qd start`** and **`qd help basics`** print the start card and exit 0.
+  `start` is on the full card's Help line, in the README's table and in
+  docs/getting-started.md's map.
+  `qd help stat` now names `stats, start` as the closest verbs.
+
+### Tests
+- **`tests/test_help.sh`**: bare `qd` prints the start card in at most 25
+  lines of 80 columns, and `qd start` and `qd help basics` print the same;
+  `qd --help` and `qd -h` print the full card; every command on the start
+  card names a verb `build_parser()` registers and parses
+  (`tests/help_unit.py start`), shown failing on a card that names `qd
+  ask` before it lands and on a bad flag. `tests/test_run.sh` reads
+  "Full manual:" from `qd --help`, no longer from bare `qd`.
+
 ## 0.28.1 — 2026-11-18
 
 `qd --help` groups every command by what it is for, everyday ones first,

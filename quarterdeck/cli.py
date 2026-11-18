@@ -31,7 +31,7 @@ Stores and output
   qd rm RUN... --yes                   delete runs from the store
   qd export RUN [--format F] | floor   CSV, JSON, HEC...; the floor plan
 Help
-  qd hints | doctor [HOST] | demo | help [VERB]
+  qd hints | doctor [HOST] | start | demo | help [VERB]
 
 The core loop:
   qd run -s hosts.txt -- uname -r      every host, every answer, kept
@@ -4814,6 +4814,41 @@ def doctor_ssh(args, lines):
     return True
 
 
+# The start card (QD-058): what bare `qd`, `qd start` and `qd help basics`
+# print, the few commands a newcomer needs; `qd --help` and `qd -h` print
+# the full card, the module docstring.  At most 25 lines of 80 columns,
+# and every command on it must parse (tests/test_help.sh).  The beginner
+# commands QD-057 designed are named here only once they land, each on
+# its own line:
+#   Getting started, after `qd demo`, in this order:
+#     qd setup  (QD-063)  check this machine, make a store, test your hosts
+#     qd ask    (QD-059)  ask every host; see who agrees and who differs;
+#                         it replaces the `qd run -- uname -r` line
+#     qd survey (QD-060)  everything about every host, and who stands out
+#     qd again  (QD-061)  run the last thing again; show what changed
+#     qd odd    (QD-062)  which hosts are unlike the rest, and in what
+START = """\
+qd -- run a command on many machines, keep every answer, and read it back.
+
+Getting started
+  qd demo                      a practice fleet to learn on, no machines needed
+  qd run -- uname -r           ask every host in hosts.txt (or just this one)
+
+Looking at what you have
+  qd log                       what is kept
+  qd show latest               the last answers, as a table
+  qd web                       all of it in a browser
+
+Everything else: qd --help    One command: qd help VERB    Ideas: qd hints
+"""
+
+
+def cmd_start(args):
+    """The start card, as bare `qd` prints it."""
+    sys.stdout.write(START)
+    return 0
+
+
 # The card's headings (the module docstring), in its order; qd hints
 # prints its questions under the same ones (QD-040).
 GROUPS = ["Run", "Read it back", "Over time", "Judge and report",
@@ -5868,10 +5903,14 @@ def build_parser():
                     help="print the demo's requirements, a CSV for qd check "
                     "--against, and file nothing")
     sp.set_defaults(fn=cmd_demo)
+    sp = verb("start", "the start card: the few commands to begin with, "
+              "as bare qd prints it (qd --help: every command)")
+    sp.set_defaults(fn=cmd_start)
     sp = verb("help", "every verb and every flag; with VERB, that verb's "
-              "help, as qd VERB --help prints it")
+              "help, as qd VERB --help prints it; qd help basics: the "
+              "start card")
     sp.add_argument("topic", nargs="?", metavar="VERB",
-                    help="the verb to print the help of")
+                    help="the verb to print the help of, or basics")
     sp.set_defaults(fn=None)
     return p, sub
 
@@ -5935,7 +5974,8 @@ def main(argv=None):
         argv, tail = argv[:i], argv[i + 1:]
     parser, sub = build_parser()
     if not argv:
-        sys.stdout.write(__doc__.lstrip())
+        # bare qd: the start card; qd --help, the full one (QD-058)
+        sys.stdout.write(START)
         return 0
     try:
         args = parser.parse_args(argv)
@@ -5946,10 +5986,16 @@ def main(argv=None):
     if args.version:
         out(VERSION_TEXT)
         return 0
-    if args.help or not args.verb:
+    if args.help:
         sys.stdout.write(__doc__.lstrip())
         return 0
+    if not args.verb:
+        sys.stdout.write(START)
+        return 0
     if args.verb == "help":
+        if args.topic == "basics":
+            sys.stdout.write(START)
+            return 0
         if args.topic is not None:
             return verb_help(sub, args.topic)
         sys.stdout.write(full_help(parser, sub))

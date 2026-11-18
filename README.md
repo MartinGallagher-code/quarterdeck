@@ -62,8 +62,10 @@ pip install provost binnacle             # the store, and the instruments
 pip install ./quarterdeck                # or put qd (and quarterdeck) on PATH
 ```
 
-`qd --help` is the reference card: every command, one screen, under
-what it is for, everyday ones first.
+Bare `qd` prints a short start card, the few commands to begin with
+(`qd start` and `qd help basics` print it too); `qd --help` is the
+reference card: every command, one screen, under what it is for, everyday
+ones first.
 
 | Heading | Commands |
 |---|---|
@@ -73,7 +75,7 @@ what it is for, everyday ones first.
 | Judge and report | `check`, `report`, `peers`, `baseline` |
 | Larger jobs | `split`, `campaign`, `doe`, `join` |
 | Stores and output | `store`, `rm`, `export`, `floor` |
-| Help | `hints`, `doctor`, `demo`, `help` |
+| Help | `hints`, `doctor`, `start`, `demo`, `help` |
 
 `qd hints` maps questions to commands under the same headings, `qd help
 VERB` gives one verb's flags (`qd help run`, as `qd run --help` prints
