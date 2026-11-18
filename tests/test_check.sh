@@ -983,6 +983,205 @@ t_shape_baseline() {
     assert_contains "$(field Z note)" "in run flat.csv: the MAD is 0"
 }
 
+# --rule (QD-051): a fixed verdict table.  S1, S2 pass; F1, F2 fail; U1 is
+# not measured (b has no u).  The weights: S2 2, the rest 1.
+rule_data() {
+    printf 'host,s,f,u\na,1,9,1\nb,1,9,\n' > r.csv
+    printf 'req\tcolumn\top\tlimit\tseverity\tweight\n' > r.tsv
+    printf '%s\n' 'S1|s|<=|5||' 'S2|s|<|5||2' 'F1|f|<=|5|low|' \
+        'F2|f|<|5||1' 'U1|u|<=|5||' | tr '|' '\t' >> r.tsv
+}
+
+# rule_is RULE VERDICT RC [ARGS...]: the head's overall verdict and the
+# exit status
+rule_is() {
+    qd_rc check r.csv --against r.tsv --rule "$1" "${@:4}" > out 2> err
+    assert_status "$QD_RC" "$3"
+    assert_contains "$(head -1 out)" "; rule $2: "
+}
+
+t_rule_each_kind_nested() {
+    rule_data
+    rule_is 'all(S*, any(F1, S1))'                  pass 0
+    rule_is 'all(S*, not(any(F*)))'                 pass 0
+    rule_is 'any(F1, all(F2, S1))'                  fail 1
+    rule_is 'atleast(2, S1, F1, all(S2, not(F2)))'  pass 0
+    rule_is 'not(atleast(3, S*, F*))'               pass 0
+    rule_is 'any(not(all(S1, atleast(1, S2, F2))), F1)' fail 1
+    # S1 1 + S2 2 + F1 1: 3 of 4 is 0.75
+    rule_is 'all(weighted(0.75, S*, F1), not(F2))'  pass 0
+    assert_contains "$(cat out)" "weighted score 0.75 of 3 (3 of 4), need 0.75"
+    rule_is 'all(weighted(0.8, S*, F1), not(F2))'   fail 1
+    assert_contains "$(cat out)" "rule fail         all(weighted(0.8, S*, F1), not(F2))"
+    assert_contains "$(cat out)" "weighted score 0.75 of 3 (3 of 4), need 0.8"
+    rule_is 'weighted(0.5, S1, F*)'                 fail 1
+    # the head says why: 2 of 4, need 3; by the glob when one gave them all
+    rule_is 'atleast(3, S*, F*)' fail 1
+    assert_contains "$(head -1 out)" "; rule fail: 2 of 4 passed, need 3"
+    rule_is 'atleast(2, S*)' pass 0
+    assert_contains "$(head -1 out)" "; rule pass: 2 of 2 S* passed, need 2"
+    # one req alone is a rule too; what the rule leaves out counts for nothing
+    rule_is 'S1' pass 0
+    assert_contains "$(cat out)" "not in the rule, so not counted: S2, F1, F2, U1"
+    rule_is 'F1' fail 1
+    # QD_RULE, and case in the calls' names
+    QD_RULE='ALL(S1, Not(F2))' qd_rc check r.csv --against r.tsv > out
+    assert_status "$QD_RC" 0
+    assert_contains "$(head -1 out)" "; rule pass: all 2 passed"
+    # the verdicts of the checks themselves are not changed
+    qd_rc check r.csv --against r.tsv --rule 'S1' --format csv -o v.csv
+    assert_eq "$(field F1 verdict)" "fail"
+    assert_eq "$(field U1 verdict)" "not measured"
+}
+
+t_rule_unmeasured_waived_unexpected() {
+    rule_data
+    # not measured is not a pass, and not() of it is not measured either
+    rule_is 'all(S1, U1)'               "not measured" 1
+    assert_contains "$(head -1 out)" "1 of 2 passed, need all 2; 1 not measured: U1"
+    rule_is 'not(U1)'                   "not measured" 1
+    rule_is 'any(S1, U1)'               pass 0
+    rule_is 'any(F1, U1)'               "not measured" 1
+    rule_is 'atleast(2, S1, U1, F1)'    "not measured" 1
+    rule_is 'atleast(2, S1, U1, S2)'    pass 0
+    rule_is 'atleast(3, S1, U1, F1, F2)' fail 1
+    # U1 weighs 1 of 5: S is 3 of 5, 0.6; with U1 it could be 0.8
+    rule_is 'weighted(0.8, S*, U1, F2)' "not measured" 1
+    rule_is 'weighted(0.6, S*, U1, F2)' pass 0
+    # a waived failure counts as a pass
+    waivers w.tsv 'F2|agreed deviation, FSE-9||||'
+    rule_is 'all(S1, F2)' pass 0 --waivers w.tsv
+    assert_contains "$(cat out)" "F2 passed (waived)"
+    # an unexpected pass as a fail
+    waivers w.tsv 'S1|thought broken|||fail|'
+    rule_is 'all(S1, S2)' fail 1 --waivers w.tsv
+    rule_is 'S1' fail 1 --waivers w.tsv
+    assert_contains "$(head -1 out)" "S1 failed (unexpected pass)"
+    # --fail-level lets F1 (low) off inside the rule; F2 has no severity
+    rule_is 'all(S1, F1)' pass 0 --fail-level medium
+    assert_contains "$(cat out)" "F1 passed (below --fail-level)"
+    rule_is 'all(S1, F1)' fail 1
+    rule_is 'all(S1, F2)' fail 1 --fail-level critical
+    # a req's checks are taken together: one failing check fails it
+    printf 'S1\tf\t<=\t5\t\t\n' >> r.tsv
+    rule_is 'S1' fail 1
+}
+
+t_rule_refused() {
+    rule_data
+    refused() {   # refused RULE MESSAGE
+        qd_rc check r.csv --against r.tsv --rule "$1" > out 2> err
+        assert_status "$QD_RC" 2
+        assert_contains "$(cat err)" "$2"
+        assert_eq "$(cat out)" ""
+    }
+    refused 'all(S1, X9)'            "--rule 'all(S1, X9)': unknown req X9 (the thresholds file has S1, S2, F1, F2, U1)"
+    refused 'any(Z*)'                "Z* matches no req of the thresholds file"
+    refused 'atleast(3, S*)'         "atleast(3, ...) of 2 items: N is 1 to 2"
+    refused 'atleast(0, S*)'         "N is 1 to 2"
+    refused 'atleast(2.5, S*)'       "atleast wants a whole number first, not '2.5'"
+    refused 'weighted(1.2, S*)'      "weighted wants a threshold from 0 to 1 first, not '1.2'"
+    refused 'weighted(-0.1, S*)'     "weighted wants a threshold from 0 to 1 first"
+    refused 'weighted(x, S*)'        "weighted wants a threshold from 0 to 1 first, not 'x'"
+    refused 'all(S1'                 "it ends too soon: want )"
+    refused 'all(S1,)'               "want a req or a call, not ')'"
+    refused 'all()'                  "all() is empty"
+    refused 'both(S1)'               "unknown call both()"
+    refused 'S*'                     "S* matches 2 reqs where one belongs"
+    refused 'not(F*)'                "F* matches 2 reqs where one belongs"
+    refused 'not(S1, S2)'            "want ), not ','"
+    refused 'S1 S2'                  "'S2' after the end of the rule"
+    refused 'all(S1, S*)'            "S1 is named twice in one list"
+    refused 'weighted(0.5, all(S1))' "weighted takes reqs and globs, not all()"
+    refused '   ,'                   "want a req or a call, not ','"
+    # weights: a number 0 or more, one per requirement, and not all 0
+    printf 'S1\tf\t>\t1\t\tx\n' >> r.tsv
+    refused 'S1' "check 6 (S1): weight 'x' is not a number 0 or more"
+    rule_data
+    printf 'S2\tf\t>\t1\t\t3\n' >> r.tsv
+    refused 'S2' "weight 3, but check 2 gives S2 weight 2; a requirement has one weight"
+    rule_data
+    printf 'Z1\tf\t>\t1\t\t0\n' >> r.tsv
+    refused 'weighted(0.5, Z1)' "the weights of weighted(0.5, ...) add up to 0"
+}
+
+t_rule_none_unchanged() {
+    rule_data
+    # no rule, a blank QD_RULE, and the weight column taken away: the same
+    qd_rc check r.csv --against r.tsv > a.txt 2> /dev/null
+    assert_status "$QD_RC" 1
+    QD_RULE= qd_rc check r.csv --against r.tsv > b.txt 2> /dev/null
+    assert_status "$QD_RC" 1
+    cut -f1-5 r.tsv > n.tsv
+    qd_rc check r.csv --against n.tsv > c.txt 2> /dev/null
+    assert_status "$QD_RC" 1
+    assert_eq "$(cat b.txt)" "$(cat a.txt)"
+    assert_eq "$(sed 1d c.txt)" "$(sed 1d a.txt)"
+    assert_not_contains "$(cat a.txt)" "rule"
+    for f in csv json junit; do
+        qd_rc check r.csv --against r.tsv --format "$f" > a.out 2> /dev/null
+        qd_rc check r.csv --against n.tsv --format "$f" > c.out 2> /dev/null
+        assert_not_contains "$(cat a.out)" "(rule)"
+        [ "$f" = junit ] || assert_eq "$(cat c.out)" "$(cat a.out)"
+    done
+    # --fail-level alone exits as it always did: F2 has no severity
+    qd_rc check r.csv --against n.tsv --fail-level critical > /dev/null 2>&1
+    assert_status "$QD_RC" 1
+}
+
+rule_props() {   # the rule's properties of JUnit file $1, name=value
+    "$PY" - "$1" <<'PYEOF'
+import sys
+import xml.etree.ElementTree as ET
+s = ET.parse(sys.argv[1]).getroot().find("testsuite")
+for p in s.find("properties"):
+    if p.get("name").startswith("rule"):
+        print("%s=%s" % (p.get("name"), p.get("value")))
+PYEOF
+}
+
+t_rule_formats_junit_keep() {
+    rule_data
+    qd_rc check r.csv --against r.tsv --rule 'all(S*, atleast(1, F*))' \
+        --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(tail -1 v.csv)" '(rule),,,,"2 of 3 passed, need all 3; failed: atleast(1, F*)","all(S*, atleast(1, F*))",,,fail,,'
+    qd_rc check r.csv --against r.tsv --rule 'atleast(1, F*)' --format json -o v.json
+    assert_status "$QD_RC" 1
+    "$PY" - v.json > got <<'PYEOF'
+import json, sys
+rows = json.load(open(sys.argv[1]))
+rows = rows["rows"] if isinstance(rows, dict) else rows
+r = [x for x in rows if x["req"] == "(rule)"][0]
+print("%s|%s|%s" % (r["limit"], r["verdict"], r["observed"]))
+PYEOF
+    assert_eq "$(cat got)" "atleast(1, F*)|fail|0 of 2 F* passed, need 1"
+    qd_rc check r.csv --against r.tsv --rule 'all(S1, S2)' --each --format csv -o e.csv
+    assert_status "$QD_RC" 0
+    assert_eq "$(tail -1 e.csv)" '(rule),,,all 2 passed,"all(S1, S2)",,pass,'
+    # JUnit: one more testcase, and the suite's properties
+    qd_rc check r.csv --against r.tsv --rule 'all(S*, not(U1))' --format junit -o j.xml
+    assert_status "$QD_RC" 1
+    got="$(junit j.xml)"
+    assert_contains "$got" "testsuite tests=6 failures=2 errors=2 skipped=0"
+    assert_contains "$got" "rule|all(S*, not(U1))|error|rule not measured: 2 of 3 passed, need all 3; 1 not measured: not(U1)"
+    props="$(rule_props j.xml)"
+    assert_contains "$props" "rule=all(S*, not(U1))"
+    assert_contains "$props" "rule.verdict=not measured"
+    qd_rc check r.csv --against r.tsv --rule 'any(S1, F1)' --format junit -o j.xml
+    assert_status "$QD_RC" 0
+    assert_contains "$(junit j.xml)" "rule|any(S1, F1)|pass|"
+    assert_contains "$(rule_props j.xml)" "rule.verdict=pass"
+    qd_rc check r.csv --against r.tsv --rule 'F1' --format junit -o j.xml
+    assert_contains "$(junit j.xml)" "rule|F1|failure|rule failed: F1 failed"
+    # --keep files it, and the command it came from
+    qd_rc check r.csv --against r.tsv --rule 'all(S*, atleast(1, F*))' --keep > out
+    assert_status "$QD_RC" 1
+    csv="$(qd show latest --format csv)"
+    assert_contains "$csv" '(rule),,,,"2 of 3 passed, need all 3; failed: atleast(1, F*)","all(S*, atleast(1, F*))",,,fail,,'
+    assert_contains "$(qd log latest)" "--rule 'all(S*, atleast(1, F*))'"
+}
+
 run_test "pass, fail and the exit status"       t_pass_fail_and_exit_status
 run_test "blank is never a pass"                t_blank_is_never_a_pass
 run_test "every op"                             t_every_op
@@ -1015,4 +1214,9 @@ run_test "shape: zmax is qd outliers' z"       t_shape_zmax_is_qd_outliers
 run_test "shape: old files unchanged"          t_shape_old_files_unchanged
 run_test "shape: junit, waivers, severity, keep" t_shape_junit_waivers_severity_keep
 run_test "shape: against a baseline"           t_shape_baseline
+run_test "rule: each kind, nested"             t_rule_each_kind_nested
+run_test "rule: not measured, waived, unexpected" t_rule_unmeasured_waived_unexpected
+run_test "rule: refused, exit 2"               t_rule_refused
+run_test "rule: none, output unchanged"        t_rule_none_unchanged
+run_test "rule: formats, junit, keep"          t_rule_formats_junit_keep
 finish

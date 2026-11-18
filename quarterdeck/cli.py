@@ -22,6 +22,7 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
        qd baseline set|ls|show|rm              qualified baselines, for
                                                compare --baseline NAME
        qd check RUN --against limits.tsv       pass/fail by requirement
+         [--rule 'all(A*, atleast(2, B*))']    and one verdict over them
        qd join RUN TELEMETRY [--window +-30]   beside Splunk/CloudVision/
                                                Prometheus samples, by host
                                                and time
@@ -1970,6 +1971,7 @@ def report_categorical(args, t, s):
 
 def cmd_check(args):
     from . import check as checkmod
+    from . import rule as rulemod
     checks = checkmod.read_thresholds(args.against)
     level = (args.fail_level or "info").strip().lower()
     if level not in checkmod.SEVERITIES:
@@ -1977,10 +1979,14 @@ def cmd_check(args):
             args.fail_level, ", ".join(checkmod.SEVERITIES)), 2)
     waivers = checkmod.read_waivers(args.waivers, checks) \
         if args.waivers else None
+    rule = None
+    if (args.rule or "").strip():
+        rule = rulemod.parse(args.rule, checks)
     t = load(args)
     s = subset(args, t)
     ref = check_reference(args, checkmod)
     results = checkmod.run(s, checks, waivers, ref=ref)
+    overall = rulemod.evaluate(rule, results, level) if rule else None
     n = checkmod.counts(results)
     e = getattr(t, "entry", None)
     if args.each:
@@ -1995,6 +2001,8 @@ def cmd_check(args):
     head = "%s check -- %s against %s (%s): %s" % (
         PROG, source_name(t), args.against, scope(args, t, s),
         checkmod.counts_text(n, waivers is not None))
+    if rule:
+        head += "; rule %s: %s" % (overall, rule.why)
     lines = [head]
     if e is not None:
         m = e.meta
@@ -2013,8 +2021,13 @@ def cmd_check(args):
         lines.append("  %s below --fail-level %s (%s): shown, not failing "
                      "the run" % (plural(len(soft), "failure"), level,
                                   ", ".join(r.chk.req for r in soft[:10])))
+    if rule:
+        lines.extend(rule_lines(rulemod, rule, results))
     lines.append("")
     lines.extend(render.render_table(vt, width=width_of(args), indent="  "))
+    if rule:
+        # the overall verdict as one more row, for every format and --keep
+        vt.rows.append(rule_row(vt.columns, rule, overall))
     if args.keep:
         rid = keep_check(args, vt, t, len(checks))
         lines.append("")
@@ -2031,7 +2044,34 @@ def cmd_check(args):
                    exporters.to_junit(vt, name, stamp, props))
     else:
         emit(args, vt, lines)
+    if rule:
+        return 0 if overall == checkmod.PASS else 1
     return 1 if hard else 0
+
+
+def rule_lines(rulemod, rule, results):
+    """--rule under the head: the rule, a line per call with its verdict
+    and why, and the requirements it leaves out, which count for
+    nothing."""
+    out = rulemod.lines(rule, indent="  rule ")
+    named = rulemod.named(rule)
+    left = []
+    for r in results:
+        if r.chk.req not in named and r.chk.req not in left:
+            left.append(r.chk.req)
+    if left:
+        out.append("    not in the rule, so not counted: %s" % ", ".join(
+            left[:10]) + (" ..." if len(left) > 10 else ""))
+    return out
+
+
+def rule_row(cols, rule, overall):
+    """The verdict table's row for --rule: req (rule), the rule as its
+    limit, the why as its observed, the overall verdict."""
+    from . import rule as rulemod
+    cells = {"req": rulemod.ROW_REQ, "observed": rule.why,
+             "limit": rule.shown, "verdict": overall}
+    return [cells.get(c, "") for c in cols]
 
 
 def check_reference(args, checkmod):
@@ -2065,7 +2105,9 @@ def keep_check(args, vt, t, nchecks):
         os.path.abspath(args.against),
         (" --waivers %s" % os.path.abspath(args.waivers))
         if args.waivers else "",
-        (" --baseline %s" % args.baseline) if args.baseline else "")]
+        (" --baseline %s" % args.baseline) if args.baseline else "") +
+        ((" --rule %s" % shlex.quote(args.rule.strip())) if (args.rule or "").strip()
+         else "")]
     added = add_tables(b, rid, label, [(os.path.abspath(args.against), vt)])
     if not added:
         b.cleanup()
@@ -5356,7 +5398,7 @@ def build_parser():
     sp.add_argument("ref", metavar="RUN")
     sp.add_argument("--against", required=True, metavar="FILE",
                     help="thresholds: req, column, op, limit [limit2, where, "
-                    "agg, unit, note, severity]; agg is each, mean, median, "
+                    "agg, unit, note, severity, weight]; agg is each, mean, median, "
                     "min, max, sum, stdev, range, p05..p99, or unitless cv, "
                     "skew, kurtosis (excess), zmax (robust |z|, as qd "
                     "outliers) "
@@ -5373,6 +5415,13 @@ def build_parser():
                     "baseline+2 is held to: an earlier run, or a qualified "
                     "baseline from qd baseline set (host by host under "
                     "each)")
+    sp.add_argument("--rule", default=env("RULE"), metavar="RULE",
+                    help="one verdict from the reqs, which sets the exit "
+                    "status: all(..), any(..), not(..), atleast(N, ..), "
+                    "weighted(0.8, ..) over reqs and globs, quoted, e.g. "
+                    "'all(SYS-1*, atleast(3, SYS-2*))'; weights from a "
+                    "weight column, blank 1 (QD_RULE) "
+                    "(README: \"One verdict from many: --rule\")")
     sp.add_argument("--each", action="store_true",
                     help="a row per host per check, not one per check")
     sp.add_argument("--keep", action="store_true",

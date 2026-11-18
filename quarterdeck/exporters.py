@@ -347,6 +347,28 @@ def junit_counts(table):
             sum(1 for v in vs if v == checkmod.WAIVED))
 
 
+RULE_REQ = "(rule)"
+
+
+def _rule_case(rule, verdict, why):
+    """--rule's overall verdict as a testcase: classname rule, name the
+    rule; a fail a <failure>, not measured an <error>."""
+    from . import check as checkmod
+    tc = "    <testcase classname=\"rule\" name=%s" % xml_attr(rule)
+    if verdict == checkmod.PASS:
+        return [tc + "/>"]
+    if verdict == checkmod.FAIL:
+        inner = "      <failure type=\"rule\" message=%s/>" % xml_attr(
+            "rule failed: " + why)
+    elif verdict == checkmod.UNMEASURED:
+        inner = "      <error type=\"not measured\" message=%s/>" % \
+            xml_attr("rule not measured: " + why)
+    else:
+        inner = "      <error type=\"unknown\" message=%s/>" % xml_attr(
+            "verdict %r is none qd check gives" % verdict)
+    return [tc + ">", inner, "    </testcase>"]
+
+
 def to_junit(table, name, timestamp="", properties=()):
     """JUnit XML of a verdict table, qd check's (one testcase per check)
     or qd check --each's (one per host per check): classname the req.
@@ -380,6 +402,14 @@ def to_junit(table, name, timestamp="", properties=()):
            '  <testsuite name=%s %s%s>' % (
                xml_attr(name), head,
                (" timestamp=" + xml_attr(timestamp)) if timestamp else "")]
+    # qd check --rule (QD-051): the overall verdict's row is a property
+    # of the suite as well as a testcase of its own
+    properties = list(properties)
+    for r in table.rows:
+        if r[ix["req"]] == RULE_REQ:
+            properties += [("rule", r[ix["limit"]]),
+                           ("rule.verdict", r[ix["verdict"]]),
+                           ("rule.why", cell(r, "observed"))]
     if properties:
         out.append("    <properties>")
         for k, v in properties:
@@ -388,6 +418,10 @@ def to_junit(table, name, timestamp="", properties=()):
         out.append("    </properties>")
     for r in table.rows:
         req, verdict = r[ix["req"]], r[ix["verdict"]]
+        if req == RULE_REQ:
+            out.extend(_rule_case(r[ix["limit"]], verdict,
+                                  cell(r, "observed")))
+            continue
         tc = "    <testcase classname=%s name=%s" % (
             xml_attr(req), xml_attr(_testcase_name(
                 r, ix, each, len(shapes.get(req, ())) > 1)))

@@ -1430,11 +1430,12 @@ qd check latest --against limits.tsv --waivers waivers.tsv   # agreed deviations
 qd check latest --against limits.tsv --fail-level high       # exit 1 only for high and critical
 qd check latest --against limits.tsv --format junit -o qd-check.xml   # for CI
 qd check latest --against drift.tsv --baseline RUN|NAME     # limits relative to an earlier run
+qd check latest --against limits.tsv --rule 'all(SYS-1*, atleast(3, SYS-2*))'   # one verdict
 ```
 
 The thresholds file is TSV (or CSV) with a header. `req`, `column`, `op`
-and `limit` are required; `limit2`, `where`, `agg`, `unit`, `note` and
-`severity` may be left out or blank:
+and `limit` are required; `limit2`, `where`, `agg`, `unit`, `note`,
+`severity` and `weight` (for `--rule`, below) may be left out or blank:
 
 ```text
 req      column  op       limit  limit2  where      agg   unit
@@ -1687,6 +1688,95 @@ the suite carries `fail_level` as a property. Every string is escaped,
 and the characters XML 1.0 cannot hold (NUL and the other control
 characters) are dropped, so a hostile host name or note cannot break the
 file. The exit status is the same as for any other format.
+
+With `--rule`, the overall verdict is one more `<testcase>`, `classname`
+`rule` and `name` the rule: nothing in it for a pass, a `<failure
+type="rule">` for a fail, an `<error type="not measured">` for not
+measured, the why as its message. The suite carries `rule`,
+`rule.verdict` and `rule.why` as properties.
+
+### One verdict from many: `--rule`
+
+A test-readiness review often accepts a run that meets most of a group of
+requirements: every SYS-1xx, and three of the four SYS-2xx. **`--rule
+RULE`** (`QD_RULE`) builds one overall verdict from the requirements, and
+the exit status follows it: 0 when it passes, 1 when it fails or is not
+measured. The verdict of every check is the same as without it; the rule
+is one more layer on top.
+
+```bash
+qd check latest --against limits.tsv --rule 'all(SYS-1*, atleast(3, SYS-2*))'
+qd check latest --against limits.tsv --rule 'weighted(0.8, SYS-*)'
+QD_RULE='all(SYS-101, any(SYS-201, SYS-202))' qd check latest --against limits.tsv
+```
+
+The rule is calls and names, nothing else (quote it, for the shell):
+
+| Written | Passes when |
+|---|---|
+| `SYS-101` | that requirement passes |
+| `all(A, B, ...)` | every one passes |
+| `any(A, B, ...)` | one or more passes |
+| `not(A)` | A fails |
+| `atleast(N, A, B, ...)` | N or more pass; N is a whole number from 1 to how many there are |
+| `weighted(T, A, B, ...)` | the weights of those that pass, over the weights of all, come to T or more; T is from 0 to 1 |
+
+- A name is a `req` of the thresholds file, or a glob over them (`*`,
+  `?`, `[...]`, case counts): `SYS-2*` in a list is every SYS-2 requirement,
+  one item each. Where one requirement belongs (the whole rule, or
+  `not`'s), a glob must match exactly one.
+- The calls nest: `all`, `any`, `not` and `atleast` take requirements and
+  other calls; `weighted` takes requirements and globs.
+- A requirement with several checks passes when all of them do.
+- **Weights** come from a `weight` column in the thresholds file: a
+  number 0 or more, written on any one of the requirement's rows (two
+  different weights for one requirement are refused); blank is 1.
+- In the rule, a **waived** check counts as a pass, an **unexpected
+  pass** as a fail, and a failure below `--fail-level` as a pass.
+  **Not measured is never a pass**: a call is not measured when the
+  requirements not measured could still decide it (`all(A, U)` with A
+  passing, `atleast(2, A, U, F)`), and `not` of not measured is not
+  measured.
+- A requirement the rule does not name counts for nothing, and the head
+  says which those are.
+
+Worked example. With these limits, SYS-203 failing and SYS-204 not
+measured:
+
+```text
+req      column  op  limit  weight
+SYS-101  mbps    >=  900    2
+SYS-102  rtt     <=  250us
+SYS-201  temp    <=  70
+SYS-202  fan     >=  1000
+SYS-203  psu_w   <=  400
+SYS-204  ecc     ==  0
+```
+
+```console
+$ qd check latest --against limits.tsv --rule 'all(SYS-1*, atleast(2, SYS-2*))'
+qd check -- run-... against limits.tsv (...): 4 pass, 1 fail, 1 not measured; rule pass: all 3 passed
+  rule pass         all(SYS-1*, atleast(2, SYS-2*)): all 3 passed
+         pass         atleast(2, SYS-2*): 2 of 4 SYS-2* passed, need 2; 1 not measured: SYS-204
+```
+
+With `atleast(3, SYS-2*)` the same run is **not measured**, `2 of 4
+SYS-2* passed, need 3; 1 not measured: SYS-204` (SYS-204 could still have
+made it 3), and the exit status is 1. `weighted(0.8, SYS-*)` is not
+measured either: `weighted score 0.7143 of SYS-* (5 of 7), need 0.8; 1
+not measured: SYS-204`. SYS-101 weighs 2, so the four that passed weigh
+5 of 7, and SYS-204 passing would have made it 6 of 7.
+
+The overall verdict is in every format: the head line in text, with a
+line per call beneath it; one more row of the verdict table (`req`
+`(rule)`, the rule as its `limit`, the why as its `observed`) in CSV,
+TSV, JSON and the rest, and in what `--keep` files, whose command names
+the rule; and in JUnit as above. A rule qd cannot read is refused with
+exit 2, naming what is wrong: a `req` no check has, a glob that matches
+nothing (or several where one belongs), N above the count, a threshold
+outside 0 to 1, the same requirement twice in one list, weights that add
+up to 0, or anything left over. Without `--rule` the output and the exit
+status are what they always were.
 
 ---
 
