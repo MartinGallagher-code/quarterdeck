@@ -63,7 +63,9 @@ pip install ./quarterdeck                # or put qd (and quarterdeck) on PATH
 ```
 
 qd itself is Python 3.6+, standard library only. It needs provost to keep
-anything (`--no-store` runs without it); binnacle gives it its probes'
+anything (`--no-store` runs without it): any version files a run, and
+provost 2.28.0 or later files a small one quickly, in well under half the
+time 2.27.0 took (`docs/scale.md`, "Small runs"); binnacle gives it its probes'
 instruments and campaigns' muster, and `doe` its designs, each found on
 `PATH` or where `QD_<TOOL>` points. Nothing is installed on the fleet, and
 a command qd gives up on (past `--timeout` or `--max-output`) is stopped
