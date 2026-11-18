@@ -1182,6 +1182,290 @@ PYEOF
     assert_contains "$(qd log latest)" "--rule 'all(S*, atleast(1, F*))'"
 }
 
+# ---------------------------------------------------------------------------
+# A person's results for requirements nothing measures (QD-052)
+# ---------------------------------------------------------------------------
+
+# the thresholds of the manual cases: a measured check, a manual one
+# over every row, and one over rack r1 with no column
+manual_data() {
+    data
+    printf 'req\tcolumn\top\tlimit\twhere\tnote\n' > t.tsv
+    printf '%s\n' 'R1|status|in|ok,unreachable||' \
+        'M1|cabling|manual|||as built' 'M2||manual||rack=r1|' \
+        | tr '|' '\t' >> t.tsv
+}
+
+# results REQ|verdict|by|date|where|note ...: a manual file m.tsv
+results() {
+    printf 'req\tverdict\tby\tdate\twhere\tnote\n' > m.tsv
+    for row in "$@"; do printf '%s\n' "$row" | tr '|' '\t' >> m.tsv; done
+}
+
+# the manual cells of one row of v.csv: verdict|observed|by|date|note
+manual_row() {
+    "$PY" -c '
+import csv, sys
+for r in csv.DictReader(open(sys.argv[1])):
+    if r["req"] == sys.argv[2] and r.get("row", "") == sys.argv[3]:
+        print("|".join((r["verdict"], r["observed"], r["decided_by"],
+                        r["decided"], r["decision_note"])))
+' v.csv "$1" "${2:-}"
+}
+
+t_manual_none_is_not_measured() {
+    manual_data
+    qd_rc check d.csv --against t.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(verdict M1)" "not measured||0/4"
+    assert_eq "$(verdict M2)" "not measured||0/2"
+    assert_contains "$(cat v.csv)" "manual: no result given for it (--manual FILE)"
+    # the measured check is as it was, and no manual columns appear
+    assert_eq "$(verdict R1)" "pass|ok|4/4"
+    assert_eq "$(head -1 v.csv)" "req,column,agg,where,observed,limit,unit,measured,verdict,note"
+    # a result for one req leaves the other not measured
+    results 'M1|pass|J. Smith|2999-01-01||'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(verdict M1)" "pass|manual pass|4/4"
+    assert_eq "$(verdict M2)" "not measured||0/2"
+    # a result whose where picks some rows leaves the rest not measured
+    results 'M1|pass|J. Smith|||' 'M2|pass|QA||host=a|'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(verdict M2)" "not measured||1/2"
+    assert_contains "$(cat v.csv)" "1 of 2 not measured: b"
+    # a where no row matches decides nothing either
+    results 'M1|pass|J. Smith||host=zz|' 'M2|pass|QA|||'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --format csv -o v.csv
+    assert_eq "$(verdict M1)" "not measured||0/4"
+}
+
+t_manual_pass_and_fail() {
+    manual_data
+    # pass, without where: every row of the check; the run passes
+    results 'M1|pass|J. Smith|2026-11-17||all patched' 'M2|PASS|QA|2026-11-18 09:30||'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 0
+    assert_eq "$(manual_row M1)" "pass|manual pass|J. Smith|2026-11-17|all patched"
+    assert_eq "$(manual_row M2)" "pass|manual pass|QA|2026-11-18 09:30|"
+    assert_eq "$(manual_row R1)" "pass|ok|||"
+    assert_eq "$(head -1 v.csv)" "req,column,agg,where,observed,limit,unit,measured,verdict,note,decided_by,decided,decision_note"
+    qd_rc check d.csv --against t.tsv --manual m.tsv > out
+    assert_contains "$(head -1 out)" "3 pass, 0 fail, 0 not measured"
+    assert_contains "$(cat out)" "manual m.tsv: 2 results by J. Smith, QA"
+    # --each: a row per host, each with who decided it
+    qd_rc check d.csv --against t.tsv --manual m.tsv --each --format csv -o v.csv
+    assert_status "$QD_RC" 0
+    assert_eq "$(manual_row M1 d)" "pass|manual pass|J. Smith|2026-11-17|all patched"
+    assert_eq "$(grep -c '^M1,' v.csv)" "4"
+    assert_eq "$(grep -c '^M2,' v.csv)" "2"
+    # fail, without where: the check fails, on every host under --each
+    results 'M1|fail|J. Smith|2026-11-17||loose patch lead' 'M2|pass|QA||'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(manual_row M1)" "fail|manual fail|J. Smith|2026-11-17|loose patch lead"
+    assert_contains "$(cat v.csv)" "4 of 4 failed: a, b, c, d"
+    qd_rc check d.csv --against t.tsv --manual m.tsv --each --format csv -o v.csv
+    assert_eq "$(manual_row M1 c | cut -d'|' -f1)" "fail"
+    # with where (a bare word is a host): only the rows it picks
+    results 'M1|pass|J. Smith|||' 'M2|pass|QA||a|' 'M2|fail|QA|2026-11-18|b|label swapped'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(manual_row M2)" "fail|manual fail|QA|2026-11-18|label swapped"
+    assert_contains "$(cat v.csv)" "1 of 2 failed: b"
+    qd_rc check d.csv --against t.tsv --manual m.tsv --each --format csv -o v.csv
+    assert_eq "$(manual_row M2 a)" "pass|manual pass|QA||"
+    assert_eq "$(manual_row M2 b)" "fail|manual fail|QA|2026-11-18|label swapped"
+    # a pass for every row and a fail for one: the fail stands
+    results 'M1|pass|J. Smith|||' 'M2|pass|QA|||' 'M2|fail|Ops||host=b|'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --format csv -o v.csv
+    assert_eq "$(verdict M2 | cut -d'|' -f1)" "fail"
+    assert_contains "$(cat v.csv)" "results disagree on b: the fail stands"
+    # with where, a pass for the rows it picks under --each
+    results 'M1|pass|J. Smith||rack=r2|' 'M1|pass|Ops||rack=r1|' 'M2|pass|QA||rack=r1|'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --each --format csv -o v.csv
+    assert_status "$QD_RC" 0
+    assert_eq "$(manual_row M1 a | cut -d'|' -f3)" "Ops"
+    assert_eq "$(manual_row M1 d | cut -d'|' -f3)" "J. Smith"
+    # QD_MANUAL for the flag
+    QD_MANUAL=m.tsv qd_rc check d.csv --against t.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 0
+    # --rule takes a manual verdict as any other
+    results 'M1|pass|J. Smith|||' 'M2|fail|QA|||'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --rule 'all(R1, M1)' > out
+    assert_status "$QD_RC" 0
+    qd_rc check d.csv --against t.tsv --manual m.tsv --rule 'all(M*)' > out
+    assert_status "$QD_RC" 1
+    assert_contains "$(head -1 out)" "; rule fail: "
+}
+
+t_manual_waived() {
+    manual_data
+    results 'M1|fail|J. Smith|2026-11-17||loose patch lead' 'M2|pass|QA|||'
+    printf 'req\tjustification\twhere\tgranted_by\nM1\trecabled next week, FSE-9\t\tQA board\n' > w.tsv
+    qd_rc check d.csv --against t.tsv --manual m.tsv --waivers w.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 0
+    assert_eq "$(verdict M1 | cut -d'|' -f1)" "waived"
+    assert_contains "$(cat v.csv)" "recabled next week, FSE-9"
+    assert_eq "$(manual_row M1 | cut -d'|' -f3)" "J. Smith"
+    # a waiver whose where covers some hosts: the rest still fail
+    printf 'req\tjustification\twhere\nM1\tc is spare\thost=c\n' > w.tsv
+    qd_rc check d.csv --against t.tsv --manual m.tsv --waivers w.tsv --each --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(manual_row M1 c | cut -d'|' -f1)" "waived"
+    assert_eq "$(manual_row M1 a | cut -d'|' -f1)" "fail"
+    # expect fail on a manual pass is an unexpected pass
+    results 'M1|pass|J. Smith|||' 'M2|pass|QA|||'
+    printf 'req\tjustification\texpect\nM1\tlead still loose\tfail\n' > w.tsv
+    qd_rc check d.csv --against t.tsv --manual m.tsv --waivers w.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(verdict M1 | cut -d'|' -f1)" "unexpected pass"
+    # not measured is never waived, manual or not
+    results 'M2|pass|QA|||'
+    printf 'req\tjustification\nM1\tnot inspected yet\n' > w.tsv
+    qd_rc check d.csv --against t.tsv --manual m.tsv --waivers w.tsv --format csv -o v.csv
+    assert_eq "$(verdict M1 | cut -d'|' -f1)" "not measured"
+}
+
+t_manual_refused() {
+    manual_data
+    bad_manual() {   # bad_manual TEXT: m.tsv of TEXT is exit 2 naming TEXT
+        local want="$1"
+        shift
+        printf '%s\n' "$@" > m.tsv
+        qd_rc check d.csv --against t.tsv --manual m.tsv > out 2> err
+        assert_status "$QD_RC" 2
+        assert_contains "$(cat err)" "$want"
+    }
+    bad_manual "m.tsv, result 2 (M9): no check has req M9, so it would decide nothing" \
+        $'req\tverdict\tby' $'M1\tpass\tme' $'M9\tpass\tme'
+    bad_manual "m.tsv, result 1 (R1): R1 is measured, not manual" \
+        $'req\tverdict\tby' $'R1\tpass\tme'
+    bad_manual "m.tsv, result 1 (M1): verdict 'ok': want pass or fail" \
+        $'req\tverdict\tby' $'M1\tok\tme'
+    bad_manual "m.tsv, result 1 (M1): verdict 'waived': want pass or fail" \
+        $'req\tverdict\tby' $'M1\twaived\tme'
+    bad_manual "m.tsv, result 1 (M1): by is blank" \
+        $'req\tverdict\tby' $'M1\tpass\t '
+    bad_manual "m.tsv, result 1 (M1): verdict is blank" \
+        $'req\tverdict\tby' $'M1\t\tme'
+    bad_manual "m.tsv, result 1 (M1): date '17/11/2026' is not a date" \
+        $'req\tverdict\tby\tdate' $'M1\tpass\tme\t17/11/2026'
+    bad_manual "m.tsv, result 1 (M1): date '2026-02-30' is not a date" \
+        $'req\tverdict\tby\tdate' $'M1\tpass\tme\t2026-02-30'
+    bad_manual "m.tsv, result 1 (M1): date '2026-11-17T25:00' is not a date" \
+        $'req\tverdict\tby\tdate' $'M1\tpass\tme\t2026-11-17T25:00'
+    bad_manual "m.tsv, result 1 (M1): where 'host=(': " \
+        $'req\tverdict\tby\twhere' $'M1\tpass\tme\thost=('
+    bad_manual "m.tsv: the header needs by" $'req\tverdict' $'M1\tpass'
+    bad_manual "m.tsv: unknown column who" $'req\tverdict\tby\twho' $'M1\tpass\tme\tx'
+    bad_manual "m.tsv holds no results" $'req\tverdict\tby'
+    qd_rc check d.csv --against t.tsv --manual nope.tsv 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "no such manual file: nope.tsv"
+    # and in the thresholds file: a manual check has no limit or agg
+    printf 'req\tcolumn\top\tlimit\nM1\tx\tmanual\t5\n' > b.tsv
+    qd_rc check d.csv --against b.tsv 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "b.tsv, check 1 (M1): op manual takes no limit ('5')"
+    printf 'req\tcolumn\top\tlimit\tagg\nM1\t\tmanual\t\tmax\n' > b.tsv
+    qd_rc check d.csv --against b.tsv 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "op manual takes no agg ('max')"
+    # a measured check still needs its column and limit
+    printf 'req\tcolumn\top\tlimit\nR1\tmbps\t>=\t\n' > b.tsv
+    qd_rc check d.csv --against b.tsv 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "limit is blank"
+}
+
+t_manual_junit_keep() {
+    manual_data
+    results 'M1|fail|J. Smith|2026-11-17||loose lead' 'M2|pass|QA|2026-11-18||'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --format junit -o v.xml
+    assert_status "$QD_RC" 1
+    got="$(junit v.xml)"
+    assert_contains "$got" "testsuite tests=3 failures=1 errors=0 skipped=0"
+    assert_contains "$got" "M1|cabling manual|failure|failed by a person's decision: J. Smith on 2026-11-17: loose lead"
+    assert_contains "$got" "M2|manual where rack=r1|pass|"
+    "$PY" - v.xml > props <<'PYEOF'
+import sys
+import xml.etree.ElementTree as ET
+s = ET.parse(sys.argv[1]).getroot().find("testsuite")
+for p in s.find("properties"):
+    print("suite %s=%s" % (p.get("name"), p.get("value")))
+for tc in s.findall("testcase"):
+    ps = tc.find("properties")
+    for p in (ps if ps is not None else []):
+        print("%s %s=%s" % (tc.get("classname"), p.get("name"), p.get("value")))
+PYEOF
+    sum="$("$PY" -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' m.tsv)"
+    assert_contains "$(cat props)" "suite manual=m.tsv"
+    assert_contains "$(cat props)" "suite manual.sha256=$sum"
+    assert_contains "$(cat props)" "M1 by=J. Smith"
+    assert_contains "$(cat props)" "M1 date=2026-11-17"
+    assert_contains "$(cat props)" "M2 by=QA"
+    # --each: a testcase per host, each carrying who decided it
+    qd_rc check d.csv --against t.tsv --manual m.tsv --each --format junit -o e.xml
+    assert_contains "$(junit e.xml)" "M1|b|failure|failed by a person's decision: J. Smith"
+    # waived: skipped, as any waived failure
+    printf 'req\tjustification\nM1\tFSE-9\n' > w.tsv
+    qd_rc check d.csv --against t.tsv --manual m.tsv --waivers w.tsv --format junit -o w.xml
+    assert_status "$QD_RC" 0
+    assert_contains "$(junit w.xml)" "M1|cabling manual|skipped|waived: FSE-9"
+    # --keep: the verdicts with who decided, and the file by name and sha256
+    qd_rc check d.csv --against t.tsv --manual m.tsv --keep > out
+    assert_status "$QD_RC" 1
+    csv="$(qd show latest --format csv)"
+    assert_contains "$csv" "decided_by,decided,decision_note"
+    assert_contains "$csv" 'M1,cabling,each,,manual fail,manual,,4/4,fail,"4 of 4 failed: a, b, c, d; as built",J. Smith,2026-11-17,loose lead'
+    log="$(qd log latest)"
+    assert_contains "$log" "--manual $PWD/m.tsv"
+    assert_contains "$log" "manual m.tsv sha256 $sum"
+}
+
+t_manual_dated_before_the_run() {
+    runof now 900 900 900 900
+    printf 'req\tcolumn\top\tlimit\nM1\t\tmanual\t\n' > t.tsv
+    results 'M1|pass|J. Smith|2020-01-02||'
+    qd_rc check now --against t.tsv --manual m.tsv > out
+    # warned of, not refused: the verdict stands
+    assert_status "$QD_RC" 0
+    assert_contains "$(cat out)" "1 dated before the run"
+    assert_contains "$(qd check now --against t.tsv --manual m.tsv --format csv 2>/dev/null)" \
+        "decided 2020-01-02, before the run ("
+    results 'M1|pass|J. Smith|2999-01-02||'
+    qd_rc check now --against t.tsv --manual m.tsv > out
+    assert_not_contains "$(cat out)" "before the run"
+    results 'M1|pass|J. Smith|||'
+    qd_rc check now --against t.tsv --manual m.tsv > out
+    assert_contains "$(cat out)" "1 result by J. Smith, 1 undated"
+}
+
+t_manual_none_unchanged() {
+    # no manual rows and no --manual: the output 0.29.0 gave, byte for byte
+    data
+    limits t.tsv 'R1|mbps|>=|900||status=ok||' 'R2|temp|between|20|45|rack=r1|max|'
+    for f in text csv junit; do
+        qd_rc check d.csv --against t.tsv --format "$f" -o "a.$f"
+        assert_status "$QD_RC" 1
+        qd_rc check d.csv --against t.tsv --each --format "$f" -o "e.$f"
+    done
+    assert_eq "$(cat a.csv)" 'req,column,agg,where,observed,limit,unit,measured,verdict,note
+R1,mbps,each,status=ok,880,>= 900,,2/3,fail,1 of 3 failed: b; 1 not measured
+R2,temp,max,rack=r1,44,between 20 and 45,,2/2,pass,'
+    assert_eq "$(cat e.csv)" 'req,row,column,observed,limit,unit,verdict
+R1,a,mbps,950,>= 900,,pass
+R1,b,mbps,880,>= 900,,fail
+R1,c,mbps,,>= 900,,not measured
+R2,a,temp,30,between 20 and 45,,pass
+R2,b,temp,44,between 20 and 45,,pass'
+    assert_not_contains "$(cat a.junit e.junit)" "manual"
+    assert_not_contains "$(cat a.junit e.junit)" "decided"
+    assert_not_contains "$(cat a.text)" "manual"
+}
+
 run_test "pass, fail and the exit status"       t_pass_fail_and_exit_status
 run_test "blank is never a pass"                t_blank_is_never_a_pass
 run_test "every op"                             t_every_op
@@ -1219,4 +1503,11 @@ run_test "rule: not measured, waived, unexpected" t_rule_unmeasured_waived_unexp
 run_test "rule: refused, exit 2"               t_rule_refused
 run_test "rule: none, output unchanged"        t_rule_none_unchanged
 run_test "rule: formats, junit, keep"          t_rule_formats_junit_keep
+run_test "manual: none given is not measured" t_manual_none_is_not_measured
+run_test "manual: pass and fail, where, --each" t_manual_pass_and_fail
+run_test "manual: a waiver on a manual fail"   t_manual_waived
+run_test "manual: refused, exit 2"             t_manual_refused
+run_test "manual: junit and --keep"            t_manual_junit_keep
+run_test "manual: dated before the run"        t_manual_dated_before_the_run
+run_test "manual: none, output unchanged"      t_manual_none_unchanged
 finish

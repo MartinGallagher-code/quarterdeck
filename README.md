@@ -1427,6 +1427,7 @@ qd check latest --against limits.tsv --each   # one row per host per requirement
 qd check latest --against limits.tsv --keep   # and file the verdicts (qd web, qd export)
 qd check latest --against limits.tsv --format csv -o trr.csv
 qd check latest --against limits.tsv --waivers waivers.tsv   # agreed deviations
+qd check latest --against limits.tsv --manual inspected.tsv  # a person's pass or fail
 qd check latest --against limits.tsv --fail-level high       # exit 1 only for high and critical
 qd check latest --against limits.tsv --format junit -o qd-check.xml   # for CI
 qd check latest --against drift.tsv --baseline RUN|NAME     # limits relative to an earlier run
@@ -1447,8 +1448,9 @@ SYS-104  temp    between  20     45                 max
 
 - **`op`**: `<`, `<=`, `>`, `>=`, `==`, `!=`, `in` (a comma list of
   words, without regard to case), `between` (`limit` to `limit2`,
-  inclusive) or `within` (below). `==` and `!=` compare numbers as numbers
-  and words as words.
+  inclusive), `within` (below) or `manual` (a person decides it, with
+  `--manual`; below). `==` and `!=` compare numbers as numbers and words
+  as words.
 - **`within`** holds a value to a reference give or take a tolerance, as
   ReFrame's references do: `limit` is the reference and `limit2` the
   tolerance, `+-10%` (or `±10%`), `-5%,+10%` (or `-5%;+10%` in a CSV),
@@ -1595,6 +1597,78 @@ With waivers, the verdict table gains `justification`, `expires` and
 `granted_by`, and the head counts waived apart from passed. Without
 `--waivers` and without a `severity` column the output is what it was.
 
+### A person's results: `--manual`
+
+Some requirements nothing measures: the cabling inspected, the labels
+right, a host's console checked. A review needs them in the same record
+as the measured ones, not in a spreadsheet beside it. Write such a
+requirement in the thresholds file with **`op manual`**; `column` may
+name what was looked at or be blank, and `limit`, `limit2`, `unit` and
+`agg` stay blank (say what is wanted in `note`). `where`, `severity`,
+`weight` and `note` work as on any check:
+
+```text
+req      column   op      limit  where    note
+SYS-201  cabling  manual                  as built, drawing E-104
+SYS-202  labels   manual         rack=r2
+```
+
+A manual requirement is **not measured** until a person's result is
+given, so the run exits 1: blank is never a pass. **`--manual FILE`**
+(`QD_MANUAL`) names the results, TSV or CSV like the waivers file:
+
+```text
+req      verdict  by        date        where    note
+SYS-201  pass     J. Smith  2026-11-17
+SYS-202  pass     QA board  2026-11-18
+SYS-202  fail     QA board  2026-11-18  n4       label swapped with n5
+```
+
+`req`, `verdict` (`pass` or `fail`, without regard to case) and `by` are
+required; `date` (YYYY-MM-DD, or with a time: `2026-11-17T14:30` or
+`2026-11-17 14:30`), `where` and `note` may be blank.
+
+- A result covers **the rows its `where` picks** (in `--where`'s grammar;
+  one bare word is a host, so `n4` is `host=n4`), or every row of the
+  check without one. Each row is what the results that cover it say, and
+  when they disagree **the fail stands** (the note says so); a row no
+  result covers is not measured. The check's verdict is then taken over
+  its rows as `each` takes it: one row failed fails it, otherwise one
+  row not covered makes it not measured. With **`--each`**, a row per
+  host, each with its own result.
+- With `--manual`, the verdict table gains **`decided_by`**, **`decided`**
+  (the date as written) and **`decision_note`**: who decided each manual
+  verdict, when, and what they wrote; `observed` reads `manual pass` or
+  `manual fail`. The head line counts the results and names who gave
+  them.
+- **Waivers apply to a manual fail** as to any fail (waived, and expect
+  `fail` on a manual pass is an unexpected pass); `--rule`, severities,
+  `--fail-level` and every `--format` take a manual verdict as any
+  other. In **JUnit**, a manual testcase carries `by` and `date` as
+  properties, a manual fail is `<failure type="manual" message="failed by
+  a person's decision: J. Smith on 2026-11-17: ...">`, and the suite
+  names the manual file with its sha256, as it does the thresholds and
+  waivers files.
+- **A result dated before the run is warned of, not refused**: the note
+  says `decided 2026-11-01, before the run (2026-11-17)` and the head
+  counts them. An inspection is often made the day before a run, so a
+  date cannot decide it alone; but a manual file kept from an earlier
+  run would otherwise pass a later one unremarked. A dataset read from a
+  file has no start, so there is nothing to compare with. The head also
+  counts results with no date.
+- **Refused with exit 2**, naming the line: a result whose `req` no
+  check has, or one whose check is measured rather than manual (a
+  person's result does not override a measurement); a verdict other than
+  `pass` or `fail`; a blank `req`, `verdict` or `by`; a date qd cannot
+  read; a `where` it cannot parse. A manual check with a `limit`,
+  `limit2`, `unit` or an `agg` is refused in the thresholds file.
+
+`--keep` files the manual columns with the verdicts, names the manual
+file in the filed run's command, and keeps a note of its name and its
+sha256 (`qd log RUN`), since a person's result is a claim nobody can
+recheck. Without `--manual` and without a manual row the output is what
+it was.
+
 ### Against an earlier run: `--baseline`
 
 A fixed limit says whether a run is good enough; it cannot say a host
@@ -1654,7 +1728,8 @@ and `--keep` names the baseline in the filed run's command.
 `--keep` files the verdict table in the store as a run of kind `check`,
 named `check-<run>`, so `qd show`, `qd export` and `qd web` read it like
 any other dataset; with its severity and waiver columns, and the
-`--waivers` file named in its command.
+`--waivers` file named in its command (and the `--manual` file, with its
+sha256).
 
 ### JUnit XML, for CI
 
@@ -1679,6 +1754,7 @@ that runs `qd check` shows each requirement as a test:
 | unexpected pass | `<failure type="unexpected pass">`: it fails the run, so it fails the build |
 | not measured | `<error type="not measured" message="not measured: ...">`: never a pass, and not counted as one |
 | waived | `<skipped message="waived: justification (expires ...; granted by ...)">` |
+| manual fail | `<failure type="manual" message="failed by a person's decision: ...">`, with `by` and `date` as properties |
 
 So `tests`, `failures`, `errors` and `skipped` on `<testsuite>` are the
 head line's counts: failures are fail and unexpected pass, errors not

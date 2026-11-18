@@ -39,6 +39,12 @@ limit on one takes no unit, and one that cannot be had is not measured.
 
 A `weight` column (QD-051) weighs a requirement for --rule's weighted()
 (rule.py); blank is 1.
+
+`op manual` (QD-052) is a requirement nothing measures: a person's pass or
+fail for it comes from a manual file (`qd check --manual FILE`) of `req`,
+`verdict`, `by` [`date`, `where`, `note`].  Without a result it is not
+measured; with one, its verdict is like any other, so waivers, --rule,
+--each and every format take it as they take a measured one.
 """
 
 import datetime
@@ -51,13 +57,16 @@ from .table import load_file, slug, split_unit, to_base, unit_family
 PASS, FAIL, UNMEASURED = "pass", "fail", "not measured"
 WAIVED, UNEXPECTED = "waived", "unexpected pass"
 VERDICTS = (PASS, FAIL, UNMEASURED, WAIVED, UNEXPECTED)
-OPS = ("<", "<=", ">", ">=", "==", "!=", "in", "between", "within")
+OPS = ("<", "<=", ">", ">=", "==", "!=", "in", "between", "within",
+       "manual")
 REQUIRED = ("req", "column", "op", "limit")
 OPTIONAL = ("limit2", "where", "agg", "unit", "note", "severity", "weight")
 # InSpec's words, least to most; its impact numbers map onto them
 SEVERITIES = ("info", "low", "medium", "high", "critical")
 WAIVER_REQUIRED = ("req", "justification")
 WAIVER_OPTIONAL = ("expires", "where", "expect", "granted_by")
+MANUAL_REQUIRED = ("req", "verdict", "by")
+MANUAL_OPTIONAL = ("date", "where", "note")
 # spread and shape (QD-050): unitless, so a limit on them takes no unit
 SHAPE_AGGS = ("cv", "skew", "kurtosis", "zmax")
 NUMERIC_AGGS = ("mean", "median", "min", "max", "sum", "stdev", "range",
@@ -217,6 +226,8 @@ class Check(object):
                 self.lo, self.hi, self.tol_shown = b
 
     def limit_text(self):
+        if self.op == "manual":
+            return "manual"
         if self.op == "between":
             return "between %s and %s" % (self.limit, self.limit2)
         if self.op == "within":
@@ -252,13 +263,24 @@ def read_thresholds(path):
         if not any(d.values()):
             continue
         where = "%s, check %d (%s)" % (path, n, r[0].strip() or "no req")
+        manual = (d.get("op") or "").lower() == "manual"
         for c in REQUIRED:
-            if not d.get(c):
+            # a manual requirement has nothing to read and no limit
+            if not d.get(c) and not (manual and c in ("column", "limit")):
                 die("%s: %s is blank" % (where, c), 2)
         op = d["op"].lower()
         if op not in OPS:
             die("%s: unknown op %r (want %s)" % (where, d["op"],
                                                   ", ".join(OPS)), 2)
+        if manual:
+            for c in ("limit", "limit2", "unit"):
+                if d.get(c):
+                    die("%s: op manual takes no %s (%r): a person decides "
+                        "it; say what is wanted in note" % (where, c, d[c]),
+                        2)
+            if (d.get("agg") or "each").lower() != "each":
+                die("%s: op manual takes no agg (%r): a person's result "
+                    "is for each row it covers" % (where, d["agg"]), 2)
         agg = (d.get("agg") or "each").lower()
         if agg not in AGGS:
             die("%s: unknown agg %r (want %s)" % (where, d["agg"],
@@ -457,6 +479,188 @@ def read_waivers(path, checks):
 
 
 # ---------------------------------------------------------------------------
+# A person's results, for requirements nothing measures (QD-052)
+# ---------------------------------------------------------------------------
+
+_TIME_RE = re.compile(r"^(\d{2}):(\d{2})(?::(\d{2}))?(Z|[+-]\d{2}:?\d{2})?$")
+
+
+def decided_on(text):
+    """The day of a manual result's date: YYYY-MM-DD, or that with a
+    time after T or a space (HH:MM[:SS], and Z or an offset); None when
+    it is neither."""
+    t = (text or "").strip()
+    day, rest = t[:10], t[10:]
+    d = _date(day) if len(day) == 10 else None
+    if d is None:
+        return None
+    if not rest:
+        return d
+    if rest[0] not in "T ":
+        return None
+    m = _TIME_RE.match(rest[1:])
+    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59 or \
+            int(m.group(3) or 0) > 59:
+        return None
+    return d
+
+
+class Manual(object):
+    """One line of a manual file: a person's pass or fail for a manual
+    requirement, who decided it, when, and for which rows."""
+
+    def __init__(self, line, req, verdict, by, date="", where="", note=""):
+        self.line = line
+        self.req = req
+        self.verdict = verdict
+        self.by = by
+        self.date = date
+        self.where = where
+        self.note = note
+
+    def day(self):
+        return decided_on(self.date) if self.date else None
+
+
+def read_manual(path, checks):
+    """The results in a manual file, a list in file order.  Exit 2 naming
+    the line that is wrong: a req no manual check has (a typo would
+    decide nothing, and a measured check is not a person's to decide), a
+    verdict other than pass or fail, a blank by, a date qd cannot read.
+    A `where` that is one bare word is a host: `n4` is `host=n4`."""
+    import os
+    if not os.path.isfile(path):
+        die("no such manual file: %s" % path, 2)
+    try:
+        t = load_file(path, fmt="table")[0]
+    except (IOError, OSError, UnicodeDecodeError) as exc:
+        die("cannot read %s: %s" % (path, exc), 2)
+    cols = [c.strip().lower() for c in t.columns]
+    missing = [c for c in MANUAL_REQUIRED if c not in cols]
+    if missing:
+        die("%s: the header needs %s (it has %s)" % (
+            path, ", ".join(missing), ", ".join(t.columns) or "nothing"), 2)
+    extra = [c for c in cols if c not in MANUAL_REQUIRED + MANUAL_OPTIONAL]
+    if extra:
+        die("%s: unknown column %s (want %s)" % (
+            path, ", ".join(extra),
+            ", ".join(MANUAL_REQUIRED + MANUAL_OPTIONAL)), 2)
+    manual = set(c.req for c in checks if c.op == "manual")
+    measured = set(c.req for c in checks if c.op != "manual")
+    out = []
+    for n, r in enumerate(t.rows, 1):
+        d = dict((c, v.strip()) for c, v in zip(cols, r))
+        if not any(d.values()):
+            continue
+        where = "%s, result %d (%s)" % (path, n, d.get("req") or "no req")
+        for c in MANUAL_REQUIRED:
+            if not d.get(c):
+                die("%s: %s is blank" % (where, c), 2)
+        if d["req"] not in manual:
+            if d["req"] in measured:
+                die("%s: %s is measured, not manual: a person's result "
+                    "goes to a check with op manual" % (where, d["req"]), 2)
+            die("%s: no check has req %s, so it would decide nothing" % (
+                where, d["req"]), 2)
+        verdict = d["verdict"].lower()
+        if verdict not in (PASS, FAIL):
+            die("%s: verdict %r: want pass or fail" % (where, d["verdict"]),
+                2)
+        if d.get("date") and decided_on(d["date"]) is None:
+            die("%s: date %r is not a date (YYYY-MM-DD, or with a time: "
+                "YYYY-MM-DDTHH:MM)" % (where, d["date"]), 2)
+        w = d.get("where", "")
+        if w and re.match(r"^[A-Za-z0-9_.:-]+$", w) and \
+                "=" not in w and w.lower() not in ("and", "or", "not"):
+            w = "host=" + w
+        if w:
+            try:
+                query.parse(w)
+            except QdError as exc:
+                die("%s: where %r: %s" % (where, d["where"], exc), 2)
+        out.append(Manual(n, d["req"], verdict, d["by"], d.get("date", ""),
+                          w, d.get("note", "")))
+    if not out:
+        die("%s holds no results" % path, 2)
+    return out
+
+
+def run_manual(table, chk, manual):
+    """A manual check: each row of the check is what the results that
+    cover it say (a fail among them wins), and not measured when none
+    does.  Without results, every row is not measured."""
+    rows = table.rows
+    if chk.where:
+        try:
+            rows = query.where(table, [chk.where])
+        except QdError as exc:
+            return Result(chk, note="where %s: %s" % (chk.where, exc))
+    if not rows:
+        return Result(chk, note="no rows where %s" % chk.where if
+                      chk.where else "no rows")
+    pos = dict((id(r), n) for n, r in enumerate(table.rows, 1))
+    labels = [_label(table, r, pos[id(r)]) for r in rows]
+    mine = [m for m in (manual or []) if m.req == chk.req]
+    if not mine:
+        per = [(lb, "", UNMEASURED) for lb in labels]
+        res = Result(chk, "", UNMEASURED, 0, len(per), "",
+                     "manual: no result given for it (--manual FILE)", per)
+        res.src = list(rows)
+        return res
+    notes, cover = [], []
+    for m in mine:
+        c = _covered(table, m, rows)
+        if c is None:
+            notes.append("result %d: where %s cannot be read here" % (
+                m.line, m.where))
+            continue
+        cover.append((m, c))
+    per, row_manual, split = [], {}, []
+    for i, (lb, r) in enumerate(zip(labels, rows)):
+        got = [m for m, c in cover if id(r) in c]
+        if not got:
+            per.append((lb, "", UNMEASURED))
+            continue
+        fails = [m for m in got if m.verdict == FAIL]
+        v = FAIL if fails else PASS
+        if fails and len(fails) < len(got):
+            split.append(lb)
+        row_manual[i] = fails or got
+        per.append((lb, "manual " + v, v))
+    if split:
+        notes.append("results disagree on %s: the fail stands" % _names(
+            [(x,) for x in split]))
+    measured = sum(1 for p in per if p[2] != UNMEASURED)
+    res = Result(chk, "", PASS, measured, len(per), "", "", per)
+    res.src = list(rows)
+    res.margins = [None] * len(per)
+    _each_verdict(res)
+    res.row_manual = row_manual
+    res.manual_note = "; ".join(notes)
+    return res
+
+
+def _manual_late(results, run_day):
+    """Name the results dated before the run they decide (QD-052): a
+    manual file kept from an earlier run would otherwise pass this one
+    unremarked.  They are warned of, not refused: an inspection is often
+    made the day before."""
+    for r in results:
+        late = []
+        for ms in getattr(r, "row_manual", {}).values():
+            for m in ms:
+                d = m.day()
+                if d is not None and d < run_day and m not in late:
+                    late.append(m)
+        if late:
+            r.manual_note = "; ".join(x for x in (
+                getattr(r, "manual_note", ""),
+                "decided %s, before the run (%s)" % (
+                    ", ".join(sorted(set(m.date[:10] for m in late))),
+                    run_day.isoformat())) if x)
+
+
+# ---------------------------------------------------------------------------
 # Comparing
 # ---------------------------------------------------------------------------
 
@@ -615,7 +819,9 @@ def _label(table, row, n):
     return "row %d" % n
 
 
-def run_check(table, chk, ref=None):
+def run_check(table, chk, ref=None, manual=None):
+    if chk.op == "manual":
+        return run_manual(table, chk, manual)
     if not table.has(chk.column):
         return Result(chk, note="no column %s" % chk.column)
     rows = table.rows
@@ -912,15 +1118,24 @@ def run_shape(table, chk, rows, ref=None, side=None):
     return res
 
 
-def run(table, checks, waivers=None, today=None, ref=None):
+def run(table, checks, waivers=None, today=None, ref=None, manual=None,
+        run_day=None):
     """Every check's Result.  ref (a Reference) is what limits relative to
-    the baseline are held to; without one they are not measured."""
-    out = [run_check(table, c, ref) for c in checks]
+    the baseline are held to; without one they are not measured.  manual
+    is the people's results for the manual checks, folded in before the
+    waivers are, so a waiver excuses a manual fail as any other; run_day
+    (a date) names the results dated before it."""
+    out = [run_check(table, c, ref, manual) for c in checks]
+    if run_day is not None:
+        _manual_late(out, run_day)
     if waivers:
         for r in out:
             mine = [w for w in waivers if w.req == r.chk.req]
             if mine:
                 apply_waivers(table, r, mine, today)
+    for r in out:
+        if getattr(r, "manual_note", ""):
+            r.note = "; ".join(x for x in (r.note, r.manual_note) if x)
     return out
 
 
@@ -1465,13 +1680,16 @@ EACH_COLUMNS = ["req", "row", "column", "observed", "limit", "unit",
 SEVERITY_COLUMNS = ["severity"]
 WAIVER_COLUMNS = ["justification", "expires", "granted_by"]
 BASELINE_COLUMNS = ["baseline", "drift_pct"]
+MANUAL_COLUMNS = ["decided_by", "decided", "decision_note"]
 
 
-def columns(base, checks, waivers, ref=None):
+def columns(base, checks, waivers, ref=None, manual=None):
     """A verdict table's header: the columns of old, then severity when
     the thresholds file has one, then the waiver's when there are
     waivers, then the baseline's value and the drift from it when there
-    is a baseline.  With none of them it is what it always was."""
+    is a baseline, then who decided a manual result, when, and their
+    note, when there is a manual file.  With none of them it is what it
+    always was."""
     out = list(base)
     if any(c.severity for c in checks):
         out += SEVERITY_COLUMNS
@@ -1479,7 +1697,32 @@ def columns(base, checks, waivers, ref=None):
         out += WAIVER_COLUMNS
     if ref is not None:
         out += BASELINE_COLUMNS
+    if manual is not None:
+        out += MANUAL_COLUMNS
     return out
+
+
+def _uniq(xs):
+    out = []
+    for x in xs:
+        if x and x not in out:
+            out.append(x)
+    return out
+
+
+def _manual_cells(ms):
+    """decided_by, decided and decision_note of the results `ms`."""
+    return ["; ".join(_uniq(m.by for m in ms)),
+            "; ".join(_uniq(m.date for m in ms)),
+            "; ".join(_uniq(m.note for m in ms))]
+
+
+def _check_manual(r):
+    """Every result that decided a row of r, in file order."""
+    ms = []
+    for i in sorted(getattr(r, "row_manual", {})):
+        ms += r.row_manual[i]
+    return sorted(set(ms), key=lambda m: m.line)
 
 
 def _waiver_cells(ws, today=None):
@@ -1490,7 +1733,7 @@ def _waiver_cells(ws, today=None):
             "; ".join(w.granted_by for w in ws if w.granted_by)]
 
 
-def _extra(r, cols, ws, today=None, base=("", "")):
+def _extra(r, cols, ws, today=None, base=("", ""), ms=None):
     out = []
     if "severity" in cols:
         out.append(r.chk.severity)
@@ -1498,6 +1741,8 @@ def _extra(r, cols, ws, today=None, base=("", "")):
         out += _waiver_cells(ws, today)
     if "baseline" in cols:
         out += list(base)
+    if "decided_by" in cols:
+        out += _manual_cells(_check_manual(r) if ms is None else ms)
     return out
 
 
@@ -1551,7 +1796,8 @@ def each_rows(results, cols=None, today=None):
                 if getattr(r, "limit_shown", ""):
                     lim = "%s (%s)" % (lim, r.limit_shown)
             out.append([c.req, label, c.column, obs, lim, r.unit,
-                        v] + _extra(r, cols, ws, today, base))
+                        v] + _extra(r, cols, ws, today, base,
+                                    getattr(r, "row_manual", {}).get(i, [])))
     return out
 
 
