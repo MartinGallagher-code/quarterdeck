@@ -10,6 +10,8 @@ Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
        qd campaign new|run|status|retry|ls     a system in parts, progress kept
        qd doe plan|run|status|analyze          designed experiments
        qd log [RUN]                            what the store holds
+       qd coverage [NAME...] [HOSTS]           which hosts each test has
+                                               run on; --owed DIR: the rest
        qd rm RUN... --yes                      delete runs (store clear: all)
        qd store new|ls|use|rename|rm|clear|export|import
                                                named stores: pick one, move one
@@ -69,8 +71,8 @@ design_of_experiments (pip install doehelper) its designs.
 Exit status
   0   done, and every host answered
   1   a finding: a host that did not answer, a diff or a compare that
-      differs, a change qd changes found, a check that failed (qd
-      report: any finding it records)
+      differs, a change qd changes found, a check that failed, a host
+      that owes a test (qd coverage; qd report: any finding it records)
   2   usage error, or something could not be read or written
 
 New to qd?  `qd demo`, then the ten-minute walkthrough, which needs no
@@ -1637,6 +1639,148 @@ def cmd_log(args):
                      % (len(entries) - len(shown)))
     sys.stdout.write(render.page(lines))
     return 0
+
+
+# ---------------------------------------------------------------------------
+# coverage: which hosts each named test has run on (QD-053)
+# ---------------------------------------------------------------------------
+
+COVERAGE_COLUMNS = ["host", "name", "status", "counted", "owed", "run",
+                    "when", "listed"]
+
+
+def cmd_coverage(args):
+    from . import coverage as cov
+    from . import split as splitmod
+    st = home_store(args)
+    hs = collect(args, local=False)
+    listed, seen = [], set()
+    for h in hs:
+        if h.name not in seen:
+            seen.add(h.name)
+            listed.append(h)
+    runs = cov.fleet_runs(st)
+    every = cov.names_newest_first(runs)
+    left = 0
+    if args.names:
+        names = []
+        for n in args.names:
+            if n in names:
+                continue
+            if n not in every:
+                if any(e.name == n for e in st.entries()):
+                    die("%s has runs in %s, but none on the fleet: coverage "
+                        "reads the host rows that qd run, qd probe on the "
+                        "hosts, a campaign's parts and a design's points "
+                        "file" % (n, st.shown()))
+                warn("no run named %s in the store %s (qd log lists them): "
+                     "every host is never" % (n, st.shown()))
+            names.append(n)
+    else:
+        if not every:
+            die("no runs on the fleet in the store %s yet -- qd run or qd "
+                "probe files one (or point --store at another)" % st.shown())
+        names = every if args.all else every[:cov.DEFAULT_NAMES]
+        left = len(every) - len(names)
+    since, since_shown = None, ""
+    if args.since:
+        since, since_shown = cov.parse_since(st, args.since, st.resolve)
+    grid = cov.latest(st, runs, names, since)
+
+    # counts, the owed and the hosts no list holds, name by name
+    counts, owe = {}, {}
+    for n in names:
+        c = dict((k, 0) for k in cov.COUNTED)
+        owe[n] = []
+        for h in listed:
+            cell = grid[n].get(h.name)
+            c[cov.NEVER if cell is None else cell["counted"]] += 1
+            if cov.owed(cell):
+                owe[n].append(h)
+        counts[n] = c
+    stray = {}
+    for n in names:
+        for host, cell in grid[n].items():
+            if host not in seen:
+                stray.setdefault(host, []).append((n, cell))
+    owing = sum(len(owe[n]) for n in names)
+
+    paths = {}
+    if args.owed:
+        groups = splitmod.unique([(splitmod.group_name("", n), owe[n])
+                                  for n in names])
+        written = splitmod.write_lists(
+            groups, args.owed, how="never, or not ok (qd coverage%s)" % (
+                ", since " + since_shown if since_shown else ""))
+        paths = dict(zip(names, written))
+
+    fmt = args.format or "text"
+    if fmt != "text":
+        rows = []
+        for h in listed:
+            for n in names:
+                cell = grid[n].get(h.name)
+                if cell is None:
+                    rows.append([h.name, n, cov.NEVER, cov.NEVER, "yes", "",
+                                 "", "yes"])
+                else:
+                    rows.append([h.name, n, cell["status"], cell["counted"],
+                                 "yes" if cov.owed(cell) else "no",
+                                 cell["run"], cell["when"], "yes"])
+        for host in sorted(stray):
+            for n, cell in stray[host]:
+                rows.append([host, n, cell["status"], cell["counted"], "",
+                             cell["run"], cell["when"], "no"])
+        t = tablemod.Table(list(COVERAGE_COLUMNS), rows, "coverage")
+        emit(args, t, [])
+        return 1 if owing else 0
+
+    lines = ["%s coverage -- %s against %s, in %s%s" % (
+        PROG, plural(len(listed), "host"), plural(len(names), "name"),
+        st.shown(), ", since " + since_shown if since_shown else "")]
+    w = max(len(n) for n in names)
+    for n in names:
+        c = counts[n]
+        lines.append("  %-*s  %d ok, %d failed, %d unreachable, %d never%s"
+                     % (w, n, c[cov.OK], c[cov.FAILED], c[cov.UNREACHABLE],
+                        c[cov.NEVER], "   (%d owed)" % len(owe[n])
+                        if owe[n] else "   (none owed)"))
+    if left:
+        lines.append("  (%s more, older: --all shows them, or name them)"
+                     % plural(left, "name"))
+    lines.append("")
+    rows = []
+    for h in listed:
+        row = [h.name]
+        for n in names:
+            cell = grid[n].get(h.name)
+            row.append(cov.NEVER if cell is None else
+                       "%s %s" % (cell["status"], cell["run"]))
+        rows.append(row)
+    lines.extend(render.render_rows(["host"] + names, rows, max_cell=48,
+                                    width=width_of(args), indent="  "))
+    if stray:
+        lines.append("")
+        lines.append("  not in the host list, and not counted: %s" % "; ".join(
+            "%s (%s)" % (host, ", ".join("%s %s" % (n, cell["status"])
+                                         for n, cell in stray[host]))
+            for host in sorted(stray)))
+    tips = []
+    if paths:
+        for n in names:
+            if owe[n]:
+                probe = any(e.name == n and e.meta.get("tool") == "probe"
+                            for e in runs)
+                tips.append(("%s probe %s -s %s" % (PROG, n, paths[n])
+                             if probe else "%s run -s %s --name %s -- ..."
+                             % (PROG, paths[n], n), "the %s that owe %s" % (
+                                 plural(len(owe[n]), "host"), n)))
+    elif owing:
+        tips.append(("%s coverage ... --owed DIR" % PROG,
+                     "write each name's owed hosts as a host list"))
+    lines.extend(next_steps(tips))
+    sys.stdout.write(render.page(lines))
+    return 1 if owing else 0
 
 
 # ---------------------------------------------------------------------------
@@ -4887,6 +5031,8 @@ HINTS = [
      "qd report latest --out evidence/ --check limits.tsv --zip"),
     ("Centre and spread, per rack", "qd stats latest COLUMN --by rack"),
     ("What changed since last time?", "qd diff latest"),
+    ("Has every host had its facts, iperf and burn-in?",
+     "qd coverage facts iperf burnin -s hosts.txt --owed owed/"),
     ("One host's answer, exactly", "provost source cNNNN   (qd log latest names them)"),
     ("Every run of it, ever", "qd show ds:NAME   or   provost show NAME"),
     ("Look around", "qd view   (everything: ] [ page, Enter opens)"),
@@ -5257,6 +5403,24 @@ def build_parser():
                     help="the last N runs (20)")
     sp.add_argument("--all", action="store_true", help="every run")
     sp.set_defaults(fn=cmd_log)
+
+    sp = verb("coverage", "which hosts each named test has run on, and "
+              "how it went; the hosts that still owe it")
+    sp.add_argument("names", nargs="*", metavar="NAME",
+                    help="a run's --name or a probe's (facts, iperf, "
+                    "burnin); none: every name in the store, newest first")
+    add_hosts(sp)
+    sp.add_argument("--since", metavar="DATE|RUN",
+                    help="a run that started before this (YYYY-MM-DD, UTC, "
+                    "or a run: latest~3, an id, a name) counts as never")
+    sp.add_argument("--all", action="store_true",
+                    help="with no NAME, every name, not the newest 8")
+    sp.add_argument("--owed", metavar="DIR",
+                    help="write DIR/NAME.txt for each name: the hosts that "
+                    "owe it (never, or not ok), with their attributes, a "
+                    "host list qd run -s reads")
+    add_format(sp)
+    sp.set_defaults(fn=cmd_coverage)
 
     sp = verb("show", "print a dataset as a table")
     sp.add_argument("ref", nargs="?", metavar="RUN")
