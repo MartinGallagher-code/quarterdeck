@@ -6,6 +6,7 @@ unit.
     help_unit.py QD_DIR card FILE
     help_unit.py QD_DIR hints [flag|verb]
     help_unit.py QD_DIR hints-count
+    help_unit.py QD_DIR verb-help [cut]
 
 card: FILE is what `qd --help` printed.  Prints every verb build_parser()
 registers that has no usage line on it, one a line, and exits 1; prints
@@ -28,6 +29,13 @@ as `qd` would parse it.  Prints one line per command that does not parse
 flag or verb runs the same check on a copy of the hints with a flag or a
 verb misspelt, to show it fails.  hints-count prints how many hints
 there are.
+
+verb-help: for every verb build_parser() registers, `qd help VERB` and
+`qd VERB --help`, both through cli.main(), exit 0 and print the same
+text, which starts with the verb's usage line (QD-044).  Prints one line
+per verb where they differ and exits 1; prints "ok N", N the verbs
+checked, when none does.  cut runs it with `qd help VERB` losing its last
+line, to show it fails.
 
 Standard library only, Python 3.6 on.
 """
@@ -138,6 +146,50 @@ def case_hints(mutation=None):
     return 0
 
 
+def run_main(argv):
+    """cli.main(argv): its exit status and what it printed."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            rc = cli.main(argv)
+        except SystemExit as exc:
+            rc = exc.code
+    return rc, out.getvalue()
+
+
+def case_verb_help(mutation=None):
+    if mutation == "cut":
+        real = cli.verb_help
+
+        def cut(sub, name):
+            sp = sub.choices.get(name)
+            if sp is None:
+                return real(sub, name)
+            sys.stdout.write(sp.format_help().rstrip("\n").rsplit("\n", 1)[0])
+            return 0
+        cli.verb_help = cut
+    elif mutation is not None:
+        sys.stderr.write("help_unit.py: no such mutation: %s\n" % mutation)
+        return 2
+    bad = []
+    names = verbs()
+    for v in names:
+        rc_a, a = run_main(["help", v])
+        rc_b, b = run_main([v, "--help"])
+        if rc_a != 0 or rc_b != 0:
+            bad.append("%s: qd help %s exits %s, qd %s --help %s"
+                       % (v, v, rc_a, v, rc_b))
+        elif a != b:
+            bad.append("%s: qd help %s and qd %s --help differ" % (v, v, v))
+        elif not a.startswith("usage: qd %s " % v):
+            bad.append("%s: no usage line: %r" % (v, a[:40]))
+    if bad:
+        sys.stdout.write("".join(b + "\n" for b in bad))
+        return 1
+    print("ok %d" % len(names))
+    return 0
+
+
 def main():
     case = sys.argv[2]
     if case == "card":
@@ -147,6 +199,8 @@ def main():
     if case == "hints-count":
         print(len(cli.HINTS))
         return 0
+    if case == "verb-help":
+        return case_verb_help(sys.argv[3] if len(sys.argv) > 3 else None)
     sys.stderr.write("help_unit.py: no such case: %s\n" % case)
     return 2
 
