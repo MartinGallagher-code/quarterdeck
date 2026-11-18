@@ -1,0 +1,27 @@
+# The demo's fleet: made up, every name starting demo-.  qd demo
+# reads it as it reads any hosts.txt; nothing contacts these hosts.
+
+demo-r1n01 rack=r1 sku=compute
+demo-r1n02 rack=r1 sku=compute
+demo-r1n03 rack=r1 sku=compute
+demo-r1n04 rack=r1 sku=compute
+demo-r1n05 rack=r1 sku=compute
+demo-r1n06 rack=r1 sku=compute
+demo-r1n07 rack=r1 sku=compute
+demo-r1n08 rack=r1 sku=compute
+demo-r1n09 rack=r1 sku=storage
+demo-r1n10 rack=r1 sku=storage
+demo-r1n11 rack=r1 sku=storage
+demo-r1n12 rack=r1 sku=storage
+demo-r2n01 rack=r2 sku=compute
+demo-r2n02 rack=r2 sku=compute
+demo-r2n03 rack=r2 sku=compute
+demo-r2n04 rack=r2 sku=compute
+demo-r2n05 rack=r2 sku=compute
+demo-r2n06 rack=r2 sku=compute
+demo-r2n07 rack=r2 sku=compute
+demo-r2n08 rack=r2 sku=compute
+demo-r2n09 rack=r2 sku=storage
+demo-r2n10 rack=r2 sku=storage
+demo-r2n11 rack=r2 sku=storage
+demo-r2n12 rack=r2 sku=storage

@@ -9,6 +9,11 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
 [![REUSE status](https://api.reuse.software/badge/github.com/MartinGallagher-code/quarterdeck)](https://api.reuse.software/info/github.com/MartinGallagher-code/quarterdeck)
 
+**New to qd? Start with [Getting started](docs/getting-started.md)
+(docs/getting-started.md):** ten minutes, a question a step, on a made-up
+fleet's week that `qd demo` files for you. No hosts, ssh or network
+needed.
+
 The quarterdeck is where a ship is commanded from: the binnacle's
 instruments are read there and the log is kept there. This one does that
 for a fleet of Linux boxes:
@@ -70,6 +75,10 @@ rest of the toolchain needs anyway.
 
 ## Thirty seconds
 
+No fleet to hand, or not yet? `qd demo` files a made-up one's week into a
+store of its own, and [Getting started](docs/getting-started.md) walks
+through it (see *A fleet to learn on* below). With a fleet:
+
 ```bash
 printf '%s\n' 'node[01-24] rack=r1' 'node[25-48] rack=r2' > hosts.txt
 
@@ -101,6 +110,41 @@ qd run -- uname -r: 48 hosts, 46 ok, 2 unreachable   [provost: uname: A]
     * provost source 1                   one host's answer exactly as it came back
     * qd view latest                     explore it full-screen
 ```
+
+### A fleet to learn on: `qd demo`
+
+```bash
+qd demo                    # file the store demo: a made-up fleet's week
+qd store use demo          # read it from here on (or --store demo on each command)
+qd freq demo-kernel A      # ... and on through docs/getting-started.md
+```
+
+`qd demo` files a store named `demo`: 24 made-up hosts (`demo-r1n01` to
+`demo-r2n12`, in racks `r1` and `r2`, SKUs `compute` and `storage`), asked
+three things over a week. `demo-facts` is why-slow's readings every
+morning, Monday to Friday; `demo-kernel` is `uname -r` on Friday;
+`demo-iperf` is each host's throughput to a peer. Something is planted in
+each for the read side to find: a host that did not answer, a kernel that
+disagrees, a host whose free memory slides day by day, and a slow host
+that fails one requirement of `qd demo --limits` (a CSV for `qd check
+--against`). [Getting started](docs/getting-started.md) finds them one
+question at a time, and the test suite runs every command on that page.
+
+Nothing runs. The answers ship with qd, as text (`quarterdeck/demo/`),
+and a stand-in launcher plays them back for the demo's hosts in place of
+ssh; it is no `--via` choice, and nothing but `qd demo` can reach it.
+What it plays back goes through the same code as `qd run`, and provost
+files every answer as it files a real run's, so the store is a store
+like any other: `provost store check` passes on it, and every command
+reads it. Each run is filed as having started at its time in the week
+(UTC), so its id is the same on every machine.
+
+`qd demo` leaves the store you use, and `~/.provost`, alone. Run again,
+it says the demo is there already and shows it; `qd demo --rebuild` files
+it afresh, and `qd store rm demo --delete` removes it. A store named
+`demo` that is not qd's own is never touched. Filing takes a minute or
+so, several with a provost that has no `batch` (2.1.0); a demo stopped
+part-way leaves nothing behind.
 
 ---
 
@@ -2299,6 +2343,15 @@ where they write it; muster and the probes' binnacle scripts are the real
 ones where binnacle is installed, and doe too where it is. The explorer is
 driven by a script of keys (`QD_TEST_KEYS`, as binnacle's `rig` does it)
 and the web suite talks to a real server on loopback.
+
+`tests/test_demo.sh` files the demo on a fresh home with no ssh on
+`PATH`, then runs every ```` ```console ```` block of
+[Getting started](docs/getting-started.md) in order (`tests/walkthrough.py`)
+and fails when a command prints anything but what the page shows, or exits
+with a status the page does not show. After a change meant to alter what a
+command prints, `QD_WALKTHROUGH_UPDATE=1 QD_TEST_ONLY=walkthrough bash
+tests/test_demo.sh` writes what they print back into the page, to read in
+the diff.
 
 `tests/test_ssh.sh` records every argv the fake ssh and scp are given,
 and then, where `sshd` is installed, starts a real one of its own on

@@ -13,3 +13,11 @@ path = "**"
 precedence = "closest"
 SPDX-FileCopyrightText = "2026 Martin J. Gallagher"
 SPDX-License-Identifier = "GPL-3.0-or-later"
+
+# qd demo's made-up fleet (quarterdeck/demo/): hosts, plan, answers and
+# limits, plain text with no room for a header in the answers
+[[annotations]]
+path = "quarterdeck/demo/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Martin J. Gallagher"
+SPDX-License-Identifier = "GPL-3.0-or-later"

@@ -114,6 +114,32 @@ t_a_change_of_unit_is_not_a_change() {
     assert_not_contains "$out" "-99"
 }
 
+# A key is found by its name, never as the start of another column's:
+# `n`, provost's record number, was taken for net.rx_pct, the one column
+# starting with n, and every host came out gone and new (QD-039).  The
+# same for compare, over stored runs, and check --baseline.
+t_a_key_is_a_name_not_a_prefix() {
+    printf 'host,mem_pct,net.rx_pct\na,70,0.01\nb,71,0.02\n' > old.csv
+    printf 'host,mem_pct,net.rx_pct\na,70,0.03\nb,40,0.02\n' > new.csv
+    qd_rc diff old.csv new.csv > out
+    assert_status "$QD_RC" 1
+    assert_contains "$(cat out)" "matched on host"
+    assert_contains "$(cat out)" "2 keys in both: 2 changed, 0 the same; 0 only in A (gone), 0 only in B (new)"
+    cp old.csv t.csv
+    qd import t.csv > /dev/null
+    cp new.csv t.csv
+    qd import t.csv > /dev/null
+    qd_rc compare latest -c mem_pct --last 2 > out
+    assert_status "$QD_RC" 1
+    assert_contains "$(cat out)" "mem_pct by host ("
+    assert_contains "$(cat out)" "1 of 2 keys changed"
+    printf 'req,column,op,limit\nR1,mem_pct,>=,baseline-10%%\n' > lim.csv
+    qd_rc check new.csv --against lim.csv --baseline old.csv --format csv > out
+    assert_status "$QD_RC" 1
+    assert_contains "$(cat out)" ",2/2,fail,\"1 of 2 failed: b; against"
+}
+
+run_test "a key is a name, never a prefix"           t_a_key_is_a_name_not_a_prefix
 run_test "a change of unit is not a change"         t_a_change_of_unit_is_not_a_change
 run_test "a reduced key is not rounded"             t_a_reduced_key_is_not_rounded
 run_test "host keys: changed, gone, new, CSV"           t_host_keyed_changes_gone_and_new
