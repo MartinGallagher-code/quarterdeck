@@ -62,6 +62,10 @@ pip install provost binnacle             # the store, and the instruments
 pip install ./quarterdeck                # or put qd (and quarterdeck) on PATH
 ```
 
+`qd --help` is the reference card, `qd help VERB` one verb's flags
+(`qd help run`, as `qd run --help` prints them), and this README the
+manual.
+
 qd itself is Python 3.6+, standard library only. It needs provost to keep
 anything (`--no-store` runs without it): any version files a run, and
 provost 2.28.0 or later files a small one quickly, in well under half the
