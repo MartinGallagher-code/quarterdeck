@@ -29,6 +29,102 @@ name for a column nothing names, `A`, `B`, ... as a spreadsheet's (QD-047).
   provost path the suite runs, so a change in provost's naming fails
   rather than leaving the docs wrong.
 
+## 0.46.0 — 2026-11-19
+
+A central composite or Box-Behnken follow-up from a screen's big
+factors, run on the same host and target as the screen (QD-069, steps 3
+and 4 of QD-066's fio tuning study, on one drive of one host).
+
+### Added
+- **`qd doe next SCREEN -c RESPONSE`** writes a follow-up doe config for
+  one response: the screen's big numeric factors (inside doe's 80% Pareto
+  line, at most four; topped up to two from the next numeric factor that
+  moved it; `--factors` to choose) varied over the screen's own levels,
+  every other factor held at the level the screen found better for that
+  response (or its first level where it saw no effect), the screen's own
+  fixed factors, command and responses kept. The design is doe's: `doe
+  suggest --goal response_surface` for that many factors and `--budget`
+  runs (30), its choice and reasons shown, and the point count `doe
+  generate` lays out. A categorical factor is never varied: it is held,
+  with a line saying so; a response moved only by categorical factors has
+  nothing to fit a surface over, and is refused. A suggestion that is not
+  a central composite or Box-Behnken (too small a budget) is refused, as
+  is writing over a file. Box-Behnken's fractional middle level of a
+  whole-number factor (16.5 between 1 and 32) is warned about
+  (`quarterdeck/doe.py`: `choose`, `suggest`, `follow_up`, `between`;
+  `quarterdeck/cli.py`: `doe_next`).
+- **`qd doe run CONFIG --like DESIGN`** runs on exactly the hosts DESIGN's
+  points ran on (addresses and attributes), and says so; it takes no other
+  host list. The config holds what DESIGN held: a fixed factor it leaves
+  out is taken from DESIGN, one it sets otherwise is refused. A host that
+  answered at none of the points run is named at the end, as gone, rather
+  than skipped (`like_design`, `like_hosts`).
+- **A study**: the follow-up's config names the study it belongs to
+  (`metadata.qd_study`, the screen's) and what it follows
+  (`metadata.qd_follows`), filed with the design; `qd doe status` shows
+  it. QD-070 builds its study view on this.
+- The stand-in doe in `tests/test_helper.bash` makes central composite
+  and Box-Behnken designs as doe/pyDOE3 do, and answers `suggest`;
+  `tests/test_doe_next.sh` is the new suite (in `TIMES`).
+
+### Changed
+- `qd --help`'s doe line names `next` (and `init fio` beside it).
+
+## 0.44.0 — 2026-11-19
+
+A Plackett-Burman screen of fio's parameters on one drive of one host,
+and an analysis that ranks which parameters move each of several fio
+responses at once (QD-067, the first step of QD-066's fio tuning study).
+
+### Added
+- **`qd doe init fio`** writes `fio-screen.json`, a doe config for a
+  Plackett-Burman screen of seven fio parameters at two levels each (bs
+  4k/128k, iodepth 1/32, numjobs 1/8, rwmixread 30/70, rw rw/randrw,
+  ioengine libaio/io_uring, direct 0/1: 8 points), with the reason for
+  each in its `description`; size 8G, runtime 60 s, ramp 10 s and the
+  file held fixed (doe's `fixed_factors`); the fio command in
+  `metadata.qd_command`; and eight responses, each naming the column of
+  fio's JSON (as provost parses it) it is read from: read/write IOPS,
+  bandwidth, mean and p99 completion latency. The factor set is a
+  proposal for the owner to approve before the first real run
+  (`quarterdeck/doe.py`: `FIO_SCREEN`, `init`).
+- **A config can say how long one point needs** (`metadata.qd_timeout`,
+  seconds), and `qd doe run` uses at least that as its per-host
+  `--timeout`, saying so. The fio screen asks for 180 s: one point is a
+  10 s ramp and a 60 s run, past qd's 60 s default, which would have
+  stopped every point part-way (`quarterdeck/doe.py`: `timeout_of`).
+- **`qd doe run CONFIG`** needs no command after `--` when the config
+  names one (`metadata.qd_command`), and puts doe's `fixed_factors` into
+  the command by `{name}` like the factors. A design run again with other
+  fixed factors is refused, as another command is: `--name` a new one.
+- **`qd doe analyze NAME`** analyses several responses in one go:
+  `-c COL,COL,...` (a column, or a response of the config by name), or by
+  default every response of the config that names its column. Each
+  point's responses go to doe as one `run_<id>.json`, with no key at all
+  for a response that point did not measure, so doe leaves it out of
+  that response (blank, never 0). After a table of the responses per
+  point, qd ranks doe's main effects per response (read from `doe
+  analyze --csv`): the big factors are those inside doe's own 80% Pareto
+  line, each with the level that maximises or minimises that response,
+  then the rest.
+- **The typo guard refuses fio writing a raw device** (`--filename=/dev/...`
+  with a writing `--rw`) without `--yes`, in `qd run`, `qd doe run` and
+  every verb that checks; reading a device, or writing a file, `/dev/null`
+  or `/dev/shm`, is not refused. binnacle's copy of the guard does not
+  have this rule yet (`quarterdeck/cli.py`: `DANGER`).
+- `tests/test_doe_fio.sh` (new suite, in `TIMES`), with a stand-in fio in
+  `tests/test_helper.bash` that prints fio 3.36's JSON, its numbers a
+  known function of its options; the stand-in doe now makes
+  Plackett-Burman designs, analyses every response and writes doe's
+  `--csv` main-effects tables.
+
+### Changed
+- **A point whose every run failed on every host is not measured**: `qd
+  doe run` runs it again (without `--redo`), and `qd doe run` and `qd doe
+  status` count only points where a host answered ok. Before, a point
+  that had failed was counted as measured and skipped.
+- README's "Designed experiments" has a worked fio screen;
+  docs/getting-started.md's map and `qd hints` name `qd doe init fio`.
 ## 0.43.0 — 2026-11-19
 
 Your own named probes: `qd probe add NAME -- COMMAND` gives a command a
