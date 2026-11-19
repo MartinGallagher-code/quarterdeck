@@ -283,6 +283,41 @@ jobs:
       - name: Parse app.js
         run: node --check quarterdeck/web/app.js
 
+  small-run:
+    # How long a one-host `qd run -- ls` takes, and how many processes it
+    # starts (tests/small_run.sh, QD-056), with PyPI's provost and with
+    # provost from its repository's main.  A report, never a gate: the
+    # script never fails on a time or a count, and this job may not fail
+    # the run at all (a runner's speed is not qd's).  docs/scale.md's
+    # "Small runs" has the reference figures.
+    name: small run (report only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    continue-on-error: true
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install strace, PyPI's provost and provost's main
+        run: |
+          command -v strace > /dev/null ||
+            { sudo apt-get update && sudo apt-get install -y strace; }
+          python -m pip install provost
+          git clone -q --depth 1 \
+            https://github.com/MartinGallagher-code/provost.git "$RUNNER_TEMP/provost"
+
+      - name: One host, PyPI's provost
+        run: bash tests/small_run.sh
+
+      - name: One host, provost's main
+        run: QD_PROVOST="$RUNNER_TEMP/provost/provost" bash tests/small_run.sh
+
   shellcheck:
     name: shellcheck, and every suite in one share
     runs-on: ubuntu-latest
