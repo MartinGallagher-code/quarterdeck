@@ -7,6 +7,8 @@
     qd doe run CONFIG.json -s hosts.txt -- 'iperf3 -c peer -P {streams}'
     qd doe status NAME                       which points are measured
     qd doe analyze NAME -c COLUMN[,COL...]   doe's effects, ANOVA, power
+    qd doe next NAME -c RESPONSE             a CCD/Box-Behnken follow-up
+    qd doe run FOLLOWUP.json --like NAME     where NAME ran, as it held
 
 The design is design_of_experiments' (`doe`, pip install doehelper): its
 config file (factors, levels, the design to use -- full or fractional
@@ -41,6 +43,12 @@ the filed run it is read from.  doe's `fixed_factors` -- what the design
 holds still -- are put into the command by {name} like the factors.
 `qd doe init fio` writes such a config: QD-067's Plackett-Burman screen of
 fio's parameters on one drive of one host.
+
+`qd doe next` (QD-069) takes a screen's ranked effects for one response
+and writes a follow-up config: the big numeric factors varied, the rest
+held at their better level, the design doe suggest's response-surface
+choice, the study the screen's (metadata.qd_study).  `qd doe run --like`
+runs it on the hosts the screen ran on, holding what the screen held.
 """
 
 import hashlib
@@ -501,6 +509,205 @@ def ranking_lines(allr, effects, matrix, width=80, indent="  "):
         if rest:
             put(pad, "then: " + ", ".join(rest))
     return lines
+
+
+# ---------------------------------------------------------------------------
+# The follow-up: `qd doe next SCREEN -c RESPONSE` (QD-069)
+# ---------------------------------------------------------------------------
+
+SURFACES = ("central_composite", "box_behnken")
+MAX_FACTORS = 4     # a surface over more is rarely worth its runs
+MIN_FACTORS = 2     # and one over fewer has no shape to show
+BUDGET = 30         # doe suggest's room: a CCD on 2, a Box-Behnken on 3 or 4
+
+
+def study_of(cfg, name):
+    """The study a design belongs to: its metadata.qd_study, else its own
+    name (a screen starts one)."""
+    meta = cfg.get("metadata") or {}
+    s = meta.get("qd_study") if isinstance(meta, dict) else None
+    return s if isinstance(s, str) and s.strip() else name
+
+
+def numeric(factor):
+    """Whether a factor can be a surface's axis: not categorical, and two
+    levels that are numbers."""
+    if not isinstance(factor, dict) or factor.get("type") == "categorical":
+        return False
+    lv = factor.get("levels") or []
+    if len(lv) != 2:
+        return False
+    try:
+        float(lv[0])
+        float(lv[1])
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def suggest(n, budget):
+    """doe suggest --goal response_surface for n numeric factors:
+    (operation, doe's estimate of its runs, doe's reasons, doe's text)."""
+    rc, text = run_doe(["suggest", "--factors", str(n), "--budget",
+                        str(budget), "--goal", "response_surface"])
+    m = re.search(r"operation\s*:\s*(\S+)", text)
+    if rc != 0 or not m:
+        die("doe suggest gave no design (exit %d):\n%s"
+            % (rc, text.strip()[-1500:]))
+    est = re.search(r"estimated runs\s*:\s*(\d+)", text)
+    why = [ln.strip()[2:] for ln in text.splitlines()
+           if ln.strip().startswith("- ")]
+    return m.group(1), int(est.group(1)) if est else None, why, text
+
+
+def choose(cfg, effects, best, picked=None):
+    """Which of the screen's factors the follow-up varies.  Returns
+    (varied [factor dicts], held [(name, level, why)], said [lines]).
+
+    By default the big factors (inside doe's Pareto line) that are numeric,
+    at most MAX_FACTORS, topped up to MIN_FACTORS from the next numeric
+    factors that moved the response at all; with `picked`, those.  A
+    categorical factor is never varied: it is held at its better level,
+    and said.  Every factor not varied is held: at its better level for
+    this response, or, where the screen saw no effect, at its first."""
+    facs = [f for f in cfg.get("factors") or [] if isinstance(f, dict)]
+    by = dict((f.get("name"), f) for f in facs)
+    pct = dict((f, p) for f, _, p in effects)
+    order = [f for f, _, _ in effects if f in by] + \
+        [f.get("name") for f in facs if f.get("name") not in pct]
+    said = []
+    if picked:
+        bad = [p for p in picked if p not in by]
+        if bad:
+            die("--factors: %s %s not a factor of the screen (its factors: "
+                "%s)" % (", ".join(bad), "is" if len(bad) == 1 else "are",
+                         ", ".join(f.get("name") for f in facs)))
+        want = list(picked)
+    else:
+        big = big_factors(effects)
+        want = [f for f in big if numeric(by[f])][:MAX_FACTORS]
+        dropped = [f for f in big if numeric(by[f])][MAX_FACTORS:]
+        if dropped:
+            said.append("%s also inside the Pareto line: a surface over "
+                        "more than %d factors is rarely worth its runs "
+                        "(--factors to choose)" % (", ".join(dropped),
+                                                   MAX_FACTORS))
+        if len(want) < MIN_FACTORS:
+            more = [f for f in order if f not in want and numeric(by[f])
+                    and pct.get(f)][:MIN_FACTORS - len(want)]
+            if more:
+                said.append("%s added: the next largest numeric effect%s, "
+                            "so the surface has two dimensions" % (
+                                ", ".join(more),
+                                "" if len(more) == 1 else "s"))
+            want += more
+    varied, held = [], []
+    for name in order:
+        f = by[name]
+        if name in want and numeric(f):
+            varied.append(f)
+            continue
+        level = best.get(name)
+        if name in want or (not picked and name in big_factors(effects)):
+            kind = "categorical" if f.get("type") == "categorical" else \
+                "not numeric"
+            said.append("%s is %s: a central composite or Box-Behnken "
+                        "varies a number between two levels, so it is "
+                        "held at %s%s" % (
+                            name, kind, level or (f.get("levels") or [""])[0],
+                            ", its better level" if level else
+                            ", its first level"))
+        if level is not None:
+            held.append((name, level, "better"))
+        else:
+            held.append((name, str((f.get("levels") or [""])[0]), "first"))
+    return varied, held, said
+
+
+def follow_up(screen, row, cfg, rname, column, optimize, varied, held,
+              operation):
+    """The follow-up's doe config: the varied factors at the screen's
+    levels, the rest and the screen's own fixed factors held, the
+    screen's command and responses, and the study it belongs to."""
+    meta = dict((k, v) for k, v in (cfg.get("metadata") or {}).items()
+                if k not in ("name", "description", "qd_note", "qd_like"))
+    name = filing.dataset_name("%s-%s-%s" % (
+        screen, rname.replace("_", "-"),
+        "ccd" if operation == "central_composite" else
+        "bbd" if operation == "box_behnken" else operation))
+    fixed = dict(fixed_of(cfg))
+    for n, v, _ in held:
+        fixed[n] = v
+    meta.update({
+        "name": name,
+        "description": "%s on %s of %s's factors, for %s (QD-069): %s "
+                       "held." % (operation.replace("_", " "),
+                                  " and ".join(f["name"] for f in varied),
+                                  screen, rname,
+                                  ", ".join("%s=%s" % (n, v)
+                                            for n, v, _ in held) or
+                                  "nothing else"),
+        "qd_command": row.get("command") or command_of(cfg),
+        "qd_study": study_of(cfg, screen),
+        "qd_follows": {"design": screen, "response": rname,
+                       "column": column, "optimize": optimize},
+    })
+    factors = []
+    for f in varied:
+        f = json.loads(json.dumps(f))
+        f["type"] = "continuous"
+        factors.append(f)
+    out = {"metadata": meta, "factors": factors, "fixed_factors": fixed,
+           "responses": json.loads(json.dumps(cfg.get("responses") or [])),
+           "settings": {"operation": operation, "block_count": 1}}
+    return name, out
+
+
+def between(matrix, varied):
+    """[(factor, level)]: a level the design lays out between a factor's
+    two whole-number levels that is not a whole number itself (Box-Behnken
+    puts 1..32's middle at 16.5), which a tool counting jobs or I/Os
+    cannot take."""
+    out = []
+    for f in varied:
+        try:
+            whole = all(float(x).is_integer() for x in f["levels"])
+        except (TypeError, ValueError):
+            continue
+        if not whole:
+            continue
+        seen = set()
+        for _, _, levels in points(matrix):
+            for n, v in levels:
+                if n != f["name"] or v in seen:
+                    continue
+                seen.add(v)
+                try:
+                    if not float(v).is_integer():
+                        out.append((n, v))
+                except ValueError:
+                    pass
+    return out
+
+
+def screen_hosts(st, name):
+    """The hosts a design's points ran on, in the order they first ran:
+    [(host row of its latest point run there, via)].  A host is there
+    whether it answered or not."""
+    runs = point_runs(st, name)
+    seen, out = {}, []
+    for rid in sorted(runs):
+        for e in runs[rid]:
+            for h in e.store.host_rows(e.id):
+                n = h.get("host", "")
+                if not n:
+                    continue
+                if n not in seen:
+                    out.append(n)
+                seen[n] = (h, e.meta.get("via") or "ssh")
+    return [seen[n] for n in out]
+
+
 def clean(text):
     """doe's report, less the warning about the stand-in test script qd
     gives it (qd ran the tests; doe only reads their results)."""

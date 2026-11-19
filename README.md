@@ -2248,6 +2248,8 @@ qd doe status iperf                         # which points are measured
 qd doe analyze iperf -c mbps                # doe's main effects, interactions, ANOVA, power
 qd doe analyze iperf -c mbps --optimize     # and its recommended settings
 qd doe init fio                             # a starting config: a screen of fio's settings
+qd doe next fio-screen -c read_iops         # a CCD/Box-Behnken follow-up on its big factors
+qd doe run fio-screen-read-iops-ccd.json --like fio-screen   # where the screen ran
 ```
 
 The design is
@@ -2289,7 +2291,7 @@ run` runs it again; `--redo` runs every point again.
 
 Which of fio's settings matter for one drive (QD-067, the first step of
 a tuning study: a central composite or Box-Behnken follow-up on the few
-that matter comes after):
+that matter comes after, with `qd doe next`, below):
 
 ```bash
 qd doe init fio                              # writes fio-screen.json
@@ -2385,6 +2387,76 @@ Read it knowing what a screen is:
 - A config made by `qd doe init` is yours: edit levels, drop a factor,
   add one (doe sizes the Plackett-Burman design to the factor count; 8
   to 11 factors make 12 points), then `qd doe plan` it again.
+
+### The follow-up: `qd doe next` and `qd doe run --like`
+
+Once the screen has ranked the factors, a central composite or
+Box-Behnken design on the few that matter finds the shape of the
+response between their levels (QD-069, steps 3 and 4 of a tuning study):
+
+```bash
+qd doe next fio-screen -c read_iops          # writes fio-screen-read-iops-ccd.json
+qd doe plan fio-screen-read-iops-ccd.json    # the 16 points doe lays out
+qd doe run fio-screen-read-iops-ccd.json --like fio-screen
+qd doe status fio-screen-read-iops-ccd       # its study: fio-screen
+```
+
+`qd doe next SCREEN -c RESPONSE` is for one response, chosen from what
+`qd doe analyze` showed. It analyses the screen for it (doe's main
+effects, as `analyze` ranks them) and writes the follow-up's config:
+
+- **Which factors are varied.** The big ones, inside doe's 80% Pareto
+  line, that are numbers, at most four. A surface over one factor has no
+  shape to show, so when only one big factor is numeric, the next numeric
+  factor that moved the response at all is added, and said.
+  `--factors A,B,C` chooses them instead.
+- **Categorical factors are never varied** (`rw`, `ioengine`, `direct`
+  in the fio screen): a central composite or Box-Behnken varies a number
+  between two levels. A big categorical factor, or one named in
+  `--factors`, is held at its better level, with a line saying so. When
+  nothing numeric moved the response (the fio screen's read p99, moved
+  by `rw` and `ioengine` alone), there is nothing to fit a surface over,
+  and qd says that and writes nothing.
+- **Everything not varied is held** (doe's `fixed_factors`): at the
+  level the screen found better for this response (maximised or
+  minimised, as the config says), or, where the screen saw it move
+  nothing, at its first level, and the table says which. What the screen
+  held (the file, size, run time) is held as it was.
+- **The design is doe's choice**: `doe suggest --goal response_surface`
+  for that many numeric factors and `--budget` runs (30 by default, room
+  for a central composite on two factors and a Box-Behnken on three or
+  four). What doe suggests, and why, is shown; the point count is the one
+  `doe generate` lays out (a central composite on two factors is 16
+  points, eight of them centre points; a Box-Behnken on three is 15). If
+  doe suggests something else for a small budget, qd says so and writes
+  nothing.
+- **The levels are the screen's own range**, not re-centred on the
+  screen's best corner: the follow-up measures the region the screen
+  measured, with middle levels. Moving the region is a judgement, so it
+  is yours: edit the levels in the config, and `qd doe plan` it again.
+  Box-Behnken puts a middle level at the mean of the two (1 and 32 make
+  16.5), which a count such as `iodepth` or `numjobs` cannot take; qd
+  warns, and making the two levels sum to an even number (2 and 32)
+  fixes it. (doe's central composite rounds whole-number factors; its
+  Box-Behnken does not.)
+- The config keeps the screen's command and responses, and names the
+  study it belongs to (`metadata.qd_study`, the screen's own name or its
+  study) and what it follows (`metadata.qd_follows`). `-o FILE` names
+  the file; one that is there already is not written over.
+
+`qd doe run CONFIG --like SCREEN` runs the follow-up on exactly the hosts
+the screen's points ran on, with their addresses and attributes, and
+says so. It takes no `-s`, `-S`, `--layout` or `--rerun`: `--like` is
+the host list. It holds what the screen held: a fixed factor the config
+leaves out is taken from the screen, and one the config sets otherwise
+(another `filename`, another drive) is refused. With no command after
+`--` and none in the config, the screen's is used; another command is
+run but warned about. A host the screen ran on that answers at none of
+the follow-up's points is named at the end (`b answered at none of the
+16 points run here (b unreachable) -- fio-screen ran there; has it
+gone?`), and the run exits 1: its points there are not measured, never
+skipped in silence. `qd doe status` shows the study a follow-up belongs
+to.
 
 ---
 
