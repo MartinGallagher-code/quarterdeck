@@ -25,7 +25,7 @@ Judge and report
 Larger jobs
   qd split [HOSTS] --by rack|--into N  one host list into several
   qd campaign new|run|status|retry|ls  a system in parts, progress kept
-  qd doe plan|run|status|analyze|next  designed experiments; init fio
+  qd doe init|plan|run|status|analyze|next|surface  experiments
   qd join RUN TELEMETRY                beside Splunk/Prometheus samples
 Stores and output
   qd store new|ls|use|rename|rm|clear|export|import    named stores
@@ -5317,8 +5317,15 @@ def cmd_doe(args):
     if what == "analyze":
         cols = [c.strip() for c in (args.column or "").split(",")
                 if c.strip()]
+        report = None
+        if args.report is not None:
+            _, rcfg, _ = doemod.load(st, args.target)
+            key = doemod.report_key(rcfg, cols)
+            if key:
+                report = doemod.report_dir(st, args.target, key,
+                                           args.report or None)
         text, allr, effects, matrix = doemod.analyze(
-            st, args.target, cols, args.agg, args.optimize)
+            st, args.target, cols, args.agg, args.optimize, report=report)
         if len(allr) == 1:
             rname, col, _, resp = allr[0]
             lv = dict((rid, " ".join("%s=%s" % kv for kv in levels))
@@ -5362,12 +5369,18 @@ def cmd_doe(args):
         lines.append("")
         lines.append("  doe analyze:")
         lines.extend("  " + ln for ln in text.splitlines())
+        if report is not None:
+            lines.extend(doe_report_lines(
+                doemod, report, args,
+                allr[0][1] if len(allr) == 1 else None))
         sys.stdout.write(render.page(lines))
         return 0
     if what == "next":
         return doe_next(args, st, doemod)
-    die("unknown doe action %r (init, plan, run, status, analyze, next)"
-        % what)
+    if what == "surface":
+        return doe_surface(args, st, doemod)
+    die("unknown doe action %r (init, plan, run, status, analyze, next, "
+        "surface)" % what)
 
 
 def doe_next(args, st, doemod):
@@ -5464,6 +5477,128 @@ def doe_next(args, st, doemod):
          "measure them on the host and target %s ran on" % screen)]))
     sys.stdout.write(render.page(lines))
     return 0
+
+
+def doe_surface(args, st, doemod):
+    """qd doe surface NAME -c RESPONSE (QD-071): doe's response surface for
+    a central composite or Box-Behnken design -- its quadratic model and
+    fit, the stationary point and its kind, the best point inside the
+    design region -- and whether that optimum is inside the region (confirm
+    it) or on its edge (another round)."""
+    import textwrap
+    _, cfg, _ = doemod.load(st, args.target)
+    cols = [c.strip() for c in (args.column or "").split(",") if c.strip()]
+    if len(cols) > 1:
+        die("a surface is of one response: -c COLUMN")
+    rname, col, _ = doemod.surface_spec(cfg, cols[0] if cols else None)
+    report = None
+    if args.report is not None:
+        report = doemod.report_dir(st, args.target, col, args.report or None)
+    s = doemod.surface(st, args.target, col, args.agg, report=report,
+                       grid=args.json)
+    if args.json:
+        import json
+        sys.stdout.write(json.dumps(s, indent=1, sort_keys=True) + "\n")
+        return 0
+    wrap = max(40, min(width_of(args) or 80, 100) - 2)
+    lines = ["%s doe surface -- %s: %s (%s, %s), %d of %d points measured" % (
+        PROG, s["design"], rname, col,
+        "maximise" if s["optimize"] != "minimize" else "minimise",
+        s["measured"], s["total"])]
+
+    def para(head, text, first=None):
+        lines.extend(textwrap.wrap(
+            text, wrap, initial_indent=first or "  %-10s " % head,
+            subsequent_indent=" " * 13, break_on_hyphens=False))
+
+    def num(v):
+        return stats.fmt_num(v) if v is not None else "?"
+
+    fit, m = s["fit"], s["model"]
+    if m["terms"]:
+        eq = []
+        for t, b in m["terms"]:
+            term = "" if t == "intercept" else " " + t
+            eq.append(("%s %s%s" % ("-" if b < 0 else "+", num(abs(b)), term))
+                      if eq else "%s%s" % (num(b), term))
+        para("model", "doe's %s fit, each factor coded -1 to +1 over its "
+             "levels: %s = %s" % (m["kind"], rname, " ".join(eq)))
+    figs = []
+    if fit["r_squared"] is not None:
+        figs.append("R2 %.4f" % fit["r_squared"])
+    if fit["adj_r_squared"] is not None:
+        figs.append("adjusted %.4f" % fit["adj_r_squared"])
+    if fit["predicted_r_squared"] is not None:
+        figs.append("predicted %.4f" % fit["predicted_r_squared"])
+    lof = fit["lack_of_fit"]
+    if lof and lof["p"] is not None:
+        figs.append("lack of fit p=%.4f (%s)" % (
+            lof["p"], "the model misses structure" if lof["p"] < 0.05 else
+            "none detected"))
+    else:
+        figs.append("lack of fit: doe gave none (no repeated points)")
+    if fit["model"]:
+        para("fit", "%s: %s" % (fit["model"], "; ".join(figs)))
+    sp = s["stationary"]
+    if sp:
+        para("stationary", "a %s, %s design region: %s = %s%s" % (
+            sp["kind"].replace("_", " "),
+            "inside the" if sp["inside"] else "outside the",
+            rname, num(sp["predicted"]),
+            (", give or take %s (doe's cross-validated error; it gives no "
+             "prediction interval)" % num(fit["rmse_cv"]))
+            if fit["rmse_cv"] is not None else ""))
+        rows = [[f, sp["settings"].get(f, ""),
+                 "%+.3f" % sp["coded"][f] if sp["coded"].get(f) is not None
+                 else ""] for f in s["factors"]]
+        best = s["optimum"]
+        if best:
+            for r in rows:
+                r.append(best["settings"].get(r[0], ""))
+                c = best["coded"].get(r[0])
+                r.append("%+.3f" % c if c is not None else "")
+        lines.extend(render.render_rows(
+            ["factor", "stationary", "coded"] +
+            (["best inside", "coded"] if best else []), rows,
+            numeric=[1, 2, 3, 4], width=width_of(args), indent="    "))
+    best = s["optimum"]
+    if best and best["predicted"] is not None:
+        para("best", "inside the design region (doe optimize): %s = %s at "
+             "%s" % (rname, num(best["predicted"]), " ".join(
+                 "%s=%s" % kv for kv in sorted(
+                     best["settings"].items(),
+                     key=lambda kv: s["factors"].index(kv[0])
+                     if kv[0] in s["factors"] else 0))))
+    para("so", s["verdict"]["text"])
+    if report is not None:
+        lines.extend(doe_report_lines(doemod, report, args, col))
+    tips = []
+    if report is None:
+        tips.append(("%s doe surface %s -c %s --report" % (
+            PROG, args.target, shlex.quote(rname)),
+            "doe's surface plots, and its report, kept for qd web"))
+    tips.append(("%s web" % PROG, "the contours, on the design's page"))
+    lines.extend(next_steps(tips))
+    sys.stdout.write(render.page(lines))
+    return 0
+
+
+def doe_report_lines(doemod, report, args, column=None):
+    """Where doe's report and plots were kept, and how to see them."""
+    html, plots = doemod.report_files(report)
+    lines = [""]
+    if html:
+        lines.append("  doe's report: %s" % os.path.join(report, html))
+    else:
+        lines.append("  doe made no HTML report (its plots and results are "
+                     "in %s)" % report)
+    lines.append("  %s in %s%s" % (
+        plural(len(plots), "plot"), report,
+        (": " + ", ".join(plots)) if plots else ""))
+    if not args.report and column:
+        lines.append("  %s web links it from the design's page (column %s)"
+                     % (PROG, column))
+    return lines
 
 
 def doe_run(args, st, doemod):
@@ -5998,6 +6133,8 @@ HINTS = [
     ("Larger jobs", "Which of fio's settings matter on this drive?",
      "qd doe init fio; qd doe run fio-screen.json -s hosts.txt; "
      "qd doe analyze fio-screen"),
+    ("Larger jobs", "Where is the best setting, and is it inside the region?",
+     "qd doe surface FOLLOWUP -c read_iops --report; qd web"),
     ("Larger jobs", "Half the fleet against the other half",
      "qd split -s hosts.txt --ab --out ab/"),
     ("Larger jobs", "What were temperature and power doing meanwhile?",
@@ -6986,10 +7123,10 @@ def build_parser():
               "analyses")
     sp.add_argument("action",
                     choices=["init", "plan", "run", "status", "analyze",
-                             "next"])
+                             "next", "surface"])
     sp.add_argument("target", metavar="CONFIG|NAME",
                     help="init: a starting config (fio); plan/run: a doe "
-                    "config; status/analyze/next: the design's name")
+                    "config; status/analyze/next/surface: the design's name")
     add_fleet(sp, preview=0)
     sp.add_argument("--name", help="the design's name (default the "
                     "config's)")
@@ -7000,7 +7137,7 @@ def build_parser():
                     help="measure points that are measured already")
     sp.add_argument("-c", "--column", metavar="COL[,COL]",
                     help="analyze: the response columns (default: the "
-                    "config's responses that name one)")
+                    "config's responses that name one); surface: one")
     sp.add_argument("--agg", default="median",
                     help="analyze: one number per point from its hosts "
                     "(median)")
@@ -7016,6 +7153,12 @@ def build_parser():
     sp.add_argument("--like", metavar="DESIGN",
                     help="run: on the hosts DESIGN ran on, holding what it "
                     "held")
+    sp.add_argument("--json", action="store_true",
+                    help="surface: doe's figures, and qd web's contours, "
+                    "as JSON")
+    sp.add_argument("--report", nargs="?", const="", metavar="DIR",
+                    help="analyze/surface: keep doe's HTML report and "
+                    "plots, in DIR or qd's cache (which qd web links)")
     sp.set_defaults(fn=cmd_doe, command=[])
 
     sp = verb("export", "write a dataset out: csv, tsv, json, ndjson, md, "

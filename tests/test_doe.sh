@@ -209,6 +209,59 @@ EOF
     done
 }
 
+# --report keeps doe's HTML report and plots, and says where (QD-068)
+t_report_keeps_does_report() {
+    stand_in_doe
+    seed
+    config
+    qdf doe run bench.json -s hosts.txt -q -- "$BENCH" > /dev/null
+    # without --report, doe is told to make neither
+    out="$(qd doe analyze stream-test -c mbps)"
+    assert_not_contains "$out" "HTML report"
+    # to qd's cache: the store, the design, the column
+    out="$(qd doe analyze stream-test -c mbps --report)"
+    dir="$(printf '%s\n' "$out" | sed -n "s/^  doe's report: \(.*\)\/report.html$/\1/p")"
+    [ -n "$dir" ] || fail "no report named in: $out"
+    case "$dir" in "$XDG_CACHE_HOME"/quarterdeck/doe/*/stream-test/mbps) ;;
+        *) fail "the report is not in qd's cache: $dir" ;; esac
+    assert_contains "$(cat "$dir/report.html")" "DOE report: mbps"
+    [ -f "$dir/main_effects_mbps.png" ] || fail "no plot kept"
+    [ -f "$dir/results/run_1.json" ] || fail "no results kept"
+    [ -f "$dir/config.json" ] || fail "no config kept"
+    assert_contains "$out" "1 plot in $dir: main_effects_mbps.png"
+    assert_contains "$out" "qd web links it from the design's page"
+    # made again: what doe left last time goes, nothing else is kept
+    touch "$dir/stale.png"
+    qd doe analyze stream-test -c mbps --report > /dev/null
+    [ ! -e "$dir/stale.png" ] || fail "an old plot was left beside the new report"
+    # a directory named: there; one holding someone else's files: refused
+    out="$(qd doe analyze stream-test -c mbps --report "$PWD/rep")"
+    assert_contains "$out" "doe's report: $PWD/rep/report.html"
+    [ -f rep/report.html ] || fail "no report in the directory named"
+    mkdir mine && touch mine/notes.txt
+    qd_rc doe analyze stream-test -c mbps --report mine 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "holds files qd did not put there"
+    [ -f mine/notes.txt ] || fail "a directory qd did not make was emptied"
+}
+
+t_report_with_the_real_doe() {
+    if ! command -v doe > /dev/null 2>&1; then
+        echo "  (doe is not installed here: pip install doehelper)"
+        return 0
+    fi
+    unset QD_DOE
+    seed
+    config
+    qdf doe run bench.json -s hosts.txt -q -- "$BENCH" > /dev/null
+    qd doe analyze stream-test -c mbps --report "$PWD/rep" > out
+    assert_contains "$(cat out)" "doe's report: $PWD/rep/report.html"
+    [ -s rep/report.html ] || fail "the real doe left no report"
+    ls rep/*.png > /dev/null 2>&1 || fail "the real doe left no plots"
+}
+
+run_test "--report: doe's report and plots kept"     t_report_keeps_does_report
+run_test "--report with the real doe, where installed" t_report_with_the_real_doe
 run_test "a host attribute named as a factor"       t_a_host_attribute_named_as_a_factor
 run_test "a level with a space"                      t_a_level_with_a_space
 run_test "more groups than blocks: said"            t_unblocked_groups_are_said

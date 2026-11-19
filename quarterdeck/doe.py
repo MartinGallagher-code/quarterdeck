@@ -7,6 +7,7 @@
     qd doe run CONFIG.json -s hosts.txt -- 'iperf3 -c peer -P {streams}'
     qd doe status NAME                       which points are measured
     qd doe analyze NAME -c COLUMN[,COL...]   doe's effects, ANOVA, power
+    qd doe analyze NAME -c COLUMN --report   and doe's plots and HTML report
     qd doe next NAME -c RESPONSE             a CCD/Box-Behnken follow-up
     qd doe run FOLLOWUP.json --like NAME     where NAME ran, as it held
 
@@ -48,6 +49,11 @@ and writes a follow-up config: the big numeric factors varied, the rest
 held at their better level, the design doe suggest's response-surface
 choice, the study the screen's (metadata.qd_study).  `qd doe run --like`
 runs it on the hosts the screen ran on, holding what the screen held.
+
+With --report doe's plots and HTML report are kept (in qd's cache unless a
+directory is named), where qd web links them.  qd web's charts of a design
+-- main effects, interactions, a Pareto of effect sizes -- are effects()'s
+plain means of the points measured; the statistics stay doe's.
 """
 
 import hashlib
@@ -394,11 +400,31 @@ def read_effects(path):
     return out
 
 
-def analyze(st, name, columns=None, agg="median", optimize=False, extra=()):
+def read_tables(csv_dir, rname):
+    """doe's other --csv tables for one response, as rows of text:
+    {"model_adequacy": [[metric, value]], "stationary_point": ...,
+    "cross_validation": ...}; a table doe did not write is not there."""
+    import csv
+    safe = rname.replace("/", "_").replace(" ", "_")
+    out = {}
+    for t in ("model_adequacy", "stationary_point", "cross_validation"):
+        path = os.path.join(csv_dir, "%s_%s.csv" % (t, safe))
+        if os.path.isfile(path):
+            with open(path) as f:
+                out[t] = [r for r in csv.reader(f)][1:]
+    return out
+
+
+def analyze(st, name, columns=None, agg="median", optimize=False, extra=(),
+            report=None, detail=None):
     """Write the responses as doe reads them and run doe analyze (and
     optimize) on all of them at once.  Returns (doe's text, the responses
     [(name, column, optimize, [(run_id, value or None, n)])], doe's ranked
-    effects {name: [(factor, effect, pct)]}, the design's matrix)."""
+    effects {name: [(factor, effect, pct)]}, the design's matrix).  With
+    report (a directory, from report_dir), doe's plots and HTML report are
+    kept there, with the results and config that made them.  With detail
+    (a dict), doe's own texts and the rest of its --csv tables are put in
+    it: "analyze", "optimize" and "csv" {response: {table: rows}}."""
     row, cfg, matrix = load(st, name)
     sp = specs(cfg, columns)
     if not sp:
@@ -414,7 +440,7 @@ def analyze(st, name, columns=None, agg="median", optimize=False, extra=()):
                 name))
     work = tempfile.mkdtemp(prefix="qd-doe-")
     try:
-        out_dir = os.path.join(work, "results")
+        out_dir = os.path.join(report or work, "results")
         csv_dir = os.path.join(work, "effects")
         os.makedirs(out_dir)
         write_text(os.path.join(out_dir, "design_matrix.json"),
@@ -436,11 +462,13 @@ def analyze(st, name, columns=None, agg="median", optimize=False, extra=()):
         settings = cfg.setdefault("settings", {})
         settings["out_directory"] = out_dir
         settings.setdefault("test_script", "true")
-        conf = os.path.join(work, "config.json")
+        if report:
+            settings["processed_directory"] = report
+        conf = os.path.join(report or work, "config.json")
         write_text(conf, json.dumps(cfg, indent=2))
-        args = ["analyze", "--config", conf, "--results-dir", out_dir,
-                "--no-plots", "--no-report", "--partial",
-                "--csv", csv_dir] + list(extra)
+        args = ["analyze", "--config", conf, "--results-dir", out_dir] + \
+            ([] if report else ["--no-plots", "--no-report"]) + \
+            ["--partial", "--csv", csv_dir] + list(extra)
         rc, text = run_doe(args, cwd=work)
         if rc != 0:
             die("doe analyze failed (exit %d):\n%s" % (rc, text[-2000:]))
@@ -449,10 +477,16 @@ def analyze(st, name, columns=None, agg="median", optimize=False, extra=()):
             safe = rname.replace("/", "_").replace(" ", "_")
             effects[rname] = read_effects(
                 os.path.join(csv_dir, "main_effects_%s.csv" % safe))
+        if detail is not None:
+            detail["analyze"] = text
+            detail["csv"] = dict((r[0], read_tables(csv_dir, r[0]))
+                                 for r in usable)
         if optimize:
             rc, more = run_doe(["optimize", "--config", conf, "--results-dir",
                                 out_dir, "--partial"], cwd=work)
             text += "\n" + more
+            if detail is not None:
+                detail["optimize"] = more
         return clean(text), allr, effects, matrix
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -822,3 +856,593 @@ def init(kind, path=None):
         die("%s is there already: move it, or edit it" % path)
     write_text(path, json.dumps(cfg, indent=2) + "\n")
     return path, cfg
+
+
+# ---------------------------------------------------------------------------
+# doe's report kept, and the figures qd web draws (QD-068)
+# ---------------------------------------------------------------------------
+
+REPORT_MARK = ".qd-doe-report"
+
+
+def report_root():
+    """Where qd keeps doe's reports when no directory is named: its cache
+    (never the store, which provost commits whole), what qd web serves at
+    /doe/."""
+    return os.path.join(storemod.cache_root(), "doe")
+
+
+def safe_part(text):
+    return re.sub(r"[^A-Za-z0-9_.@-]+", "_", text).strip("._") or "_"
+
+
+def store_key(st):
+    return hashlib.sha1(st.root.encode("utf-8")).hexdigest()[:12]
+
+
+def report_rel(st, name, column):
+    """The report's place under report_root(): the store, the design, the
+    column -- so two stores' designs of one name never share one."""
+    return "/".join([store_key(st), safe_part(name), safe_part(column)])
+
+
+def report_path(st, name, column):
+    """The cache's place for a design's report on one column."""
+    return os.path.join(report_root(),
+                        *report_rel(st, name, column).split("/"))
+
+
+def report_key(cfg, columns=None):
+    """What a report is kept under: the one response's column, or the
+    columns joined when one analysis covers several (qd web links the
+    one-column reports from a design's page); None when -c names none."""
+    sp = specs(cfg, columns)
+    if not sp:
+        return None
+    return ",".join(c for _, c, _ in sp)
+
+
+def report_dir(st, name, column, where=None):
+    """The directory doe's report goes in, made ready: the one asked for,
+    else the cache's.  A directory qd made before is emptied first (so no
+    plot from an earlier analysis is left beside a new report); one that
+    holds anything else is refused, never emptied."""
+    path = os.path.abspath(os.path.expanduser(where)) if where else \
+        report_path(st, name, column)
+    if os.path.exists(path) and not os.path.isdir(path):
+        die("--report %s is a file, not a directory" % path)
+    if os.path.isdir(path) and os.listdir(path):
+        if not os.path.isfile(os.path.join(path, REPORT_MARK)):
+            die("--report %s holds files qd did not put there: name a new "
+                "or empty directory" % path)
+        for f in os.listdir(path):
+            p = os.path.join(path, f)
+            if os.path.isdir(p) and not os.path.islink(p):
+                shutil.rmtree(p)
+            else:
+                os.remove(p)
+    try:
+        if not os.path.isdir(path):
+            os.makedirs(path)
+        write_text(os.path.join(path, REPORT_MARK),
+                   "doe's report for design %s, column %s, made by qd doe "
+                   "analyze --report; qd empties this directory when it "
+                   "makes the report again\n" % (name, column))
+    except (IOError, OSError) as exc:
+        die("cannot make the report directory %s: %s"
+            % (path, getattr(exc, "strerror", None) or exc))
+    return path
+
+
+def report_files(path):
+    """What doe left in a report directory: (the HTML report or None, its
+    plots), names relative to path."""
+    if not os.path.isdir(path):
+        return None, []
+    names_ = sorted(os.listdir(path))
+    html = "report.html" if "report.html" in names_ else None
+    return html, [f for f in names_ if f.lower().endswith(".png")]
+
+
+def response_columns(st, name):
+    """The numeric columns of the design's runs, less its factors, the
+    hosts' attributes and qd's bookkeeping (compare's rule): what a
+    response can be, in the order first seen."""
+    from .compare import VOLATILE
+    from .stats import BOOKKEEPING
+    _, _, matrix = load(st, name)
+    factors = set(matrix.get("factor_names") or [])
+    out = []
+    for _, es in sorted(point_runs(st, name).items()):
+        for e in es:
+            t = e.load("data")
+            skip = factors | set(BOOKKEEPING) | set(VOLATILE) | \
+                set(("status", "error"))
+            if hasattr(e, "setting_columns"):
+                skip |= e.setting_columns()
+            for c in t.columns:
+                if c in out or c in skip:
+                    continue
+                if t.kind(c) == "num":
+                    out.append(c)
+    return out
+
+
+def level_order(levels, declared):
+    """A factor's levels in the order a chart's axis wants them: by value
+    when every one is a number, else as the config lists them."""
+    try:
+        return sorted(levels, key=float)
+    except ValueError:
+        pass
+    known = [str(v) for v in declared or []]
+    return sorted(levels, key=lambda v: (known.index(v) if v in known
+                                         else len(known), levels.index(v)))
+
+
+def _mean(xs):
+    return sum(xs) / float(len(xs)) if xs else None
+
+
+def effects(st, name, column, agg="median"):
+    """The figures qd web charts for one response: each point's value (as
+    `qd doe analyze` reduces it), each factor's level means (main effects),
+    each pair's cell means (interactions) and a Pareto of effect sizes.
+    Plain means of the points measured -- a point with no value is left
+    out of every mean, never counted as zero; significance, ANOVA and the
+    rest are doe's (qd doe analyze, and its report)."""
+    _, cfg, matrix = load(st, name)
+    pts = points(matrix)
+    factors = matrix.get("factor_names") or []
+    declared = dict((f.get("name"), f.get("levels"))
+                    for f in cfg.get("factors") or [] if isinstance(f, dict))
+    resp = dict((rid, (v, n)) for rid, v, n in
+                responses(st, name, column, agg))
+    levels = {}
+    for f in factors:
+        seen = []
+        for _, _, lv in pts:
+            v = dict(lv)[f]
+            if v not in seen:
+                seen.append(v)
+        levels[f] = level_order(seen, declared.get(f))
+    point_rows = []
+    for rid, blk, lv in pts:
+        v, n = resp.get(rid, (None, 0))
+        point_rows.append({"point": rid, "block": blk,
+                           "levels": dict(lv), "value": v, "samples": n})
+    measured = [p for p in point_rows if p["value"] is not None]
+
+    def cell(conds):
+        xs = [p["value"] for p in measured
+              if all(p["levels"][f] == v for f, v in conds)]
+        return {"mean": _mean(xs), "n": len(xs)}
+
+    main = []
+    for f in factors:
+        cells = [dict(cell([(f, v)]), level=v) for v in levels[f]]
+        means = [c["mean"] for c in cells if c["mean"] is not None]
+        first = cells[0]["mean"] if cells else None
+        last = cells[-1]["mean"] if cells else None
+        main.append({
+            "factor": f, "levels": cells,
+            # the last level's mean less the first's (high less low)
+            "effect": last - first if first is not None and
+            last is not None and len(cells) > 1 else None,
+            # the spread of the level means: what the Pareto ranks
+            "size": max(means) - min(means) if len(means) > 1 else None})
+    inter = []
+    for i, a in enumerate(factors):
+        for b in factors[i + 1:]:
+            grid = [[cell([(a, va), (b, vb)]) for va in levels[a]]
+                    for vb in levels[b]]
+            eff = None
+            if len(levels[a]) == 2 and len(levels[b]) == 2 and \
+                    all(c["mean"] is not None for r in grid for c in r):
+                # two-level factors: half the difference between a's
+                # effect at b's high level and at b's low one
+                eff = ((grid[1][1]["mean"] - grid[1][0]["mean"]) -
+                       (grid[0][1]["mean"] - grid[0][0]["mean"])) / 2.0
+            inter.append({"a": a, "b": b, "a_levels": levels[a],
+                          "b_levels": levels[b], "cells": grid,
+                          "effect": eff,
+                          "size": abs(eff) if eff is not None else None})
+    pareto = [{"term": m["factor"], "kind": "main", "effect": m["effect"],
+               "size": m["size"]} for m in main if m["size"] is not None]
+    pareto += [{"term": "%s x %s" % (x["a"], x["b"]), "kind": "interaction",
+                "effect": x["effect"], "size": x["size"]}
+               for x in inter if x["size"] is not None]
+    pareto.sort(key=lambda r: -r["size"])
+    return {"design": name, "column": column, "agg": agg,
+            "factors": factors, "levels": levels,
+            "points": point_rows, "measured": len(measured),
+            "total": len(point_rows), "main": main,
+            "interactions": inter, "pareto": pareto}
+
+
+# ---------------------------------------------------------------------------
+# The response surface: `qd doe surface NAME -c RESPONSE` (QD-071)
+# ---------------------------------------------------------------------------
+#
+# doe fits the surface and finds its optima: `doe analyze` the quadratic
+# model's adequacy and its stationary point (what kind, where, the response
+# there; its --csv tables), `doe optimize` the model's coefficients and the
+# best point inside the design region (L-BFGS-B).  qd reads those back and
+# says what they mean for the study, and for qd web evaluates doe's own
+# fitted polynomial, in doe's coding, on a grid of each pair of factors.
+
+EDGE = 0.98      # a coded setting this near -1 or +1 is on the region's edge
+GRID = 25        # points along each axis of qd web's contours
+WANTED = {"maximize": "maximum", "minimize": "minimum"}
+
+
+def _num(text):
+    try:
+        v = float(text)
+    except (TypeError, ValueError):
+        return None
+    return v if v == v and v not in (float("inf"), float("-inf")) else None
+
+
+def metrics(rows):
+    """doe's metric,value table as {metric: value text}."""
+    return dict((r[0], r[1]) for r in rows or [] if len(r) >= 2)
+
+
+def lack_of_fit(text, rname):
+    """doe's Lack of Fit row of the response's ANOVA (df, F, p), or None:
+    doe prints one when the design repeats points (pure error)."""
+    sec = text.split("=== ANOVA Table: %s ===" % rname, 1)
+    if len(sec) < 2:
+        return None
+    body = sec[1].split("\n=== ", 1)[0]
+    m = re.search(r"^Lack of Fit\s+(\d+)\s+\S+\s+\S+(?:[ \t]+(\S+))?"
+                  r"(?:[ \t]+(\S+))?[ \t]*$", body, re.M)
+    if not m:
+        return None
+    return {"df": int(m.group(1)), "f": _num(m.group(2)),
+            "p": _num(m.group(3))}
+
+
+def optimize_text(text, rname):
+    """What doe optimize printed for one response: its models
+    {"linear"/"quadratic": {"r_squared", "adj_r_squared", "terms"
+    [(term, coefficient)]}}, and its surface optimum (the model it used,
+    {factor: setting}, the predicted response) -- None where doe printed
+    none."""
+    sec = text.split("=== Optimization: %s ===" % rname, 1)
+    out = {"models": {}, "optimum": None}
+    if len(sec) < 2:
+        return out
+    body = sec[1].split("\n=== ", 1)[0]
+    cur = None
+    for ln in body.splitlines():
+        m = re.match(r"\s*RSM Model \((\w+), R\S* = (\S+), Adj R\S* = "
+                     r"([^)\s]+)\):", ln)
+        if m:
+            cur = out["models"][m.group(1)] = {
+                "r_squared": _num(m.group(2)),
+                "adj_r_squared": _num(m.group(3)), "terms": []}
+            continue
+        if cur is None:
+            continue
+        m = re.match(r"\s{4}(\S+)\s+([-+]?\S+)\s*$", ln)
+        if m and _num(m.group(2)) is not None:
+            cur["terms"].append((m.group(1), float(m.group(2))))
+        elif ln.strip() and ln.strip() != "Coefficients:":
+            cur = None
+        elif not ln.strip() and cur["terms"]:
+            cur = None
+    m = re.search(r"Surface optimum \(via [^,]+, (\w+) model\):\n"
+                  r"((?:[ \t]+.*\n?)+)", body)
+    if m:
+        sets, pv = {}, None
+        for ln in m.group(2).splitlines():
+            ln = ln.strip()
+            if ln.startswith("Predicted value:"):
+                pv = _num(ln.split(":", 1)[1])
+            elif " = " in ln:
+                k, v = ln.split(" = ", 1)
+                sets[k.strip()] = v.strip()
+        out["optimum"] = {"model": m.group(1), "settings": sets,
+                          "predicted": pv}
+    return out
+
+
+def coding(cfg, factors):
+    """{factor: (centre, half range, levels)} in doe's coding: a numeric
+    factor's -1..+1 over its levels' lowest to highest; a categorical one's
+    two levels, sorted, as -1 and +1 (rsm._encode_factor_value)."""
+    decl = dict((f.get("name"), f) for f in cfg.get("factors") or []
+                if isinstance(f, dict))
+    out = {}
+    for f in factors:
+        d = decl.get(f) or {}
+        lv = [str(x) for x in d.get("levels") or []]
+        nums = [_num(x) for x in lv]
+        if lv and d.get("type") != "categorical" and \
+                all(v is not None for v in nums):
+            lo, hi = min(nums), max(nums)
+            out[f] = ((lo + hi) / 2.0, (hi - lo) / 2.0, None)
+        else:
+            out[f] = (0.0, 1.0, sorted(lv))
+    return out
+
+
+def to_coded(code, f, value):
+    centre, half, cats = code[f]
+    if cats is not None:
+        return -1.0 if cats and str(value) == cats[0] else 1.0
+    v = _num(value)
+    if v is None:
+        return None
+    return (v - centre) / half if half else 0.0
+
+
+def to_natural(code, f, c):
+    centre, half, cats = code[f]
+    return centre + c * half if cats is None else c
+
+
+def predict(terms, factors, x):
+    """doe's fitted polynomial (its own terms: intercept, A, A*B, A^2) at
+    coded settings x {factor: value} -- rsm.optimize_surface's sum."""
+    v = 0.0
+    for term, b in terms:
+        if term == "intercept":
+            v += b
+        elif term.endswith("^2"):
+            v += b * x.get(term[:-2], 0.0) ** 2
+        elif "*" in term:
+            p, q = term.split("*", 1)
+            v += b * x.get(p, 0.0) * x.get(q, 0.0)
+        else:
+            v += b * x.get(term, 0.0)
+    return v
+
+
+def nice_levels(lo, hi, n=6):
+    """About n round contour levels strictly inside lo..hi."""
+    import math
+    if hi <= lo:
+        return []
+    raw = (hi - lo) / float(n)
+    mag = 10 ** math.floor(math.log10(raw))
+    step = next(m * mag for m in (1, 2, 2.5, 5, 10) if m * mag >= raw)
+    v = math.floor(lo / step) * step + step
+    out = []
+    while v < hi - step * 1e-9:
+        if v > lo + step * 1e-9:
+            out.append(round(v, 12))
+        v += step
+    return out
+
+
+def contour_segments(xs, ys, z, level):
+    """Marching squares: the line segments of z == level over the grid
+    (z[j][i] at xs[i], ys[j]), as [x1, y1, x2, y2]."""
+    segs = []
+
+    def cut(p, q, zp, zq):
+        t = (level - zp) / (zq - zp) if zq != zp else 0.5
+        return (p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1]))
+
+    for j in range(len(ys) - 1):
+        for i in range(len(xs) - 1):
+            c = [((xs[i], ys[j]), z[j][i]), ((xs[i + 1], ys[j]), z[j][i + 1]),
+                 ((xs[i + 1], ys[j + 1]), z[j + 1][i + 1]),
+                 ((xs[i], ys[j + 1]), z[j + 1][i])]
+            pts = []
+            for k in range(4):
+                (p, zp), (q, zq) = c[k], c[(k + 1) % 4]
+                if (zp < level) != (zq < level):
+                    pts.append(cut(p, q, zp, zq))
+            if len(pts) == 2:
+                segs.append([pts[0][0], pts[0][1], pts[1][0], pts[1][1]])
+            elif len(pts) == 4:
+                segs.append([pts[0][0], pts[0][1], pts[1][0], pts[1][1]])
+                segs.append([pts[2][0], pts[2][1], pts[3][0], pts[3][1]])
+    return segs
+
+
+def surface_spec(cfg, column=None):
+    """(response name, column, optimize) the surface is fitted to: the one
+    asked for, else the response a follow-up was made for
+    (metadata.qd_follows), else the config's only one."""
+    sp = specs(cfg, [column] if column else None)
+    if not column:
+        meta = cfg.get("metadata") or {}
+        fol = meta.get("qd_follows") if isinstance(meta, dict) else None
+        if isinstance(fol, dict) and fol.get("response"):
+            sp = [s for s in sp if s[0] == fol["response"]] or sp
+    if not sp:
+        die("a surface of what? -c COLUMN: the response, as qd show names "
+            "it (or a config whose responses name their column)")
+    if len(sp) > 1:
+        die("a surface of which response? -c one of: %s"
+            % ", ".join(s[0] for s in sp))
+    return sp[0]
+
+
+def surface(st, name, column=None, agg="median", report=None, grid=True):
+    """doe's response surface for one response of a design, and what it
+    means: the fitted model and its fit, the stationary point and its kind,
+    the best point inside the design region and whether it is on the
+    region's edge (another round is needed) or inside it; with grid, each
+    pair of numeric factors' contours of doe's model, the other factors
+    held at doe's optimum.  Every statistic is doe's."""
+    row, cfg, matrix = load(st, name)
+    rname, col, optimize = surface_spec(cfg, column)
+    detail = {}
+    text, allr, _, matrix = analyze(st, name, [col], agg, True,
+                                    report=report, detail=detail)
+    resp = allr[0][3]
+    factors = list(matrix.get("factor_names") or [])
+    code = coding(cfg, factors)
+    numeric_f = [f for f in factors if code[f][2] is None]
+    tables = detail.get("csv", {}).get(rname, {})
+    ad = metrics(tables.get("model_adequacy"))
+    spt = metrics(tables.get("stationary_point"))
+    cv = dict((r[0], r[3]) for r in tables.get("cross_validation") or []
+              if len(r) > 3)
+    opt = optimize_text(detail.get("optimize", ""), rname)
+    out = {"design": name, "response": rname, "column": col,
+           "optimize": optimize, "agg": agg,
+           "operation": (cfg.get("settings") or {}).get("operation") or
+           matrix.get("operation"),
+           "measured": sum(1 for _, v, _ in resp if v is not None),
+           "total": len(resp), "factors": factors, "numeric": numeric_f,
+           "levels": dict((f, [to_natural(code, f, -1.0),
+                               to_natural(code, f, 1.0)])
+                          for f in numeric_f)}
+    out["fit"] = {
+        "model": ad.get("model_type") or None,
+        "observations": _num(ad.get("n_observations")),
+        "parameters": _num(ad.get("n_parameters")),
+        "r_squared": _num(ad.get("r_squared")),
+        "adj_r_squared": _num(ad.get("adj_r_squared")),
+        "predicted_r_squared": _num(ad.get("predicted_r_squared")),
+        "rmse_cv": _num(cv.get("rmse_cv")),
+        "lack_of_fit": lack_of_fit(detail.get("analyze", ""), rname)}
+    sp = None
+    if spt.get("nature"):
+        sp = {"kind": spt["nature"],
+              "predicted": _num(spt.get("predicted_value")),
+              "inside": spt.get("inside_design_region") == "True",
+              "coded": dict((f, _num(spt.get("coded[%s]" % f)))
+                            for f in factors),
+              "settings": dict((f, spt.get("natural[%s]" % f, ""))
+                               for f in factors),
+              "eigenvalues": [_num(v) for v in
+                              (spt.get("eigenvalues") or "").split(";")
+                              if _num(v) is not None]}
+    out["stationary"] = sp
+    model = None
+    best = opt["optimum"]
+    if best and best["model"] in opt["models"]:
+        model = best["model"]
+    elif opt["models"]:
+        model = "quadratic" if "quadratic" in opt["models"] else \
+            sorted(opt["models"])[0]
+    terms = opt["models"][model]["terms"] if model else []
+    out["model"] = {"kind": model, "terms": [[t, b] for t, b in terms],
+                    "coding": dict((f, {"centre": code[f][0],
+                                        "half_range": code[f][1]})
+                                   for f in numeric_f)}
+    if best:
+        coded = dict((f, to_coded(code, f, best["settings"].get(f)))
+                     for f in factors if f in best["settings"])
+        edges = [[f, "high" if c > 0 else "low"] for f, c in
+                 sorted(coded.items(), key=lambda kv: factors.index(kv[0]))
+                 if c is not None and code[f][2] is None and abs(c) >= EDGE]
+        out["optimum"] = {"settings": best["settings"], "coded": coded,
+                          "predicted": best["predicted"], "edge": edges}
+    else:
+        out["optimum"] = None
+    out["verdict"] = verdict(out)
+    if report:
+        out["report"] = report
+    if grid and terms and len(numeric_f) >= 2:
+        out["pairs"] = surface_grids(out, code, terms, matrix, resp)
+    else:
+        out["pairs"] = []
+    return out
+
+
+def verdict(s):
+    """{"where": "inside" | "edge" | "none", "text": the words}: where the
+    optimum is, and what to do next."""
+    want = WANTED.get(s["optimize"], "maximum")
+    sp, best = s["stationary"], s["optimum"]
+    if s["fit"]["model"] != "quadratic" or sp is None:
+        return {"where": "none", "text": (
+            "doe fitted no quadratic surface here (%d points measured), so "
+            "there is no stationary point: a central composite or "
+            "Box-Behnken follow-up has the points a surface needs (qd doe "
+            "next %s)" % (s["measured"], s["design"]))}
+    if sp["kind"] == want and sp["inside"]:
+        return {"where": "inside", "text": (
+            "the %s is inside the design region: confirm it with a run at "
+            "these settings" % want)}
+    if best and best["edge"]:
+        return {"where": "edge", "text": (
+            "the best point inside the design region is on its edge (%s): "
+            "the %s lies beyond it, so another round is needed, moved that "
+            "way" % (", ".join("%s at its %s level" % (f, e)
+                               for f, e in best["edge"]), want))}
+    why = "outside the design region" if not sp["inside"] else \
+        "a %s, not a %s" % (sp["kind"].replace("_", " "), want)
+    return {"where": "edge" if not sp["inside"] else "none", "text": (
+        "the stationary point is %s, and the best point inside the region "
+        "is not on its edge: there is no clear %s here, and another round, "
+        "nearer doe's optimum, is needed" % (why, want))}
+
+
+def surface_grids(s, code, terms, matrix, resp):
+    """Each pair of numeric factors: doe's model on a GRID x GRID grid of
+    the pair (natural units), the other factors held at doe's optimum (or
+    the centre), with round contour levels, their lines, the band each
+    cell falls in, and where the design's points and the optimum are."""
+    import itertools
+    numeric_f = s["numeric"]
+    held = dict((f, 0.0) for f in s["factors"])
+    if s["optimum"]:
+        for f, c in s["optimum"]["coded"].items():
+            if c is not None:
+                held[f] = c
+    settings = s["optimum"]["settings"] if s["optimum"] else {}
+    vals = dict((rid, v) for rid, v, _ in resp)
+    pts = points(matrix)
+    span = {}
+    for f in numeric_f:
+        cs = [to_coded(code, f, dict(lv)[f]) for _, _, lv in pts]
+        cs = [c for c in cs if c is not None]
+        span[f] = (min([-1.0] + cs), max([1.0] + cs))
+    out = []
+    for a, b in itertools.combinations(numeric_f, 2):
+        ca = [span[a][0] + (span[a][1] - span[a][0]) * i / (GRID - 1.0)
+              for i in range(GRID)]
+        cb = [span[b][0] + (span[b][1] - span[b][0]) * j / (GRID - 1.0)
+              for j in range(GRID)]
+        z = []
+        for yb in cb:
+            rowz = []
+            for xa in ca:
+                x = dict(held)
+                x[a], x[b] = xa, yb
+                rowz.append(predict(terms, s["factors"], x))
+            z.append(rowz)
+        xs = [to_natural(code, a, c) for c in ca]
+        ys = [to_natural(code, b, c) for c in cb]
+        flat = [v for r in z for v in r]
+        levels = nice_levels(min(flat), max(flat))
+        lines = [{"level": lv, "segments": contour_segments(xs, ys, z, lv)}
+                 for lv in levels]
+        bands = [[sum(1 for lv in levels if v >= lv) for v in r] for r in z]
+        here = {}
+        for rid, _, lv in pts:
+            d = dict(lv)
+            k = (d[a], d[b])
+            p = here.setdefault(k, {"a": _num(d[a]), "b": _num(d[b]),
+                                    "points": [], "values": []})
+            p["points"].append(rid)
+            p["values"].append(vals.get(rid))
+        mark = {}
+        for key, src in (("stationary", s["stationary"]),
+                         ("optimum", s["optimum"])):
+            c = (src or {}).get("coded") or {}
+            if c.get(a) is not None and c.get(b) is not None:
+                mark[key] = {"a": to_natural(code, a, c[a]),
+                             "b": to_natural(code, b, c[b]),
+                             "inside": span[a][0] <= c[a] <= span[a][1] and
+                             span[b][0] <= c[b] <= span[b][1]}
+        out.append({"a": a, "b": b, "x": xs, "y": ys, "z": z,
+                    "min": min(flat), "max": max(flat),
+                    "levels": levels, "lines": lines, "bands": bands,
+                    "held": [[f, settings.get(f) or
+                              "%.6g" % to_natural(code, f, held[f])]
+                             for f in s["factors"] if f not in (a, b)],
+                    "design": sorted(here.values(),
+                                     key=lambda p: (p["a"], p["b"])),
+                    "marks": mark})
+    return out

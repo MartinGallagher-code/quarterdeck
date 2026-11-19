@@ -278,6 +278,138 @@ EOF
     assert_contains "$out" '"group": "stream-test"'
 }
 
+# a design's charts: every figure from doe.effects, exactly (QD-068)
+design_json() {
+    "$PY" -c 'import json, sys
+d = json.loads(sys.stdin.read().split("\n", 1)[1])
+print(eval(sys.argv[1], {"d": d}))' "$1"
+}
+
+design_config() {
+    cat > bench.json <<'EOF'
+{"metadata": {"name": "Stream test"},
+ "factors": [{"name": "streams", "levels": ["1", "4"], "type": "continuous"},
+             {"name": "window", "levels": ["64", "1024"], "type": "continuous"}],
+ "responses": [{"name": "mbps", "optimize": "maximize"}],
+ "settings": {"operation": "full_factorial", "block_count": 1}}
+EOF
+}
+
+t_a_designs_charts() {
+    install_fake_ssh
+    for h in a b c; do fake_host "$h"; done
+    printf 'a\nb\nc\n' > hosts.txt
+    for h in a b; do echo 0 > "$FAKE_ROOT/$h/bonus"; done
+    echo 30 > "$FAKE_ROOT/c/bonus"
+    stand_in_doe
+    design_config
+    # 1000 everywhere but 4 streams with the big window, which is 1300:
+    # main effects of 150 each, and an interaction of 150.  Host c says 30
+    # more (the median over the hosts is a's and b's), and cost is a
+    # column the factors do not move.
+    # shellcheck disable=SC2016  # expanded on the far side, not here
+    qdf doe run bench.json -s hosts.txt -q -- \
+        'echo "mbps: $(( 1000 + 300 * ({streams} > 1) * ({window} > 64) + $(cat bonus) ))"; echo "cost: 7"' > /dev/null
+    start_web
+    out="$(get '/api/design?name=stream-test')"
+    assert_contains "$out" "200"
+    # the config's response by default, and the columns there are
+    assert_eq "$(echo "$out" | design_json 'd["column"], d["columns"]')" "('mbps', ['mbps', 'cost'])"
+    assert_eq "$(echo "$out" | design_json 'd["measured"], d["total"]')" "(4, 4)"
+    assert_eq "$(echo "$out" | design_json '[(m["factor"], [(c["level"], c["mean"], c["n"]) for c in m["levels"]], m["effect"]) for m in d["main"]]')" \
+        "[('streams', [('1', 1000.0, 2), ('4', 1150.0, 2)], 150.0), ('window', [('64', 1000.0, 2), ('1024', 1150.0, 2)], 150.0)]"
+    assert_eq "$(echo "$out" | design_json '[[(c["mean"], c["n"]) for c in r] for r in d["interactions"][0]["cells"]]')" \
+        "[[(1000.0, 1), (1000.0, 1)], [(1000.0, 1), (1300.0, 1)]]"
+    assert_eq "$(echo "$out" | design_json '[(p["term"], p["kind"], p["size"]) for p in d["pareto"]]')" \
+        "[('streams', 'main', 150.0), ('window', 'main', 150.0), ('streams x window', 'interaction', 150.0)]"
+    # another figure over the hosts: the max is host c's
+    out="$(get '/api/design?name=stream-test&c=mbps&agg=max')"
+    assert_eq "$(echo "$out" | design_json '[c["mean"] for c in d["main"][0]["levels"]]')" "[1030.0, 1180.0]"
+    out="$(get '/api/design?name=stream-test&c=cost')"
+    assert_eq "$(echo "$out" | design_json 'd["pareto"][0]["size"]')" "0.0"
+    # no report kept yet; once one is, the page links it, from qd's cache
+    assert_eq "$(get '/api/design?name=stream-test' | design_json 'd["report"]')" "None"
+    qd doe analyze stream-test -c mbps --report > /dev/null
+    out="$(get '/api/design?name=stream-test')"
+    url="$(echo "$out" | design_json 'd["report"]["url"]')"
+    case "$url" in /doe/*/stream-test/mbps/report.html) ;; *) fail "report url: $url" ;; esac
+    out="$(get "$url")"
+    assert_contains "$out" "200"
+    assert_contains "$out" "DOE report: mbps"
+    # its own page, in a sandbox; and only the cache's reports and plots
+    out="$("$PY" -c 'import sys, urllib.request
+print(urllib.request.urlopen(sys.argv[1]).headers.get("Content-Security-Policy"))' "$URL$url")"
+    assert_eq "$out" "sandbox allow-scripts"
+    assert_contains "$(get "${url%/report.html}/results/run_1.json")" "404"
+    assert_contains "$(get "${url%/report.html}/../../../../../../etc/passwd")" "404"
+    out="$(get '/api/design?name=nope')"
+    assert_contains "$out" "400"
+    assert_contains "$out" "no design 'nope'"
+}
+
+# a point not measured is left out of every mean, never drawn as zero
+t_a_designs_blank_points() {
+    install_fake_ssh
+    for h in a b; do fake_host "$h"; done
+    printf 'a\nb\n' > hosts.txt
+    stand_in_doe
+    design_config
+    # shellcheck disable=SC2016  # expanded on the far side, not here
+    qdf doe run bench.json -s hosts.txt -q -- \
+        'echo "cost: 1"; [ {streams}{window} = 41024 ] || echo "mbps: $(( 1000 + 100 * ({streams} > 1) ))"' > /dev/null
+    start_web
+    out="$(get '/api/design?name=stream-test&c=mbps')"
+    assert_eq "$(echo "$out" | design_json 'd["measured"], d["total"]')" "(3, 4)"
+    assert_eq "$(echo "$out" | design_json '[(c["level"], c["mean"], c["n"]) for c in d["main"][0]["levels"]]')" \
+        "[('1', 1000.0, 2), ('4', 1100.0, 1)]"
+    assert_eq "$(echo "$out" | design_json '[(c["mean"], c["n"]) for c in d["interactions"][0]["cells"][1]]')" \
+        "[(1000.0, 1), (None, 0)]"
+    # an interaction with a cell not measured has no effect to rank
+    assert_eq "$(echo "$out" | design_json 'd["interactions"][0]["effect"], [p["term"] for p in d["pareto"]]')" \
+        "(None, ['streams', 'window'])"
+    assert_eq "$(echo "$out" | design_json '[p["value"] for p in d["points"] if p["levels"] == {"streams": "4", "window": "1024"}]')" "[None]"
+}
+
+# a response surface design's page: doe's fit, its stationary point and
+# optimum, and the contours of doe's model on the engine's grid -- every
+# figure /api/surface's (QD-071)
+t_a_designs_surface() {
+    stand_in_doe
+    surface_design "iodepth=24,numjobs=6"
+    design_config
+    # shellcheck disable=SC2016  # expanded on the far side, not here
+    qdf doe run bench.json -s hosts.txt -q -- 'echo "mbps: $(( 100 * {streams} ))"' > /dev/null
+    start_web
+    out="$(get '/api/design?name=ccd')"
+    assert_eq "$(echo "$out" | design_json 'd["surface"]')" \
+        "{'operation': 'central_composite', 'fit': True, 'numeric': ['iodepth', 'numjobs']}"
+    assert_eq "$(get '/api/design?name=stream-test' | design_json 'd["surface"]["fit"]')" "False"
+    # the follow-up's own response by default
+    out="$(get '/api/surface?name=ccd')"
+    assert_contains "$out" "200"
+    assert_eq "$(echo "$out" | design_json 'd["response"], d["column"], d["measured"], d["total"]')" \
+        "('read_iops', 'jobs.0.read.iops', 16, 16)"
+    assert_eq "$(echo "$out" | design_json 'd["stationary"]["kind"], d["stationary"]["inside"], d["verdict"]["where"]')" \
+        "('maximum', True, 'inside')"
+    assert_eq "$(echo "$out" | design_json 'abs(float(d["stationary"]["settings"]["iodepth"]) - 24) < 1')" "True"
+    # one pair, its grid, levels, lines and bands the engine's
+    assert_eq "$(echo "$out" | design_json '[(p["a"], p["b"], len(p["x"]), len(p["z"]), len(p["bands"])) for p in d["pairs"]]')" \
+        "[('iodepth', 'numjobs', 25, 25, 25)]"
+    assert_eq "$(echo "$out" | design_json 'all(l["segments"] for l in d["pairs"][0]["lines"])')" "True"
+    # the column the page picked, or a response by name
+    out="$(get '/api/surface?name=ccd&c=jobs.0.read.clat_ns.mean')"
+    assert_eq "$(echo "$out" | design_json 'd["response"], d["optimize"], d["stationary"]["kind"]')" \
+        "('read_lat_mean', 'minimize', 'minimum')"
+    # two levels a factor: no quadratic and no stationary point; the
+    # contours are of doe's plane
+    out="$(get '/api/surface?name=stream-test&c=mbps')"
+    assert_eq "$(echo "$out" | design_json 'd["stationary"], d["verdict"]["where"], d["model"]["kind"], len(d["pairs"])')" \
+        "(None, 'none', 'linear', 1)"
+    out="$(get '/api/surface?name=nope')"
+    assert_contains "$out" "400"
+    assert_contains "$out" "no design 'nope'"
+}
+
 t_raw_export_and_overlay() {
     seed
     start_web
@@ -559,6 +691,9 @@ run_test "diff defaults to the last same run"       t_diff_defaults_to_the_last_
 run_test "compare: the terminal's verdict"           t_compare_is_the_terminal_s
 run_test "compare: a qualified baseline, peer groups" t_compare_against_a_qualified_baseline
 run_test "campaigns and designs, and their runs"     t_campaigns_and_designs_are_listed
+run_test "a design's charts: the engine's figures"   t_a_designs_charts
+run_test "a design's charts: blank is left out"      t_a_designs_blank_points
+run_test "a design's response surface"              t_a_designs_surface
 run_test "telemetry joined as the terminal joins it" t_join_is_the_terminal_s
 run_test "raw answers, export, overlay"             t_raw_export_and_overlay
 run_test "static page; nothing escapes its root"    t_static_page_and_no_escape

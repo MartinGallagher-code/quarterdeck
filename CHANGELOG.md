@@ -5,6 +5,65 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.49.0 — 2026-11-19
+
+A response surface fitted to a central composite or Box-Behnken
+follow-up, with its maximum or minimum and whether that is inside the
+design region or on its edge, and contour charts of it in `qd web`
+(QD-071, step 6 of QD-066). Brings in QD-068 (0.45.0) beside QD-067 and
+QD-069 (0.44.0, 0.46.0).
+
+### Added
+- **`qd doe surface NAME [-c RESPONSE]`** runs `doe analyze` (with its
+  `--csv` tables) and `doe optimize` for one response and reports what
+  doe found: its fitted model (the quadratic, or linear with too few
+  points, in doe's coding), the fit (R², adjusted and predicted R², the
+  lack-of-fit test of doe's ANOVA where points repeat), the stationary
+  point with its kind (maximum, minimum, saddle, ridge), its settings in
+  the factors' own units and coded, and doe's predicted response there
+  with doe's cross-validated error, and doe optimize's best point inside
+  the design region. It then says plainly whether the optimum is inside
+  the region (confirm it) or on its edge, naming the factor and the end
+  (another round is needed). With no `-c` a follow-up's own response
+  (`metadata.qd_follows`) is used. `--report [DIR]` keeps doe's report
+  and its response-surface plots (`rsm_*.png`) as `qd doe analyze
+  --report` does; `--json` prints the figures and qd web's contours
+  (`quarterdeck/doe.py`: `surface`, `verdict`, `surface_grids`,
+  `optimize_text`, `lack_of_fit`, `read_tables`; `quarterdeck/cli.py`:
+  `doe_surface`).
+- **`/api/surface?name=NAME&c=COL&agg=AGG`** in `qd web`, and a
+  "Response surface" card on a central composite or Box-Behnken
+  design's page (a button on any other design's): doe's figures and the
+  verdict, and a contour chart for each pair of numeric factors, the
+  others held at doe's best point. The grid is doe's own fitted
+  polynomial evaluated by the engine, which also places the contour
+  levels, lines and shading; the page only draws them, with the design
+  region, the design's points (hollow where not measured), the
+  stationary point and the best point marked (`quarterdeck/web.py`:
+  `surface`; `quarterdeck/web/app.js`: `surfaceCard`, `contourChart`).
+  `/api/design` says whether a design is a surface design and which of
+  its factors are numeric.
+- Tests: `tests/test_doe_surface.sh` (new) runs a central composite on a
+  stand-in fio whose read IOPS is a known hill and read latency a known
+  bowl (`FIO_PEAK`): the stationary point is found within tolerance and
+  called a maximum (and a minimum), an optimum beyond iodepth's high
+  level is reported on the edge, a point fio failed is left out (never
+  0), `--report` keeps the surface plots, `--json`'s grid is doe's
+  model, and a two-level design has no surface; with the real doe where
+  it is installed. `tests/test_web.sh` checks `/api/surface`. The
+  suite's stand-in doe now fits the quadratic as doe does (least
+  squares in coded units), writes doe's model-adequacy, cross-validation
+  and stationary-point tables, a lack-of-fit row and surface plots, and
+  prints `doe optimize`'s models and surface optimum.
+
+### Changed
+- The merge of QD-068 into QD-069's branch: `qd doe analyze --report`
+  works with several responses at once (the report is kept under the
+  columns analysed, and qd web links a one-column report from the
+  design's page), and the stand-in doe writes a plot per response.
+- `qd --help`'s doe line names `surface` (and `init`), `qd hints` has a
+  surface line, and docs/getting-started.md's map names it.
+
 ## 0.46.0 — 2026-11-19
 
 A central composite or Box-Behnken follow-up from a screen's big
@@ -45,6 +104,45 @@ and 4 of QD-066's fio tuning study, on one drive of one host).
 
 ### Changed
 - `qd --help`'s doe line names `next` (and `init fio` beside it).
+
+## 0.45.0 — 2026-11-19
+
+A design's main effects, interactions and a Pareto of effect sizes as
+charts on its page in `qd web`, and doe's own HTML report and plots kept
+by `qd doe analyze --report` and linked from there (QD-068, step 2 of
+QD-066).
+
+### Added
+- **`qd doe analyze NAME -c COL --report [DIR]`** runs `doe analyze`
+  without `--no-plots --no-report`, so doe makes its Pareto,
+  main-effects, half-normal and other plots and its HTML report, and
+  keeps them, with the results and config that made them, in DIR or
+  else in qd's cache (`~/.cache/quarterdeck/doe/STORE/DESIGN/COLUMN`, never
+  the store). It says where the report is and names the plots. A
+  directory qd made before is emptied first; one holding anything else
+  is refused, never emptied (`quarterdeck/doe.py`: `report_dir`,
+  `report_files`; `quarterdeck/cli.py`: `doe_report_lines`).
+- **`/api/design?name=NAME&c=COL&agg=AGG`** in `qd web`: each point's
+  value, each factor's level means, each pair of factors' cell means, the
+  two-level interaction effects and a Pareto of effect sizes, all from
+  `doe.effects()` (plain means of the points measured; the statistics
+  stay doe's), with the design's response columns and a link to doe's
+  report when one is kept. doe's reports and plots are served at `/doe/`
+  from qd's cache only, in a sandbox (`Content-Security-Policy: sandbox
+  allow-scripts`), so a report can neither act as the page nor read its
+  API.
+- **A design's page in `qd web`** has a column and a per-point figure
+  picker, the Pareto chart, a main-effects chart per factor on one shared
+  scale, an interaction chart for a chosen pair, and the link to doe's
+  report (`quarterdeck/web/app.js`: `designCharts`, `paretoChart`,
+  `levelChart`). A point not measured is left out of every mean and
+  drawn as a gap, never as zero.
+- Tests: `tests/test_web.sh` checks every figure for a design with known
+  responses, blank points left out, the report served sandboxed from the
+  cache and nothing else; `tests/test_doe.sh` checks `--report` (where,
+  remade, a directory named, a foreign directory refused), and with the
+  real doe where it is installed. The suite's stand-in doe writes a plot
+  and a report unless told not to, as the real one does.
 
 ## 0.44.0 — 2026-11-19
 
@@ -96,6 +194,7 @@ responses at once (QD-067, the first step of QD-066's fio tuning study).
   that had failed was counted as measured and skipped.
 - README's "Designed experiments" has a worked fio screen;
   docs/getting-started.md's map and `qd hints` name `qd doe init fio`.
+
 ## 0.43.0 — 2026-11-19
 
 Your own named probes: `qd probe add NAME -- COMMAND` gives a command a

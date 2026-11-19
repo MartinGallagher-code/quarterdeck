@@ -438,6 +438,26 @@ table.grid { border-collapse: separate; border-spacing: 0; width: max-content;
 .chart .series.muted { stroke: var(--line-muted); stroke-width: 1.5; }
 .chart .series.hot { stroke: var(--s1); stroke-width: 2.5; }
 .chart .dot { stroke: var(--surface); stroke-width: 2; }
+.chart .hist-bar.ix { fill: var(--s2); opacity: 0.75; }
+.chart .hist-bar.ix.hot { opacity: 1; }
+/* a response surface's contours (QD-071): shades and lines are the
+   engine's bands and contour lines; the page only places them */
+.chart.contour .band { stroke: none; }
+.chart.contour .contour-line { fill: none; stroke: var(--surface); stroke-width: 1.2;
+  stroke-opacity: 0.9; }
+.chart.contour .region { fill: none; stroke: var(--ink); stroke-dasharray: 4 3;
+  stroke-width: 1; }
+.chart.contour .design-pt { fill: var(--ink); stroke: var(--surface); stroke-width: 1.5; }
+.chart.contour .design-pt.missing { fill: none; stroke: var(--ink); }
+.chart.contour .mark { fill: none; stroke: var(--critical); stroke-width: 2.5; }
+.chart.contour .mark.best { fill: var(--warning); stroke: var(--ink); stroke-width: 1.2; }
+.verdict.edge strong { color: var(--bad-ink); }
+.verdict.inside strong { color: var(--good-ink); }
+
+.small-multiples { display: grid; gap: 14px 18px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+.small-multiples .sm-title { font-size: 12.5px; color: var(--ink-2);
+  margin: 0 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px;
   color: var(--ink-2); margin: 6px 0 0; }
