@@ -1734,6 +1734,7 @@ qd doe run iperf.json -s hosts.txt -- 'iperf3 -c peer -P {streams} -w {window}'
 qd doe status iperf                         # which points are measured
 qd doe analyze iperf -c mbps                # doe's main effects, interactions, ANOVA, power
 qd doe analyze iperf -c mbps --optimize     # and its recommended settings
+qd doe analyze iperf -c mbps --report       # and keep doe's plots and HTML report
 ```
 
 The design is
@@ -1751,6 +1752,22 @@ median of the column over the hosts that answered, or `--agg`), writes it
 as doe reads results (`run_<id>.json` beside the design's
 `design_matrix.json`) and runs `doe analyze`. doe wants Python 3.10 and
 numpy; qd runs it as a command, so qd keeps its 3.6 floor.
+
+**Seeing the effects.** `--report` lets doe make its plots (Pareto, main
+effects, half-normal, response surfaces where it fits one) and its HTML
+report, and keeps them with the results and config that made them: in
+qd's cache (`~/.cache/quarterdeck/doe/`, never the store) unless you
+name a directory (`--report out/`, new or empty, or one qd made before,
+which it empties first). qd says where the report is. A design's page in
+`qd web` charts the same column: a Pareto of effect sizes, a main-effects
+chart per factor (the mean response at each level, on one scale) and an
+interaction chart for any two factors (a line per level of the second;
+lines that are not parallel are an interaction), with a picker for the
+column and for how each point is reduced over its hosts. The figures are
+plain means of the points measured, worked out by qd's engine; a point
+not measured is left out of every mean and shows as a gap, never as
+zero. Significance, ANOVA and the fitted models are doe's: its report
+is linked from the page once `--report` has kept one in the cache.
 
 ---
 
@@ -2098,7 +2115,9 @@ engine's, as everywhere.
 - **Campaigns and designs** above the runs, with how far each has got
   (muster's count of parts done, or points measured). One opens its parts
   or points, each with its last run, and **Compare its parts** lines them
-  up.
+  up. A design's page also charts its effects on a column: a Pareto of
+  effect sizes, main effects and interactions, and a link to doe's report
+  (see Designed experiments).
 - **Table**: sort on any column and filter with the same `--where`
   language. Click a row for every field and that host's raw answer.
 - **A column**: its figures, histogram, outliers and value counts (with who

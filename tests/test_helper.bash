@@ -730,6 +730,16 @@ elif a[0] == "analyze":
                   if r["factor_values"][f] == l and r["run_id"] in vals]
             mean.append(sum(xs) / len(xs))
         print("%-20s %10.4f" % (f, mean[-1] - mean[0]))
+    # its plots and HTML report, unless told not to, where the real one
+    # puts them: settings.processed_directory, else the results
+    keep = cfg["settings"].get("processed_directory") or d
+    if "--no-plots" not in a:
+        open(os.path.join(keep, "main_effects_%s.png" % resp), "wb").write(
+            b"\x89PNG\r\n\x1a\n")
+    if "--no-report" not in a:
+        open(os.path.join(keep, "report.html"), "w").write(
+            "<html><body><h1>DOE report: %s</h1></body></html>\n" % resp)
+        print("\nHTML report: %s" % os.path.join(keep, "report.html"))
 EOF
     chmod +x "$FAKE_BIN/doe"
     export QD_DOE="$FAKE_BIN/doe"

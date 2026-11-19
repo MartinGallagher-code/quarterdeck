@@ -5,6 +5,45 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.45.0 — 2026-11-19
+
+A design's main effects, interactions and a Pareto of effect sizes as
+charts on its page in `qd web`, and doe's own HTML report and plots kept
+by `qd doe analyze --report` and linked from there (QD-068, step 2 of
+QD-066).
+
+### Added
+- **`qd doe analyze NAME -c COL --report [DIR]`** runs `doe analyze`
+  without `--no-plots --no-report`, so doe makes its Pareto,
+  main-effects, half-normal and other plots and its HTML report, and
+  keeps them, with the results and config that made them, in DIR or
+  else in qd's cache (`~/.cache/quarterdeck/doe/STORE/DESIGN/COLUMN`, never
+  the store). It says where the report is and names the plots. A
+  directory qd made before is emptied first; one holding anything else
+  is refused, never emptied (`quarterdeck/doe.py`: `report_dir`,
+  `report_files`; `quarterdeck/cli.py`: `doe_report_lines`).
+- **`/api/design?name=NAME&c=COL&agg=AGG`** in `qd web`: each point's
+  value, each factor's level means, each pair of factors' cell means, the
+  two-level interaction effects and a Pareto of effect sizes, all from
+  `doe.effects()` (plain means of the points measured; the statistics
+  stay doe's), with the design's response columns and a link to doe's
+  report when one is kept. doe's reports and plots are served at `/doe/`
+  from qd's cache only, in a sandbox (`Content-Security-Policy: sandbox
+  allow-scripts`), so a report can neither act as the page nor read its
+  API.
+- **A design's page in `qd web`** has a column and a per-point figure
+  picker, the Pareto chart, a main-effects chart per factor on one shared
+  scale, an interaction chart for a chosen pair, and the link to doe's
+  report (`quarterdeck/web/app.js`: `designCharts`, `paretoChart`,
+  `levelChart`). A point not measured is left out of every mean and
+  drawn as a gap, never as zero.
+- Tests: `tests/test_web.sh` checks every figure for a design with known
+  responses, blank points left out, the report served sandboxed from the
+  cache and nothing else; `tests/test_doe.sh` checks `--report` (where,
+  remade, a directory named, a foreign directory refused), and with the
+  real doe where it is installed. The suite's stand-in doe writes a plot
+  and a report unless told not to, as the real one does.
+
 ## 0.33.0 — 2026-11-18
 
 Bare `qd` prints a short start card for newcomers in place of the full

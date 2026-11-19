@@ -4458,9 +4458,13 @@ def cmd_doe(args):
     if what == "analyze":
         if not args.column:
             die("analyze what? -c COLUMN: the response, as qd show names it")
-        text, resp = doemod.analyze(st, args.target, args.column, args.agg,
-                                    args.optimize)
         _, _, matrix = doemod.load(st, args.target)
+        report = None
+        if args.report is not None:
+            report = doemod.report_dir(st, args.target, args.column,
+                                       args.report or None)
+        text, resp = doemod.analyze(st, args.target, args.column, args.agg,
+                                    args.optimize, report=report)
         lv = dict((rid, " ".join("%s=%s" % kv for kv in levels))
                   for rid, _, levels in doemod.points(matrix))
         rows = [[str(rid), lv.get(rid, ""), str(n),
@@ -4474,9 +4478,29 @@ def cmd_doe(args):
         lines.append("")
         lines.append("  doe analyze:")
         lines.extend("  " + ln for ln in text.splitlines())
+        if report is not None:
+            lines.extend(doe_report_lines(doemod, report, args))
         sys.stdout.write(render.page(lines))
         return 0
     die("unknown doe action %r (plan, run, status, analyze)" % what)
+
+
+def doe_report_lines(doemod, report, args):
+    """Where doe's report and plots were kept, and how to see them."""
+    html, plots = doemod.report_files(report)
+    lines = [""]
+    if html:
+        lines.append("  doe's report: %s" % os.path.join(report, html))
+    else:
+        lines.append("  doe made no HTML report (its plots and results are "
+                     "in %s)" % report)
+    lines.append("  %s in %s%s" % (
+        plural(len(plots), "plot"), report,
+        (": " + ", ".join(plots)) if plots else ""))
+    if not args.report:
+        lines.append("  %s web links it from the design's page (column %s)"
+                     % (PROG, args.column))
+    return lines
 
 
 def doe_run(args, st, doemod):
@@ -5791,6 +5815,9 @@ def build_parser():
                     "(median)")
     sp.add_argument("--optimize", action="store_true",
                     help="analyze: doe optimize's recommendation too")
+    sp.add_argument("--report", nargs="?", const="", metavar="DIR",
+                    help="analyze: keep doe's HTML report and plots, in DIR "
+                    "or qd's cache (which qd web links)")
     sp.set_defaults(fn=cmd_doe, command=[])
 
     sp = verb("export", "write a dataset out: csv, tsv, json, ndjson, md, "
