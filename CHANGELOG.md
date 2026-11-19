@@ -117,8 +117,8 @@ about (QD-062, from the beginner design QD-057).
   columns are not read and the host that did not answer is named apart;
   usage errors exit 2; the card, `qd hints` and `qd help odd`. Every
   WHAT TO DO NEXT command is parsed by `build_parser()` and then run.
-- Merged after QD-040's regrouped `qd --help` card: `odd` sits on the
-  Read it back line beside `outliers`, and on the start card under
+- Merged after QD-040's regrouped `qd --help` card: `odd` leads the
+  Read it back line with `pivot` and `trend`, and on the start card under
   Getting started, as QD-058's note above `START` asks.
 
 ## 0.37.0 — 2026-11-19
