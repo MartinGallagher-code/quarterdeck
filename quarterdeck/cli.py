@@ -5407,8 +5407,6 @@ HINTS = [
      "qd do -- iperf-orchestrator --servers hosts.txt run"),
     ("Run", "How is every host doing right now?",
      "qd do -- dcprobe scan --servers hosts.txt -o host_status.tsv"),
-    ("Read it back", "Who is odd, and in what? Every column at once",
-     "qd odd latest"),
     ("Read it back", "Who is far from the rest?", "qd outliers latest COLUMN"),
     ("Read it back", "Who is odd, and in what? Every column at once",
      "qd odd latest"),
