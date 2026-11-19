@@ -72,7 +72,7 @@ ones first.
 | Heading | Commands |
 |---|---|
 | Run | `run`, `ask`, `probe`, `do`, `import`, `hosts` |
-| Read it back | `log`, `show`, `stats`, `freq`, `hist`, `outliers`, `pivot`, `trend`, `view`, `web` |
+| Read it back | `log`, `show`, `coverage`, `stats`, `freq`, `hist`, `outliers`, `odd`, `pivot`, `trend`, `view`, `web` |
 | Over time | `diff`, `compare`, `changes` |
 | Judge and report | `check`, `report`, `peers`, `baseline` |
 | Larger jobs | `split`, `campaign`, `doe`, `join` |
