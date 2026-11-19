@@ -38,7 +38,8 @@ qd itself keeps its 3.6 floor.
 
 A config may carry what qd needs beyond doe's own keys, which doe ignores:
 `metadata.qd_command`, the command a point runs (so `qd doe run CONFIG`
-needs no command after --), and a `column` on each response, the column of
+needs no command after --), `metadata.qd_timeout`, the seconds one point
+needs (qd doe run's --timeout is at least that), and a `column` on each response, the column of
 the filed run it is read from.  doe's `fixed_factors` -- what the design
 holds still -- are put into the command by {name} like the factors.
 `qd doe init fio` writes such a config: QD-067's Plackett-Burman screen of
@@ -49,6 +50,8 @@ and writes a follow-up config: the big numeric factors varied, the rest
 held at their better level, the design doe suggest's response-surface
 choice, the study the screen's (metadata.qd_study).  `qd doe run --like`
 runs it on the hosts the screen ran on, holding what the screen held.
+The screen and its follow-ups are a study; quarterdeck/study.py lines up
+every run of it (`qd compare --study`, qd web's study view, QD-070).
 
 With --report doe's plots and HTML report are kept (in qd's cache unless a
 directory is named), where qd web links them.  qd web's charts of a design
@@ -171,6 +174,19 @@ def command_of(cfg):
     meta = cfg.get("metadata") or {}
     cmd = meta.get("qd_command") if isinstance(meta, dict) else None
     return cmd.strip() if isinstance(cmd, str) else ""
+
+
+def timeout_of(cfg):
+    """The seconds one point needs (metadata.qd_timeout), or None.  qd doe
+    run uses at least this as its per-host --timeout, so a point that runs
+    longer than qd's 60 s default is not stopped part-way."""
+    meta = cfg.get("metadata") or {}
+    v = meta.get("qd_timeout") if isinstance(meta, dict) else None
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
 
 
 def substitute(template, levels, fixed=()):
@@ -743,7 +759,7 @@ def clean(text):
 # host.  The factors, levels and the reason for each are the proposal the
 # owner approves (or changes) before the first real run; the manual says
 # the same at more length,
-# README: "A screen of fio's parameters: qd doe init fio"
+# docs/larger-jobs.md: "A screen of fio's parameters: qd doe init fio"
 FIO_COMMAND = (
     "fio --name=qd-screen --filename={filename} --size={size} --time_based "
     "--runtime={runtime} --ramp_time={ramp_time} --group_reporting "
@@ -758,6 +774,9 @@ FIO_SCREEN = {
                        "drive of one host (QD-067): which of them move "
                        "IOPS, bandwidth and latency most.",
         "qd_command": FIO_COMMAND,
+        # one point is the 10 s ramp and the 60 s run, plus fio's start
+        # and the file's laying out: past qd's 60 s default --timeout
+        "qd_timeout": 180,
         "qd_note": "Set fixed_factors.filename to a file on the drive under "
                    "test before the first run. A /dev path writes the raw "
                    "device and destroys what is on it: qd doe run refuses "

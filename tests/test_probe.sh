@@ -372,6 +372,48 @@ t_firmware_finds_the_odd_host_in_a_rack() {
     assert_eq "$(printf '%s\n' "$out" | tail -n +2 | wc -l | tr -d ' ')" "1"
 }
 
+# QD-065: after qd probe facts, qd survey -- the same hosts, asked facts
+# and inventory, and one screen of who stands out -- for next time; and
+# qd odd for its many columns.  A binnacle whose why-slow answers from the
+# host's ./facts.json, and the fake ssh by QD_SSH, so the command line
+# the suggestion is made from is the one typed.
+t_probe_facts_suggests_qd_survey() {
+    seed
+    mkdir -p py/binnacle
+    : > py/binnacle/__init__.py
+    printf 'import sys\nsys.stdout.write(open("facts.json").read())\n' \
+        > py/binnacle/why_slow.py
+    for h in a b; do
+        printf '{"cpu.busy_pct": 4%s.0, "cpu.count": 64, "sys.kernel": "x"}\n' \
+            "${#h}" > "$FAKE_ROOT/$h/facts.json"
+    done
+    probe() {
+        PYTHONPATH="$PWD/py" QD_SSH="$FAKE_BIN/ssh" QD_SCP="$FAKE_BIN/scp" \
+            qd_rc probe "$@"
+    }
+    probe facts -s hosts.txt > out
+    assert_status "$QD_RC" 0
+    assert_contains "$(cat out)" "* qd survey -s hosts.txt "
+    assert_contains "$(cat out)" "next time: facts and inventory, and who stands out"
+    assert_contains "$(cat out)" "* qd odd latest"
+    # a probe is asked again by qd probe, not qd again
+    assert_not_contains "$(cat out)" "qd again"
+    "$PY" "$QD_DIR/tests/help_unit.py" "$QD_DIR" next out > parsed
+    assert_eq "$(head -c 3 parsed)" "ok "
+    n="$(sed -n '/WHAT TO DO NEXT/,$p' out | grep -c '^    \* ')"
+    [ "$n" -le 6 ] || fail "$n next steps"
+    # the options typed come along, wherever they were
+    probe -s hosts.txt --timeout 20 facts > out
+    assert_contains "$(cat out)" "* qd survey -s hosts.txt --timeout 20 "
+    # not after any other probe, nor one survey would refuse (it asks once)
+    probe os -s hosts.txt > out
+    assert_not_contains "$(cat out)" "qd survey"
+    probe facts -s hosts.txt --count 2 --every 0.1 > out
+    assert_status "$QD_RC" 0
+    assert_contains "$(cat out)" "WHAT TO DO NEXT"
+    assert_not_contains "$(cat out)" "qd survey"
+}
+
 run_test "the catalogue lists itself"                t_the_catalogue_lists_itself
 run_test "command probes: a run each, named"         t_command_probes_file_a_run_each
 run_test "a group expands to its probes"             t_a_group_expands
@@ -386,4 +428,5 @@ run_test "probes stop and retry like a run"         t_probes_stop_and_retry_like
 run_test "firmware: dmi, cpuinfo and ethtool"       t_firmware_reads_dmi_cpuinfo_and_ethtool
 run_test "firmware: what it could not read"         t_firmware_says_what_it_could_not_read
 run_test "firmware: the odd host in a rack"         t_firmware_finds_the_odd_host_in_a_rack
+run_test "probe facts: qd survey, for next time"    t_probe_facts_suggests_qd_survey
 finish

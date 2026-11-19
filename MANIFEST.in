@@ -11,6 +11,8 @@ recursive-include quarterdeck/demo *
 include docs/getting-started.md
 # the words and run references, which tests/test_concepts.sh checks
 include docs/concepts.md
+# the rest of the manual, its chapters and screenshots (QD-041)
+recursive-include docs *.md *.png
 # Ship the test suite in the sdist so it can be run against exactly what was
 # unpacked. It needs only bash and python3.
 recursive-include tests *
