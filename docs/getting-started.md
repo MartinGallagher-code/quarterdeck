@@ -99,7 +99,7 @@ qd demo -- filed the store demo: a made-up fleet's week, 7 runs of 24 hosts
   WHAT TO DO NEXT
     * qd store use demo      read the demo from here on (qd store ls: the others)
     * qd log                 the runs it holds, oldest first
-    * qd freq demo-kernel A  who runs which kernel
+    * qd freq demo-kernel A  who runs which kernel (A: uname -r's answer)
     * the walkthrough, ten minutes, a question a step: docs/getting-started.md,
       https://github.com/MartinGallagher-code/quarterdeck/blob/main/docs/getting-started.md
 ```
