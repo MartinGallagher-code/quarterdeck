@@ -23,6 +23,9 @@
 #   has_batch               whether that provost files a run as one batch
 #   assert_dir_exists DIR   a directory is there
 #   stand_in_doe            a doe that designs and analyses as the real one
+#   stand_in_fio            a fio whose JSON answer is a known function of
+#                           its options (FIO_FAIL=TEXT: fails, as fio does,
+#                           when its arguments contain TEXT)
 #   path_without CMD...     this PATH without those commands
 #   nojq_path               this PATH without jq, for provost's own readers
 #   no_store_check DIR...   leave these stores out of QD_STORE_CHECK
@@ -676,24 +679,110 @@ in_allocation() {
 
 # -- a stand-in doe ------------------------------------------------------------
 
-# design_of_experiments' doe, for the suites: full factorial designs,
-# block_count copies of them, and two-level main effects -- the files and
-# headings the real one has (it needs Python 3.10 and numpy).
+# design_of_experiments' doe, for the suites: full factorial,
+# Plackett-Burman, central composite and Box-Behnken designs, block_count
+# copies of them, its suggest for a response surface, and two-level main
+# effects for every response in the config -- the files, headings and
+# --csv tables the real one has (it needs Python 3.10 and numpy).  Each
+# value it was given is logged to $FAKE_BIN/doe-values, so a case can see
+# what was analysed (and that a blank was not handed over as 0).
 stand_in_doe() {
     cat > "$FAKE_BIN/doe" <<'EOF'
 #!/usr/bin/env python3
-# doe, for the suite: full factorial designs, block_count copies of them,
-# and two-level main effects -- the files and headings the real one has.
-import itertools, json, os, sys
+# doe, for the suite: full factorial and Plackett-Burman designs,
+# block_count copies of them, and two-level main effects -- the files,
+# headings and --csv tables the real one has.
+import csv, io, itertools, json, os, sys
+# the real doe runs on Python 3.10+, which writes UTF-8 even under a C
+# locale; this stand-in may run on 3.6 (CI's floor job), so it says so
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 a = sys.argv[1:]
 def opt(n):
     return a[a.index(n) + 1] if n in a else None
+def key(x):
+    # doe's _numeric_sort_key: numbers by value, then the rest by name
+    try:
+        return (0, float(x), "")
+    except ValueError:
+        return (1, 0.0, x)
+# Plackett-Burman's generating rows (8 and 12 runs), cycled, then all low
+PB = {8: "+++-+--", 12: "++-+++---+-"}
+def pbdesign(k):
+    n = 8 if k <= 7 else 12
+    g = PB[n]
+    rows = [[g[(j - i) % (n - 1)] == "+" for j in range(n - 1)]
+            for i in range(n - 1)] + [[False] * (n - 1)]
+    return [r[:k] for r in rows]
+if a[0] == "suggest":
+    # doe's response_surface rule (doe/suggest.py), in doe's words
+    k, budget = int(opt("--factors")), int(opt("--budget"))
+    why = ["Goal: response surface \u2014 fit a quadratic over %d factor(s)." % k]
+    bb = {3: 13, 4: 25, 5: 41}.get(k)
+    if bb and budget >= bb:
+        op, n, rc = "box_behnken", bb, 3
+        why.append("Box-Behnken on %d continuous factors uses %d runs (incl. "
+                   "3 centre points) \u2014 rotatable and avoids the cube "
+                   "corners." % (k, bb))
+    elif budget >= 2 ** k + 2 * k + 5:
+        op, n, rc = "central_composite", 2 ** k + 2 * k + 5, 5
+        why.append("Central composite on %d continuous factors uses ~%d runs "
+                   "(corners + axials + 5 centre)." % (k, n))
+    elif k >= 3:
+        op, n, rc = "definitive_screening", 2 * k + 1, 0
+        why.append("Budget (%d) is too small for a Box-Behnken/CCD; "
+                   "definitive screening fits %d runs and still detects main "
+                   "effects + curvature." % (budget, n))
+    else:
+        op, n, rc = "full_factorial", 3 ** k, 0
+        why.append("Few factors \u2014 a 3-level full factorial on %d factors "
+                   "uses %d runs and supports a quadratic." % (k, n))
+    print("\n=== Suggestion ===")
+    print("  operation        : %s" % op)
+    print("  estimated runs   : %d" % n)
+    if rc:
+        print("  replicate_center : %d" % rc)
+    for w in why:
+        print("  - %s" % w)
+    sys.exit(0)
 cfg = json.load(open(opt("--config")))
 out = cfg["settings"]["out_directory"]
+op = cfg["settings"].get("operation", "full_factorial")
 if a[0] == "generate":
     import random
     names = [f["name"] for f in cfg["factors"]]
-    base = list(itertools.product(*[f["levels"] for f in cfg["factors"]]))
+    if op == "plackett_burman":
+        base = [tuple(f["levels"][int(hi)] for f, hi in zip(cfg["factors"], r))
+                for r in pbdesign(len(names))]
+    elif op in ("central_composite", "box_behnken"):
+        # pyDOE3's face-centred ccdesign(k, center=(4, 4)) and
+        # bbdesign(k, center=3), decoded as doe/design.py does
+        k = len(names)
+        if op == "central_composite":
+            coded = [list(c) for c in itertools.product((-1, 1), repeat=k)]
+            coded += [[0] * k] * 4
+            for i in range(k):
+                for s in (-1, 1):
+                    coded.append([s if j == i else 0 for j in range(k)])
+            coded += [[0] * k] * 4
+        else:
+            coded = []
+            for i, j in itertools.combinations(range(k), 2):
+                for si, sj in itertools.product((-1, 1), repeat=2):
+                    c = [0] * k
+                    c[i], c[j] = si, sj
+                    coded.append(c)
+            coded += [[0] * k] * 3
+        def dec(c, f):
+            lo, hi = float(f["levels"][0]), float(f["levels"][1])
+            v = (lo + hi) / 2.0 + c * (hi - lo) / 2.0
+            if op == "central_composite" and all(
+                    float(x).is_integer() for x in f["levels"]):
+                return str(int(round(v)))
+            return "%.6g" % v
+        base = [tuple(dec(c, f) for c, f in zip(row, cfg["factors"]))
+                for row in coded]
+    else:
+        base = list(itertools.product(*[f["levels"] for f in cfg["factors"]]))
     # the run order is shuffled within each block, as the real one does,
     # and the same for the same --seed
     rnd = random.Random(int(opt("--seed"))) if opt("--seed") else random.Random()
@@ -707,7 +796,7 @@ if a[0] == "generate":
                          "whole_plot_id": 0})
     if not os.path.isdir(out):
         os.makedirs(out)
-    json.dump({"factor_names": names, "operation": "full_factorial",
+    json.dump({"factor_names": names, "operation": op,
                "metadata": {}, "runs": runs},
               open(os.path.join(out, "design_matrix.json"), "w"))
     open(opt("--output"), "w").write("#!/bin/sh\n")
@@ -715,32 +804,133 @@ if a[0] == "generate":
 elif a[0] == "analyze":
     d = opt("--results-dir")
     m = json.load(open(os.path.join(d, "design_matrix.json")))
-    resp = cfg["responses"][0]["name"]
-    vals = {}
-    for r in m["runs"]:
-        p = os.path.join(d, "run_%d.json" % r["run_id"])
-        if os.path.exists(p):
-            vals[r["run_id"]] = json.load(open(p))[resp]
-    print("=== Main Effects: %s ===" % resp)
-    for f in m["factor_names"]:
-        lv = sorted(set(r["factor_values"][f] for r in m["runs"]), key=float)
-        mean = []
-        for l in lv:
-            xs = [vals[r["run_id"]] for r in m["runs"]
-                  if r["factor_values"][f] == l and r["run_id"] in vals]
-            mean.append(sum(xs) / len(xs))
-        print("%-20s %10.4f" % (f, mean[-1] - mean[0]))
+    got = [r for r in m["runs"]
+           if os.path.exists(os.path.join(d, "run_%d.json" % r["run_id"]))]
+    if len(got) < len(m["runs"]):
+        print("Partial mode: analyzing %d/%d completed runs"
+              % (len(got), len(m["runs"])))
+    log = open(os.path.join(os.path.dirname(sys.argv[0]), "doe-values"), "a")
+    for resp in [r["name"] for r in cfg["responses"]]:
+        vals = {}
+        for r in got:
+            v = json.load(open(os.path.join(d, "run_%d.json" % r["run_id"])))
+            if resp in v:
+                vals[r["run_id"]] = v[resp]
+                log.write("%s %d %r\n" % (resp, r["run_id"], v[resp]))
+        print("=== Main Effects: %s ===" % resp)
+        eff = []
+        for f in m["factor_names"]:
+            lv = sorted(set(r["factor_values"][f] for r in m["runs"]), key=key)
+            mean = []
+            for l in lv:
+                xs = [vals[r["run_id"]] for r in m["runs"]
+                      if r["factor_values"][f] == l and r["run_id"] in vals]
+                mean.append(sum(xs) / len(xs))
+            eff.append((f, mean[-1] - mean[0]))
+        total = sum(abs(e) for _, e in eff) or 1.0
+        eff.sort(key=lambda fe: abs(fe[1]), reverse=True)
+        for f, e in eff:
+            print("%-20s %10.4f" % (f, e))
+        if opt("--csv"):
+            if not os.path.isdir(opt("--csv")):
+                os.makedirs(opt("--csv"))
+            w = csv.writer(open(os.path.join(
+                opt("--csv"), "main_effects_%s.csv" % resp), "w"))
+            w.writerow(["factor_name", "main_effect", "std_error",
+                        "pct_contribution", "ci_low", "ci_high"])
+            for f, e in eff:
+                w.writerow([f, e, 0.0, abs(e) / total * 100, 0.0, 0.0])
     # its plots and HTML report, unless told not to, where the real one
     # puts them: settings.processed_directory, else the results
     keep = cfg["settings"].get("processed_directory") or d
+    names_ = [r["name"] for r in cfg["responses"]]
     if "--no-plots" not in a:
-        open(os.path.join(keep, "main_effects_%s.png" % resp), "wb").write(
-            b"\x89PNG\r\n\x1a\n")
+        for resp in names_:
+            open(os.path.join(keep, "main_effects_%s.png" % resp),
+                 "wb").write(b"\x89PNG\r\n\x1a\n")
     if "--no-report" not in a:
         open(os.path.join(keep, "report.html"), "w").write(
-            "<html><body><h1>DOE report: %s</h1></body></html>\n" % resp)
+            "<html><body><h1>DOE report: %s</h1></body></html>\n"
+            % ", ".join(names_))
         print("\nHTML report: %s" % os.path.join(keep, "report.html"))
 EOF
     chmod +x "$FAKE_BIN/doe"
     export QD_DOE="$FAKE_BIN/doe"
+}
+
+# -- a stand-in fio ------------------------------------------------------------
+
+# fio, for the suites: reads the options qd's fio screen gives it and
+# prints fio 3.36's --output-format=json, its numbers a known function of
+# the options, so a screen's analysis must find exactly these:
+#   read IOPS   20000 + 30000 at iodepth 32 - 15000 at bs 128k
+#   write IOPS   8000 + 12000 at numjobs 8  -  5000 at rwmixread 70
+#   bandwidth   IOPS x bs
+#   read clat   mean 50us + 400 at iodepth 32 + 100 at numjobs 8;
+#               p99 200us + 3000 for randrw + 1200 with libaio
+#   write clat  mean 80us + 500 at numjobs 8;
+#               p99 300us + 2500 buffered (direct=0) + 900 for randrw
+# FIO_FAIL=TEXT: a job error (err=22) and exit 1 when the arguments contain
+# TEXT, its JSON printed all the same, every figure 0 -- as fio does.
+stand_in_fio() {
+    cat > "$FAKE_BIN/fio" <<'EOF'
+#!/usr/bin/env python3
+import json, os, sys
+o = {}
+for x in sys.argv[1:]:
+    if x.startswith("--"):
+        k, _, v = x[2:].partition("=")
+        o[k] = v
+def num(k, d):
+    v = o.get(k, d).lower().rstrip("kib")
+    return float(v)
+bs, depth, jobs = num("bs", "4k"), num("iodepth", "1"), num("numjobs", "1")
+mix = num("rwmixread", "50")
+fail = os.environ.get("FIO_FAIL")
+err = 22 if fail and fail in " ".join(sys.argv[1:]) else 0
+r_iops = 20000 + 30000 * (depth >= 32) - 15000 * (bs >= 128)
+w_iops = 8000 + 12000 * (jobs >= 8) - 5000 * (mix >= 70)
+r_mean = 50 + 400 * (depth >= 32) + 100 * (jobs >= 8)
+r_p99 = 200 + 3000 * (o.get("rw") == "randrw") + 1200 * (o.get("ioengine") == "libaio")
+w_mean = 80 + 500 * (jobs >= 8)
+w_p99 = 300 + 2500 * (o.get("direct") == "0") + 900 * (o.get("rw") == "randrw")
+def side(iops, mean_us, p99_us):
+    if err:
+        iops = mean_us = p99_us = 0
+    bw = iops * bs
+    st = lambda us: {"min": int(us * 500), "max": int(us * 3000),
+                     "mean": us * 1000.0, "stddev": us * 100.0, "N": int(iops * 30)}
+    clat = st(mean_us)
+    clat["percentile"] = {"1.000000": int(mean_us * 300),
+                          "50.000000": int(mean_us * 1000),
+                          "99.000000": int(p99_us * 1000),
+                          "99.900000": int(p99_us * 1500)}
+    return {"io_bytes": int(bw * 1024 * 30), "io_kbytes": int(bw * 30),
+            "bw_bytes": int(bw * 1024), "bw": int(bw), "iops": float(iops),
+            "runtime": 30000, "total_ios": int(iops * 30), "short_ios": 0,
+            "drop_ios": 0, "slat_ns": st(2), "clat_ns": clat,
+            "lat_ns": st(mean_us + 2), "bw_min": int(bw * 0.9),
+            "bw_max": int(bw * 1.1), "bw_mean": float(bw),
+            "iops_min": int(iops * 0.9), "iops_max": int(iops * 1.1),
+            "iops_mean": float(iops)}
+job = {"jobname": o.get("name", "fio"), "groupid": 0, "error": err,
+       "eta": 0, "elapsed": 31,
+       "job options": dict((k, v) for k, v in o.items()
+                           if k not in ("output-format",)),
+       "read": side(r_iops, r_mean, r_p99),
+       "write": side(w_iops, w_mean, w_p99),
+       "usr_cpu": 5.1, "sys_cpu": 20.3, "ctx": 100000, "majf": 0, "minf": 50}
+n = 1 if "group_reporting" in o else int(jobs)
+print(json.dumps({"fio version": "fio-3.36", "timestamp": 1751880000,
+                  "time": "Mon Jul  7 10:00:00 2025",
+                  "jobs": [dict(job, jobname="%s" % job["jobname"])
+                           for _ in range(n)]}, indent=2))
+if err:
+    sys.stderr.write("fio: pid=4242, err=22/file:filesetup.c:805, "
+                     "func=open(%s), error=Invalid argument\n"
+                     % o.get("filename", "?"))
+    sys.exit(1)
+EOF
+    chmod +x "$FAKE_BIN/fio"
+    export PATH="$FAKE_BIN:$PATH"
 }

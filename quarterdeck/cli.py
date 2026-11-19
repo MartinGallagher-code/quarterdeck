@@ -25,7 +25,7 @@ Judge and report
 Larger jobs
   qd split [HOSTS] --by rack|--into N  one host list into several
   qd campaign new|run|status|retry|ls  a system in parts, progress kept
-  qd doe plan|run|status|analyze       designed experiments
+  qd doe plan|run|status|analyze|next  designed experiments; init fio
   qd join RUN TELEMETRY                beside Splunk/Prometheus samples
 Stores and output
   qd store new|ls|use|rename|rm|clear|export|import    named stores
@@ -97,6 +97,11 @@ DANGER = [
     (r"\btruncate\b", "truncate"),
     (r":\(\)\s*\{", "fork bomb"),
     (r"\biptables\s+-F\b|\bnft\s+flush\b", "firewall flush"),
+    # qd's own, not yet in binnacle's copy (QD-067): fio writing a device,
+    # which destroys what is on it; a file on its filesystem does not
+    (r"\bfio\b(?=.*--?filename[= ]\s*/dev/(?!null\b|shm/|zero\b))"
+     r"(?=.*--?(rw|readwrite)[= ]\s*(\w*write|rw|randrw|\w*trim\w*)\b)",
+     "fio writing a raw device"),
 ]
 
 
@@ -5219,6 +5224,38 @@ def pacing_lines(pace):
 def cmd_doe(args):
     from . import doe as doemod
     what = args.action
+    if what == "init":
+        path, cfg = doemod.init(args.target)
+        lines = ["%s doe -- wrote %s: %s, %s" % (
+            PROG, path, cfg["settings"]["operation"].replace("_", "-"),
+            plural(len(cfg["factors"]), "factor"))]
+        import textwrap
+        rows = [[f["name"], " / ".join(f["levels"]), f.get("label", "")]
+                for f in cfg["factors"]]
+        rows += [[k, v, "held fixed"]
+                 for k, v in doemod.fixed_of(cfg)]
+        lines.extend(render.render_rows(["factor", "levels", "what"], rows,
+                                        width=width_of(args), indent="  "))
+        wrap = max(40, min(width_of(args) or 80, 100) - 2)
+        for head, text in (
+                ("responses", ", ".join(r["name"] for r in
+                                        cfg.get("responses") or [])),
+                ("command", doemod.command_of(cfg)),
+                ("note", (cfg.get("metadata") or {}).get("qd_note") or "")):
+            if text:
+                lines.extend(textwrap.wrap(
+                    text, wrap, initial_indent="  %-10s " % head,
+                    subsequent_indent=" " * 13, break_on_hyphens=False))
+        lines.append("  The reason for each factor and level is its "
+                     "description in %s." % path)
+        lines.extend(next_steps([
+            ("%s doe plan %s" % (PROG, path), "the points doe lays out"),
+            ("%s doe run %s -s hosts.txt" % (PROG, path),
+             "measure them, the config's command at each"),
+            ("%s doe analyze %s" % (PROG, doemod.design_name(cfg, path)),
+             "what moves each response")]))
+        sys.stdout.write(render.page(lines))
+        return 0
     if what == "plan":
         cfg = doemod.read_config(args.target)
         matrix = doemod.generate(cfg, doemod.seed_of(cfg, args.seed))
@@ -5234,6 +5271,8 @@ def cmd_doe(args):
                                         numeric=[0, 1], width=width_of(args),
                                         indent="  "))
         lines.extend(next_steps([(
+            ("%s doe run %s -s hosts.txt" % (PROG, args.target))
+            if doemod.command_of(cfg) else
             "%s doe run %s -s hosts.txt -- 'COMMAND %s'" % (
                 PROG, args.target, " ".join("{%s}" % n for n in names)),
             "measure every point on the fleet")]))
@@ -5247,6 +5286,18 @@ def cmd_doe(args):
         lines = ["%s doe -- %s: %d of %s measured" % (
             PROG, args.target, done, plural(len(rows), "point")),
             "  command  %s" % row.get("command", "")]
+        _, scfg, _ = doemod.load(st, args.target)
+        meta = scfg.get("metadata") or {}
+        if isinstance(meta, dict) and meta.get("qd_study"):
+            fol = meta.get("qd_follows") or {}
+            how = []
+            if isinstance(fol, dict) and fol.get("design"):
+                how.append("follows %s: %s" % (fol["design"],
+                                               fol.get("response", "")))
+            if meta.get("qd_like"):
+                how.append("like %s" % meta["qd_like"])
+            lines.append("  study    %s%s" % (
+                meta["qd_study"], (" (%s)" % "; ".join(how)) if how else ""))
         lines.extend(render.render_rows(
             doemod.STATUS_COLUMNS, rows,
             numeric=[0, 1, 3], width=width_of(args), indent="  "))
@@ -5255,42 +5306,178 @@ def cmd_doe(args):
             tips.append(("%s doe run CONFIG ... --name %s" % (
                 PROG, args.target), "measure the rest (measured points "
                 "are kept, not run again)"))
-        tips.append(("%s doe analyze %s -c COLUMN" % (PROG, args.target),
-                     "effects, interactions, ANOVA: doe's analysis"))
+        _, cfg, _ = doemod.load(st, args.target)
+        tips.append(("%s doe analyze %s%s" % (
+            PROG, args.target,
+            "" if doemod.specs(cfg) else " -c COLUMN"),
+            "effects, interactions, ANOVA: doe's analysis"))
         lines.extend(next_steps(tips))
         sys.stdout.write(render.page(lines))
         return 0
     if what == "analyze":
-        if not args.column:
-            die("analyze what? -c COLUMN: the response, as qd show names it")
-        _, _, matrix = doemod.load(st, args.target)
+        cols = [c.strip() for c in (args.column or "").split(",")
+                if c.strip()]
         report = None
         if args.report is not None:
-            report = doemod.report_dir(st, args.target, args.column,
-                                       args.report or None)
-        text, resp = doemod.analyze(st, args.target, args.column, args.agg,
-                                    args.optimize, report=report)
-        lv = dict((rid, " ".join("%s=%s" % kv for kv in levels))
-                  for rid, _, levels in doemod.points(matrix))
-        rows = [[str(rid), lv.get(rid, ""), str(n),
-                 stats.fmt_num(v) if v is not None else ""]
-                for rid, v, n in resp]
-        lines = ["%s doe -- %s: %s per point (%s over the hosts that "
-                 "answered)" % (PROG, args.target, args.column, args.agg)]
-        lines.extend(render.render_rows(
-            ["point", "factors", "samples", args.column], rows,
-            numeric=[0, 2, 3], width=width_of(args), indent="  "))
+            _, rcfg, _ = doemod.load(st, args.target)
+            key = doemod.report_key(rcfg, cols)
+            if key:
+                report = doemod.report_dir(st, args.target, key,
+                                           args.report or None)
+        text, allr, effects, matrix = doemod.analyze(
+            st, args.target, cols, args.agg, args.optimize, report=report)
+        if len(allr) == 1:
+            rname, col, _, resp = allr[0]
+            lv = dict((rid, " ".join("%s=%s" % kv for kv in levels))
+                      for rid, _, levels in doemod.points(matrix))
+            rows = [[str(rid), lv.get(rid, ""), str(n), num_or_blank(v)]
+                    for rid, v, n in resp]
+            lines = ["%s doe -- %s: %s per point (%s over the hosts that "
+                     "answered)" % (PROG, args.target, col, args.agg)]
+            lines.extend(render.render_rows(
+                ["point", "factors", "samples", col], rows,
+                numeric=[0, 2, 3], width=width_of(args), indent="  "))
+        else:
+            # a column a response, blank where a point did not measure it
+            vals = [dict((rid, v) for rid, v, _ in r[3]) for r in allr]
+            rows = [[str(rid)] + [num_or_blank(d.get(rid)) for d in vals]
+                    for rid, _, _ in doemod.points(matrix)]
+            lines = ["%s doe -- %s: %s per point (%s over the hosts that "
+                     "answered; blank: not measured)" % (
+                         PROG, args.target,
+                         plural(len(allr), "response"), args.agg)]
+            lines.extend(render.render_rows(
+                ["point"] + [r[0] for r in allr], rows,
+                numeric=range(len(allr) + 1), width=width_of(args),
+                indent="  "))
+            named = ", ".join("%s=%s" % (r[0], r[1]) for r in allr
+                              if r[0] != r[1])
+            if named:
+                import textwrap
+                lines.extend(textwrap.wrap(
+                    "(the columns: %s)" % named,
+                    max(40, (width_of(args) or 80) - 2),
+                    initial_indent="  ", subsequent_indent="   ",
+                    break_on_hyphens=False))
+        lines.append("")
+        lines.append("  what moves each response: doe's main effects as "
+                     "shares, largest first;")
+        lines.append("  big: inside doe's %d%% Pareto line, with the level "
+                     "that is best for it" % doemod.PARETO)
+        lines.extend(doemod.ranking_lines(allr, effects, matrix,
+                                          width_of(args)))
         lines.append("")
         lines.append("  doe analyze:")
         lines.extend("  " + ln for ln in text.splitlines())
         if report is not None:
-            lines.extend(doe_report_lines(doemod, report, args))
+            lines.extend(doe_report_lines(
+                doemod, report, args,
+                allr[0][1] if len(allr) == 1 else None))
         sys.stdout.write(render.page(lines))
         return 0
-    die("unknown doe action %r (plan, run, status, analyze)" % what)
+    if what == "next":
+        return doe_next(args, st, doemod)
+    die("unknown doe action %r (init, plan, run, status, analyze, next)"
+        % what)
 
 
-def doe_report_lines(doemod, report, args):
+def doe_next(args, st, doemod):
+    """qd doe next SCREEN -c RESPONSE (QD-069): a central composite or
+    Box-Behnken follow-up on the screen's few big factors, the rest held at
+    their better level, written as a config `qd doe run --like` runs where
+    the screen ran."""
+    import json
+    import textwrap
+    screen = args.target
+    row, cfg, smatrix = doemod.load(st, screen)
+    cols = [c.strip() for c in (args.column or "").split(",") if c.strip()]
+    if len(cols) != 1:
+        names = [n for n, _, _ in doemod.specs(cfg)]
+        die("a follow-up is for one response: -c NAME%s (%s doe analyze %s "
+            "ranks what moves each)" % (
+                (", one of %s" % ", ".join(names)) if names else
+                " (a column, as qd show names it)", PROG, screen))
+    _, allr, effects, _ = doemod.analyze(st, screen, cols)
+    rname, column, optimize, _ = allr[0]
+    eff = effects.get(rname)
+    if not eff:
+        die("doe gave no main effects for %s: %s doe analyze %s -c %s says "
+            "why" % (rname, PROG, screen, cols[0]))
+    best = doemod.best_levels(smatrix, eff, optimize)
+    picked = [f.strip() for f in (args.factors or "").split(",")
+              if f.strip()]
+    varied, held, said = doemod.choose(cfg, eff, best, picked)
+    if not varied:
+        die("nothing to fit a surface over: %s's %s %s; a central composite "
+            "or Box-Behnken varies numbers (--factors names numeric ones)"
+            % (rname, "chosen factors are" if picked else
+               "big factors are", ", ".join(said) or "not numeric"))
+    if args.budget < 1:
+        die("--budget wants a number of runs above 0")
+    op, est, why, text = doemod.suggest(len(varied), args.budget)
+    if op not in doemod.SURFACES:
+        die("doe suggest, for %s with a budget of %d runs, chose %s, not a "
+            "central composite or Box-Behnken:\n  %s\n(a larger --budget "
+            "gives it room for one)" % (
+                plural(len(varied), "numeric factor"), args.budget, op,
+                "\n  ".join(why)))
+    name, new = doemod.follow_up(screen, row, cfg, rname, column, optimize,
+                                 varied, held, op)
+    path = args.output or (name + ".json")
+    if os.path.exists(path):
+        die("%s is there already: move it, or -o another file" % path)
+    matrix = doemod.generate(new, doemod.seed_of(new))
+    n = len(doemod.points(matrix))
+    write_text(path, json.dumps(new, indent=2) + "\n")
+    wrap = max(40, min(width_of(args) or 80, 100) - 2)
+    pct = dict((f, p) for f, _, p in eff)
+
+    def para(head, text):
+        lines.extend(textwrap.wrap(text, wrap, initial_indent="  %-9s " % head,
+                                   subsequent_indent=" " * 12,
+                                   break_on_hyphens=False))
+    lines = ["%s doe -- wrote %s: %s on %s, %s" % (
+        PROG, path, op.replace("_", "-"), plural(len(varied), "factor"),
+        plural(n, "point"))]
+    para("for", "%s (%s, %s), as the screen %s ranked it" % (
+        rname, column, "maximise" if optimize != "minimize" else "minimise",
+        screen))
+    rows = [[f["name"], " / ".join(f["levels"]),
+             "%.0f%%" % pct[f["name"]] if f["name"] in pct else "",
+             "varied: the screen's range"] for f in varied]
+    rows += [[nm, lv, "%.0f%%" % pct[nm] if nm in pct else "",
+              "held: its better level" if how == "better" else
+              "held: no effect seen, its first level"]
+             for nm, lv, how in held]
+    rows += [[k, v, "", "held, as in the screen"]
+             for k, v in doemod.fixed_of(cfg)]
+    lines.extend(render.render_rows(["factor", "level(s)", "effect", "why"],
+                                    rows, width=width_of(args), indent="  "))
+    for ln in said:
+        para("note", ln)
+    para("design", "%s, doe suggest's choice%s; doe generate lays out "
+         "%s." % (op.replace("_", " "), (" (%s)" % " ".join(
+             w.rstrip(".") for w in why[1:])) if len(why) > 1 else "",
+             plural(n, "point")))
+    for f, v in doemod.between(matrix, varied):
+        para("warning", "%s's middle level is %s, and a count takes whole "
+             "numbers: move a level of %s by one in %s so they sum to an "
+             "even number" % (f, v, f, path))
+    para("levels", "the screen's own range for each varied factor, not "
+         "re-centred on its best corner: edit the levels in %s to move the "
+         "region, then %s doe plan it" % (path, PROG))
+    study = doemod.study_of(new, name)
+    para("study", "%s, %s" % (study, "the screen's own" if study == screen
+                               else "as %s is" % screen))
+    lines.extend(next_steps([
+        ("%s doe plan %s" % (PROG, path), "the points doe lays out"),
+        ("%s doe run %s --like %s" % (PROG, path, screen),
+         "measure them on the host and target %s ran on" % screen)]))
+    sys.stdout.write(render.page(lines))
+    return 0
+
+
+def doe_report_lines(doemod, report, args, column=None):
     """Where doe's report and plots were kept, and how to see them."""
     html, plots = doemod.report_files(report)
     lines = [""]
@@ -5302,26 +5489,40 @@ def doe_report_lines(doemod, report, args):
     lines.append("  %s in %s%s" % (
         plural(len(plots), "plot"), report,
         (": " + ", ".join(plots)) if plots else ""))
-    if not args.report:
+    if not args.report and column:
         lines.append("  %s web links it from the design's page (column %s)"
-                     % (PROG, args.column))
+                     % (PROG, column))
     return lines
 
 
 def doe_run(args, st, doemod):
     from . import split as splitmod
     cmd = strip_dashes(args.command)
-    if not cmd:
-        die("a design runs a command with its factors in braces: %s doe run "
-            "CONFIG -s hosts -- 'iperf3 -c peer -P {streams}'" % PROG)
-    template = " ".join(cmd)
     cfg = doemod.read_config(args.target)
+    like = getattr(args, "like", None)
+    if like:
+        lrow, lcfg = like_design(args, st, doemod, like, cfg)
+    template = " ".join(cmd) or doemod.command_of(cfg) or \
+        (lrow.get("command", "") if like else "")
+    if not template:
+        die("a design runs a command with its factors in braces: %s doe run "
+            "CONFIG -s hosts -- 'iperf3 -c peer -P {streams}' (or the "
+            "config's metadata.qd_command)" % PROG)
     name = doemod.design_name(cfg, args.target, args.name)
+    need = doemod.timeout_of(cfg)
+    if need and need > args.timeout:
+        warn("%s: --timeout %gs, as the config's metadata.qd_timeout asks "
+            "(a point runs longer than %gs)" % (name, need, args.timeout))
+        args.timeout = need
     prov = filing.Provost(st)
     prov.require("keep the measurements")
     new = not doemod.exists(st, name)
     if not new:
-        row, _, matrix = doemod.load(st, name)
+        row, old, matrix = doemod.load(st, name)
+        if doemod.fixed_of(old) != doemod.fixed_of(cfg):
+            die("the design %s was run with other fixed factors (%s): "
+                "--name a new design for these" % (name, " ".join(
+                    "%s=%s" % kv for kv in doemod.fixed_of(old)) or "none"))
         if row.get("command") != template:
             die("the design %s was run with another command (%s): --name "
                 "a new one for this command" % (name, row.get("command")))
@@ -5333,11 +5534,26 @@ def doe_run(args, st, doemod):
         seed = doemod.seed_of(cfg, args.seed)
         matrix = doemod.generate(cfg, seed)
     pts = doemod.points(matrix)
+    fixed = doemod.fixed_of(cfg)
     left = doemod.unused(template, pts[0][2] if pts else [])
     if left:
         warn("the command does not use %s: those factors will not change "
              "anything" % ", ".join("{%s}" % f for f in left))
-    hs = collect(args)
+    if like:
+        hs = like_hosts(args, st, doemod, like)
+        if template != lrow.get("command"):
+            warn("--like %s: this is not the command %s ran (%s)" % (
+                like, like, lrow.get("command")))
+        out("%s doe %s -- like %s: on %s %s, with %s, holding what it "
+            "held (%s)" % (
+                PROG, name, like, "its host" if len(hs) == 1 else
+                "its %d hosts" % len(hs), ", ".join(h.name for h in hs),
+                "its command" if template == lrow.get("command") else
+                "another command", " ".join(
+                    "%s=%s" % kv for kv in doemod.fixed_of(lcfg)) or
+                "nothing"))
+    else:
+        hs = collect(args)
     check_limit(args, hs)
     blocks = None
     if args.blocks_by:
@@ -5355,12 +5571,13 @@ def doe_run(args, st, doemod):
                      ", ".join(g for g, _ in groups[nblocks:])))
     done = doemod.point_runs(st, name)
     worst, ran = 0, 0
+    answered_on, missed = set(), {}
     # every point's command is checked before the first runs: a point the
     # guard refuses half way through would leave the design half measured
     for rid, blk, levels in pts:
-        if not done.get(rid) or args.redo:
-            check_danger(doemod.substitute(template, levels), args.yes,
-                         "doe run")
+        if not doemod.answered(done.get(rid, [])) or args.redo:
+            check_danger(doemod.substitute(template, levels, fixed),
+                         args.yes, "doe run")
     if new:
         # filed only now, every check passed: a run refused before here
         # leaves no design behind tied to the command it refused
@@ -5369,9 +5586,9 @@ def doe_run(args, st, doemod):
         st.reset()
         done = doemod.point_runs(st, name)
     for rid, blk, levels in pts:
-        if done.get(rid) and not args.redo:
+        if doemod.answered(done.get(rid, [])) and not args.redo:
             continue
-        command = doemod.substitute(template, levels)
+        command = doemod.substitute(template, levels, fixed)
         hosts = blocks[blk] if blocks else hs
         factors = storemod.join_attrs(levels)
         job = fleet_run(args, hosts, command, name,
@@ -5383,18 +5600,87 @@ def doe_run(args, st, doemod):
             continue
         ran += 1
         worst = max(worst, job.rc)
+        for r in job.last:
+            if r.outcome == fleet.OK:
+                answered_on.add(r.host.name)
+            else:
+                missed.setdefault(r.host.name, r.outcome)
         h = outcome_counts(job.last)
         out("%s doe %s -- point %d/%d (%s): %d/%d ok  (%s)" % (
             PROG, name, rid, len(pts), factors, h.get(fleet.OK, 0),
             len(hosts), job.entry.id if job.entry else "not kept"))
     st.reset()
-    measured = len(doemod.point_runs(st, name))
+    gone = [h for h in missed if h not in answered_on]
+    if gone:
+        # a host that answered at no point: said, never skipped in silence
+        warn("%s answered at none of the %s run here (%s)%s: %s points "
+             "there are not measured" % (
+                 ", ".join(gone), plural(ran, "point"),
+                 ", ".join("%s %s" % (h, missed[h]) for h in gone),
+                 (" -- %s ran there; has it gone?" % like) if like else "",
+                 "their" if len(gone) > 1 else "its"))
+    measured = sum(1 for rs in doemod.point_runs(st, name).values()
+                   if doemod.answered(rs))
     out("%s doe %s -- %d of %s measured%s" % (
         PROG, name, measured, plural(len(pts), "point"),
         "" if ran else " (nothing left to run: --redo runs them again)"))
     if measured >= 2:
-        out("  next: %s doe analyze %s -c COLUMN" % (PROG, name))
+        out("  next: %s doe analyze %s%s" % (
+            PROG, name, "" if doemod.specs(cfg) else " -c COLUMN"))
     return worst
+
+
+def like_design(args, st, doemod, like, cfg):
+    """--like SCREEN: the screen's design row and config.  The config is
+    made to hold what the screen held (its fixed factors: the file, the
+    size, the run time): one it leaves out is taken from the screen, one it
+    sets otherwise is refused.  It joins the screen's study."""
+    if args.servers or args.server or args.layout or args.select or \
+            getattr(args, "rerun", None):
+        die("--like is the host list -- the hosts %s ran on -- so it takes "
+            "no -s, -S, --layout, --select or --rerun" % like)
+    lrow, lcfg, _ = doemod.load(st, like)
+    fixed = cfg.setdefault("fixed_factors", {})
+    if not isinstance(fixed, dict):
+        die("%s: fixed_factors is not an object" % args.target)
+    names = set(f.get("name") for f in cfg.get("factors") or []
+                if isinstance(f, dict))
+    for k, v in doemod.fixed_of(lcfg):
+        if k in names:
+            die("--like %s: %s held %s at %s, and %s varies it: the target "
+                "is not the screen's" % (like, like, k, v, args.target))
+        if k not in fixed:
+            fixed[k] = v
+        elif str(fixed[k]) != v:
+            die("--like %s: %s ran with %s=%s, and %s has %s=%s: the same "
+                "host and target means the same %s (edit the config, or "
+                "leave out --like)" % (like, like, k, v, args.target, k,
+                                       fixed[k], k))
+    meta = cfg.setdefault("metadata", {})
+    if isinstance(meta, dict):
+        meta.setdefault("qd_study", doemod.study_of(lcfg, like))
+        meta["qd_like"] = like
+    return lrow, lcfg
+
+
+def like_hosts(args, st, doemod, like):
+    """The hosts the design `like` ran its points on, with their addresses
+    and attributes, in the order they first ran; the way they were reached
+    too, when that was this machine (as --rerun does)."""
+    rows = doemod.screen_hosts(st, like)
+    if not rows:
+        die("--like %s: none of its points has run, so it has no hosts to "
+            "give (%s doe status %s)" % (like, PROG, like))
+    hs = []
+    for h, _ in rows:
+        addr = h.get("addr") or ""
+        hs.append(hostmod.parse_host_token(
+            "%s=%s" % (h["host"], addr) if addr else h["host"],
+            storemod.split_attrs(h.get("attrs"))))
+    vias = set(v for _, v in rows)
+    if not getattr(args, "via", None) and vias == set(["local"]):
+        args.via = "local"
+    return hs[:args.first] if args.first is not None else hs
 
 
 # ---------------------------------------------------------------------------
@@ -5743,6 +6029,9 @@ HINTS = [
      "qd campaign new NAME -s hosts.txt --by rack -- CMD; qd campaign run NAME"),
     ("Larger jobs", "Which settings matter, and how much?",
      "qd doe run design.json -s hosts.txt -- 'CMD {factor}'; qd doe analyze ..."),
+    ("Larger jobs", "Which of fio's settings matter on this drive?",
+     "qd doe init fio; qd doe run fio-screen.json -s hosts.txt; "
+     "qd doe analyze fio-screen"),
     ("Larger jobs", "Half the fleet against the other half",
      "qd split -s hosts.txt --ab --out ab/"),
     ("Larger jobs", "What were temperature and power doing meanwhile?",
@@ -6729,10 +7018,12 @@ def build_parser():
 
     sp = verb("doe", "designed experiments: doe designs, qd measures, doe "
               "analyses")
-    sp.add_argument("action", choices=["plan", "run", "status", "analyze"])
+    sp.add_argument("action",
+                    choices=["init", "plan", "run", "status", "analyze",
+                             "next"])
     sp.add_argument("target", metavar="CONFIG|NAME",
-                    help="plan/run: a doe config; status/analyze: the "
-                    "design's name")
+                    help="init: a starting config (fio); plan/run: a doe "
+                    "config; status/analyze/next: the design's name")
     add_fleet(sp, preview=0)
     sp.add_argument("--name", help="the design's name (default the "
                     "config's)")
@@ -6741,8 +7032,9 @@ def build_parser():
                     help="run the design's blocks on host groups by ATTR")
     sp.add_argument("--redo", action="store_true",
                     help="measure points that are measured already")
-    sp.add_argument("-c", "--column", metavar="COL",
-                    help="analyze: the response column")
+    sp.add_argument("-c", "--column", metavar="COL[,COL]",
+                    help="analyze: the response columns (default: the "
+                    "config's responses that name one)")
     sp.add_argument("--agg", default="median",
                     help="analyze: one number per point from its hosts "
                     "(median)")
@@ -6751,6 +7043,16 @@ def build_parser():
     sp.add_argument("--report", nargs="?", const="", metavar="DIR",
                     help="analyze: keep doe's HTML report and plots, in DIR "
                     "or qd's cache (which qd web links)")
+    sp.add_argument("--factors", metavar="A,B",
+                    help="next: the factors to vary (default: the big "
+                    "numeric ones, 2 to 4)")
+    sp.add_argument("--budget", type=int, default=30, metavar="N",
+                    help="next: the runs doe suggest may plan for (30)")
+    sp.add_argument("-o", "--output", metavar="FILE",
+                    help="next: the follow-up config (default NAME.json)")
+    sp.add_argument("--like", metavar="DESIGN",
+                    help="run: on the hosts DESIGN ran on, holding what it "
+                    "held")
     sp.set_defaults(fn=cmd_doe, command=[])
 
     sp = verb("export", "write a dataset out: csv, tsv, json, ndjson, md, "
