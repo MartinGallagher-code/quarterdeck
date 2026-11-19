@@ -251,8 +251,8 @@ t_bare_qd_prints_the_start_card() {
     lines="$(wc -l < start.txt | tr -d ' ')"
     [ "$lines" -le 25 ] || fail "bare qd is $lines lines, over 25"
     assert_eq "$(awk 'length > 80' start.txt)" ""
-    for want in "Getting started" "qd demo " "qd log " "qd show latest " \
-        "qd web " "qd --help" "qd help VERB" "qd hints"; do
+    for want in "Getting started" "qd demo " "qd odd " "qd log " \
+        "qd show latest " "qd web " "qd --help" "qd help VERB" "qd hints"; do
         assert_contains "$(cat start.txt)" "$want"
     done
     # not the full card

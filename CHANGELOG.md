@@ -66,7 +66,7 @@ screen of who stands out (QD-060, from QD-057's beginner layer).
   NEXT. Exit 0 when every host answered and nothing changed, 1 when a host
   did not answer or something changed, 2 when RUN cannot be run again
   exactly: a `qd do` run, a `qd import`, a campaign's part, a design point,
-  a probe, a run that pushed files, or one filed before 0.32.0. It is
+  a probe, a run that pushed files, or one filed before 0.40.0. It is
   composed of `qd run` (`cmd_run`, given the Namespace the parser makes of
   the plain command) and `qd diff` (`cmd_diff`): no reader or statistic of
   its own (`quarterdeck/again.py`; `cli.py`: the verb, `cmd_again`).
@@ -121,11 +121,12 @@ latest A`, in one step (QD-059, from the beginner design QD-057).
   always kept: no `--every`, `--count` or `--no-store` (`qd run` has them).
   (`quarterdeck/cli.py`: `cmd_ask`, `ask_answer_lines`, `ask_next_steps`,
   the `ask` verb in `build_parser()`.)
-- **`qd --help`** has a usage line and an example for `qd ask`, and `qd
-  hints`' "What does every host say about X?" now suggests it. README:
-  *Who agrees, who differs: `qd ask`*, a line in *Thirty seconds*, and
-  the exit-status table; `docs/getting-started.md`'s map of every command
-  names it (under "Asking the fleet").
+- **`qd --help`** lists `qd ask` under Run, and `qd hints`' "What does
+  every host say about X?" now suggests it. Bare `qd`'s start card shows
+  `qd ask -- uname -r` in place of the `qd run` stand-in (QD-058). README:
+  *Who agrees, who differs: `qd ask`*, a line in *Thirty seconds*, the
+  `qd --help` heading table and the exit-status table;
+  `docs/getting-started.md`'s map of every command names it (under Run).
 
 ### Changed
 - `report_run()`'s summary line and its DID NOT ANSWER block are now

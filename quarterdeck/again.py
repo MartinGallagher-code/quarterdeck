@@ -84,7 +84,7 @@ def the_run(cli, args):
                % (sid, m.get("name", "NAME")))
     if not m.get("timeout_s"):
         refuse(ref, "%s's record does not keep its --timeout (it was filed "
-               "before qd 0.32.0, or not by qd run): run it again with qd "
+               "before qd 0.40.0, or not by qd run): run it again with qd "
                "run, then qd diff %s latest" % (sid, sid))
     if str(m.get("pushed") or "0") != "0":
         refuse(ref, "%s pushed files (--push, --script), which the store "
