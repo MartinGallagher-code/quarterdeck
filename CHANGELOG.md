@@ -5,6 +5,49 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.35.0 — 2026-11-19
+
+`qd check --rule` gives one overall verdict built from the requirements:
+all, any, not, at least N of, and a weighted score against a threshold
+(QD-051).
+
+### Added
+- **`--rule RULE`** (`QD_RULE`) on `qd check`: a small prefix grammar,
+  `all(..)`, `any(..)`, `not(..)`, `atleast(N, ..)` and `weighted(T,
+  ..)`, over `req`s and globs of them (`SYS-2*`), nested as deep as
+  wanted; `weighted` takes requirements and globs only. With a rule, the
+  exit status is 0 when the overall verdict passes and 1 when it fails or
+  is not measured; a requirement the rule does not name counts for
+  nothing, and the head says which. The verdicts of the checks are not
+  changed (`quarterdeck/rule.py`, new).
+- **Three-valued, so blank is never a pass**: a requirement is pass,
+  fail or not measured (its checks taken together); a call is not
+  measured when the unmeasured could still decide it, and `not` of not
+  measured is not measured. A waived check counts as a pass, an
+  unexpected pass as a fail, a failure below `--fail-level` as a pass.
+- **A `weight` column** in the thresholds file for `weighted()`: a
+  number 0 or more, once per requirement (two different weights for one
+  are refused with exit 2); blank is 1 (`quarterdeck/check.py`).
+- **The overall verdict in every format**: the head line gives it and why
+  (`2 of 4 SYS-2* passed, need 3`), with a line per call beneath; CSV,
+  TSV, JSON and the rest carry one more row, `req` `(rule)`, the rule as
+  its `limit` and the why as its `observed`, and so does what `--keep`
+  files, whose command names the rule; JUnit has one more testcase
+  (`classname` `rule`) and the suite properties `rule`, `rule.verdict`
+  and `rule.why` (`quarterdeck/cli.py`, `quarterdeck/exporters.py`).
+  `qd report` does not count that row as a check
+  (`quarterdeck/report.py`).
+- **A rule qd cannot read is refused with exit 2**, naming what is wrong:
+  an unknown `req`, a glob matching nothing (or several where one
+  belongs), N outside 1 to the count, a threshold outside 0 to 1, the
+  same requirement twice in one list, weights adding up to 0, an unknown
+  call, or anything left over.
+- README "One verdict from many: `--rule`", with a worked example;
+  `qd check --help` names the calls. Five cases in `tests/test_check.sh`.
+
+### Unchanged
+- Without `--rule`, output and exit status are what they were.
+
 ## 0.34.0 — 2026-11-19
 
 `qd check` can pass or fail on how alike the hosts are: `agg` takes `cv`,

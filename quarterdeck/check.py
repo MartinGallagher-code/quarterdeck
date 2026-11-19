@@ -36,6 +36,9 @@ find the difference significant before a crossed limit fails.
 `cv`, `skew`, `kurtosis` and `zmax` (QD-050) are unitless figures of the
 rows' spread and shape (stats.shape); zmax is qd outliers' robust z.  A
 limit on one takes no unit, and one that cannot be had is not measured.
+
+A `weight` column (QD-051) weighs a requirement for --rule's weighted()
+(rule.py); blank is 1.
 """
 
 import datetime
@@ -50,7 +53,7 @@ WAIVED, UNEXPECTED = "waived", "unexpected pass"
 VERDICTS = (PASS, FAIL, UNMEASURED, WAIVED, UNEXPECTED)
 OPS = ("<", "<=", ">", ">=", "==", "!=", "in", "between", "within")
 REQUIRED = ("req", "column", "op", "limit")
-OPTIONAL = ("limit2", "where", "agg", "unit", "note", "severity")
+OPTIONAL = ("limit2", "where", "agg", "unit", "note", "severity", "weight")
 # InSpec's words, least to most; its impact numbers map onto them
 SEVERITIES = ("info", "low", "medium", "high", "critical")
 WAIVER_REQUIRED = ("req", "justification")
@@ -181,8 +184,9 @@ def parse_relative(text):
 
 class Check(object):
     def __init__(self, line, req, column, op, limit, limit2="", where="",
-                 agg="", unit="", note="", severity=""):
+                 agg="", unit="", note="", severity="", weight=None):
         self.line = line
+        self.weight = weight      # --rule's weighted(); None when blank
         self.req = req
         self.column = column
         self.op = op
@@ -242,7 +246,7 @@ def read_thresholds(path):
     if extra:
         die("%s: unknown column %s (want %s)" % (
             path, ", ".join(extra), ", ".join(REQUIRED + OPTIONAL)), 2)
-    out, seen = [], {}
+    out, seen, weights = [], {}, {}
     for n, r in enumerate(t.rows, 1):
         d = dict((c, v.strip()) for c, v in zip(cols, r))
         if not any(d.values()):
@@ -299,6 +303,21 @@ def read_thresholds(path):
             if unit:
                 die("%s: %s is unitless, so its limit takes no unit (%s)"
                     % (where, agg, unit), 2)
+        weight = None
+        if d.get("weight"):
+            try:
+                weight = float(d["weight"])
+            except ValueError:
+                weight = -1.0
+            if not weight >= 0 or weight == float("inf"):
+                die("%s: weight %r is not a number 0 or more" % (
+                    where, d["weight"]), 2)
+            if d["req"] in weights and weights[d["req"]][0] != weight:
+                die("%s: weight %s, but check %d gives %s weight %s; a "
+                    "requirement has one weight" % (
+                        where, d["weight"], weights[d["req"]][1], d["req"],
+                        weights[d["req"]][2]), 2)
+            weights[d["req"]] = (weight, n, d["weight"])
         if d.get("where"):
             try:
                 query.parse(d["where"])
@@ -311,9 +330,22 @@ def read_thresholds(path):
         seen[(d["req"], d["column"], d.get("where", ""), agg)] = n
         out.append(Check(n, d["req"], d["column"], op, d["limit"],
                          d.get("limit2", ""), d.get("where", ""), agg,
-                         d.get("unit", ""), d.get("note", ""), sev))
+                         d.get("unit", ""), d.get("note", ""), sev,
+                         weight))
     if not out:
         die("%s holds no checks" % path, 2)
+    return out
+
+
+def req_weights(checks):
+    """Each requirement's weight for --rule's weighted(): the one its
+    rows give (read_thresholds refuses two), 1 when every row is blank."""
+    out = {}
+    for c in checks:
+        if c.weight is not None:
+            out[c.req] = c.weight
+        else:
+            out.setdefault(c.req, 1.0)
     return out
 
 
