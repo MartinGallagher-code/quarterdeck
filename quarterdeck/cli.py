@@ -2,83 +2,53 @@
 # SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 """qd -- run it everywhere, keep what came back, read it any way you like.
 
-Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
-       qd probe [NAME...] [HOSTS]              ask by name: facts, sysctl, gpu
-       qd do  [OPTIONS] -- TOOL ARGS...        mx, iperf, agree, reckon, ...
-       qd import PATH...                       output already on disk
-       qd split [HOSTS] --by rack|--into N...  one host list into several
-       qd campaign new|run|status|retry|ls     a system in parts, progress kept
-       qd doe plan|run|status|analyze          designed experiments
-       qd log [RUN]                            what the store holds
-       qd coverage [NAME...] [HOSTS]           which hosts each test has
-                                               run on; --owed DIR: the rest
-       qd rm RUN... --yes                      delete runs (store clear: all)
-       qd store new|ls|use|rename|rm|clear|export|import
-                                               named stores: pick one, move one
-       qd view [RUN]                           full-screen; ] [ page the store
-       qd show|stats|freq|hist|outliers|pivot|trend RUN ...
-       qd diff [OLD] NEW                       what changed between two
-       qd compare RUN --last N -c COL          N runs side by side
-       qd changes RUN -c COL [--last N]        where each host's level moved
-       qd peers define|ls|show|rm              hosts that should agree, named
-       qd baseline set|ls|show|rm              qualified baselines, for
-                                               compare --baseline NAME
-       qd check RUN --against limits.tsv       pass/fail by requirement
-       qd join RUN TELEMETRY [--window +-30]   beside Splunk/CloudVision/
-                                               Prometheus samples, by host
-                                               and time
-       qd report RUN|campaign:NAME --out DIR   an evidence package: data,
-                                               manifest, hashes, summary
-       qd export RUN [--format overlay]        CSV, JSON, the viewer's TSV,
-                                               Splunk HEC, OpenMetrics
-       qd web                                  the store in a browser
-       qd floor RUN --layout floor.dc          paint it on the floor plan
-       qd demo                                 a made-up fleet's week, in
-                                               the store demo, to learn on
-       qd hosts | doctor [HOST] | hints | help [VERB]
+Run
+  qd run [HOSTS] [OPTIONS] -- COMMAND  on every host -> a dataset
+  qd probe [NAME...] [HOSTS]           ask by name: facts, sysctl, gpu
+  qd do [OPTIONS] -- TOOL ARGS...      mx, iperf, agree, reckon, dcprobe
+  qd import PATH... | hosts [HOSTS]    output on disk; the host list
+Read it back
+  qd log [RUN] | show RUN              what the store holds; a table
+  qd stats|freq|hist|outliers RUN      spread, who said which, far ones
+  qd pivot|trend RUN                   long to wide; a sparkline a host
+  qd view [RUN] | web                  full-screen; in a browser
+Over time
+  qd diff [OLD] NEW                    what changed between two
+  qd compare RUN --last N -c COL       N runs side by side
+  qd changes RUN -c COL [--last N]     where each host's level moved
+Judge and report
+  qd check RUN --against limits.tsv    pass/fail by requirement
+  qd coverage [NAME...] [HOSTS]        which hosts each test has run on
+  qd report RUN|campaign:NAME -o DIR   an evidence package
+  qd peers define|ls|show|rm           hosts that should agree, named
+  qd baseline set|ls|show|rm           blessed runs: compare --baseline
+Larger jobs
+  qd split [HOSTS] --by rack|--into N  one host list into several
+  qd campaign new|run|status|retry|ls  a system in parts, progress kept
+  qd doe plan|run|status|analyze       designed experiments
+  qd join RUN TELEMETRY                beside Splunk/Prometheus samples
+Stores and output
+  qd store new|ls|use|rename|rm|clear|export|import    named stores
+  qd rm RUN... --yes                   delete runs from the store
+  qd export RUN [--format F] | floor   CSV, JSON, HEC...; the floor plan
+Help
+  qd hints | doctor [HOST] | start | demo | help [VERB]
 
-Examples:
-  qd run --servers hosts.txt -- uname -r
-  qd run -- uptime                      no hosts named: this machine, no ssh
-  qd run --via srun -- nvidia-smi -L    every node of the Slurm allocation
-  qd probe facts inventory -s hosts.txt
-  qd compare facts -c cpu.busy_pct --last 5
-  qd split -s hosts.txt --by rack --out lists/
-  qd campaign new burn -s hosts.txt --by rack -- ./burnin.sh
-  qd campaign run burn                  qd campaign status burn
-  qd doe run iperf.json -s hosts.txt -- 'iperf3 -c peer -P {streams}'
-  qd doe analyze iperf -c mbps
-  qd do -- mx run --for 60
-  qd stats latest A --by rack           qd outliers latest mbps
-  qd peers define sku --by sku          qd outliers latest mbps --peers sku
-  qd baseline set gold iperf --last 5 --peers sku -c mbps
-  qd compare iperf --last 5 --baseline gold
-  qd diff kernel@wr01 kernel@wr02       qd compare facts@lab facts@bench
-  qd import splunk.csv --telemetry      qd join latest~1 latest --agg max,p99
-  qd view latest                        qd web
+The core loop:
+  qd run -s hosts.txt -- uname -r      every host, every answer, kept
+  qd freq latest A                     who said which
+  qd outliers latest COL               who is far from the rest
+  qd compare NAME -c COL --last 5      the last five runs, host by host
+  qd web                               all of it, in a browser
 
-RUN is latest, latest~1, a run id or a unique part of one, a run's
---name, ds:NAME for a whole provost dataset, or a file or directory to read
-without filing it.  Add :TABLE to pick one of a run's tables (latest:hosts),
-and @STORE to read it in another registered store (kernel@wr02,
-latest:hosts@wr01; reading commands only).
+RUN: latest, latest~1, a run id or part of one, a --name, ds:NAME, or a
+file; :TABLE picks a table, @STORE a registered store (latest:hosts@wr01).
+Kept in provost's store: --store, QD_STORE, else provost's own choice.
 
-Everything is kept in provost's store (provost ls, provost source N):
---store, QD_STORE, else provost's own choice.  binnacle (pip install
-binnacle) gives qd its probes' instruments and campaigns' muster;
-design_of_experiments (pip install doehelper) its designs.
+Exit status: 0 done, every host answered; 1 a finding (a host that did
+not answer or owes a test, a difference, a failed check); 2 usage or I/O.
 
-Exit status
-  0   done, and every host answered
-  1   a finding: a host that did not answer, a diff or a compare that
-      differs, a change qd changes found, a check that failed, a host
-      that owes a test (qd coverage; qd report: any finding it records)
-  2   usage error, or something could not be read or written
-
-New to qd?  `qd demo`, then the ten-minute walkthrough, which needs no
-fleet: docs/getting-started.md, or
-https://github.com/MartinGallagher-code/quarterdeck/blob/main/docs/getting-started.md
-
+New to qd? qd demo, then docs/getting-started.md: ten minutes, no fleet.
 Full manual: https://github.com/MartinGallagher-code/quarterdeck#readme
 """
 
@@ -4987,57 +4957,109 @@ def doctor_ssh(args, lines):
     return True
 
 
+# The start card (QD-058): what bare `qd`, `qd start` and `qd help basics`
+# print, the few commands a newcomer needs; `qd --help` and `qd -h` print
+# the full card, the module docstring.  At most 25 lines of 80 columns,
+# and every command on it must parse (tests/test_help.sh).  The beginner
+# commands QD-057 designed are named here only once they land, each on
+# its own line:
+#   Getting started, after `qd demo`, in this order:
+#     qd setup  (QD-063)  check this machine, make a store, test your hosts
+#     qd ask    (QD-059)  ask every host; see who agrees and who differs;
+#                         it replaces the `qd run -- uname -r` line
+#     qd survey (QD-060)  everything about every host, and who stands out
+#     qd again  (QD-061)  run the last thing again; show what changed
+#     qd odd    (QD-062)  which hosts are unlike the rest, and in what
+START = """\
+qd -- run a command on many machines, keep every answer, and read it back.
+
+Getting started
+  qd demo                      a practice fleet to learn on, no machines needed
+  qd run -- uname -r           ask every host in hosts.txt (or just this one)
+
+Looking at what you have
+  qd log                       what is kept
+  qd show latest               the last answers, as a table
+  qd web                       all of it in a browser
+
+Everything else: qd --help    One command: qd help VERB    Ideas: qd hints
+"""
+
+
+def cmd_start(args):
+    """The start card, as bare `qd` prints it."""
+    sys.stdout.write(START)
+    return 0
+
+
+# The card's headings (the module docstring), in its order; qd hints
+# prints its questions under the same ones (QD-040).
+GROUPS = ["Run", "Read it back", "Over time", "Judge and report",
+          "Larger jobs", "Stores and output", "Help"]
+
+# (heading, question, command): grouped by what the question is for
 HINTS = [
-    ("New to qd? Somewhere to try it, no fleet needed",
-     "qd demo   (then docs/getting-started.md: ten minutes, a question a step)"),
-    ("Is my host list even real?",
+    ("Run", "Is my host list even real?",
      "qd run --servers hosts.txt -- true            (then: reachable hosts.txt -i)"),
-    ("What does every host say about X?",
+    ("Run", "What does every host say about X?",
      "qd run --servers hosts.txt -- uname -r   ->   qd freq latest A"),
-    ("Settings as columns",
+    ("Run", "Settings as columns",
      "qd run -s hosts.txt -- 'sysctl net.core.somaxconn vm.swappiness'"),
-    ("Watch it over time",
+    ("Run", "Watch it over time",
      "qd run -s hosts.txt --every 10 --count 30 -- cat /proc/loadavg"),
-    ("The servers in racks 1-3",
+    ("Run", "The servers in racks 1-3",
      "qd run --layout floor.dc --select 'rack[1-3]' -- ...   (needs binnacle)"),
-    ("Why is the fleet slow?",
+    ("Run", "Everything about every host",
+     "qd probe facts inventory -s hosts.txt"),
+    ("Run", "Why is the fleet slow?",
      "qd do -- agree script why-slow --servers hosts.txt --fleet-csv -- --csv"),
-    ("Packets per second, everyone to everyone",
+    ("Run", "Packets per second, everyone to everyone",
      "qd do -- mx run --for 60"),
-    ("TCP bandwidth, full mesh",
+    ("Run", "TCP bandwidth, full mesh",
      "qd do -- iperf-orchestrator --servers hosts.txt run"),
-    ("Was that what the hardware should do?",
-     "qd do -- reckon floor.dc --mx reports/ --overlay reckon.tsv"),
-    ("How is every host doing right now?",
+    ("Run", "How is every host doing right now?",
      "qd do -- dcprobe scan --servers hosts.txt -o host_status.tsv"),
-    ("Everything about every host", "qd probe facts inventory -s hosts.txt"),
-    ("Has it changed over the last five runs?",
+    ("Read it back", "Who is far from the rest?", "qd outliers latest COLUMN"),
+    ("Read it back", "Centre and spread, per rack",
+     "qd stats latest COLUMN --by rack"),
+    ("Read it back", "One host's answer, exactly",
+     "provost source cNNNN   (qd log latest names them)"),
+    ("Read it back", "Look around",
+     "qd view   (everything: ] [ page, Enter opens)"),
+    ("Over time", "What changed since last time?", "qd diff latest"),
+    ("Over time", "Has it changed over the last five runs?",
      "qd compare NAME -c COLUMN --last 5"),
-    ("A rack at a time, and know where I got to",
-     "qd campaign new NAME -s hosts.txt --by rack -- CMD; qd campaign run NAME"),
-    ("Which settings matter, and how much?",
-     "qd doe run design.json -s hosts.txt -- 'CMD {factor}'; qd doe analyze ..."),
-    ("Half the fleet against the other half", "qd split -s hosts.txt --ab --out ab/"),
-    ("What were temperature and power doing meanwhile?",
-     "qd join RUN splunk-export.csv --window +-30 --agg mean,max"),
-    ("Who is far from the rest?", "qd outliers latest COLUMN"),
-    ("Who is far from their own peers?",
-     "qd peers define sku --by sku; qd outliers latest COLUMN --peers sku"),
-    ("When did it start to slide?",
+    ("Over time", "When did it start to slide?",
      "qd changes NAME -c COLUMN --higher-is-better"),
-    ("Is a small slide real, or noise?",
+    ("Over time", "Every run of it, ever",
+     "qd show ds:NAME   or   provost show NAME"),
+    ("Judge and report", "Was that what the hardware should do?",
+     "qd do -- reckon floor.dc --mx reports/ --overlay reckon.tsv"),
+    ("Judge and report", "Who is far from their own peers?",
+     "qd peers define sku --by sku; qd outliers latest COLUMN --peers sku"),
+    ("Judge and report", "Is a small slide real, or noise?",
      "qd baseline set gold NAME --last 5; qd compare NAME --last 5 "
      "--baseline gold"),
-    ("Evidence for a test report",
+    ("Judge and report", "Evidence for a test report",
      "qd report latest --out evidence/ --check limits.tsv --zip"),
-    ("Centre and spread, per rack", "qd stats latest COLUMN --by rack"),
-    ("What changed since last time?", "qd diff latest"),
-    ("Has every host had its facts, iperf and burn-in?",
+    ("Judge and report", "Has every host had its facts, iperf and burn-in?",
      "qd coverage facts iperf burnin -s hosts.txt --owed owed/"),
-    ("One host's answer, exactly", "provost source cNNNN   (qd log latest names them)"),
-    ("Every run of it, ever", "qd show ds:NAME   or   provost show NAME"),
-    ("Look around", "qd view   (everything: ] [ page, Enter opens)"),
-    ("On the floor plan", "qd floor latest --layout floor.dc"),
+    ("Larger jobs", "A rack at a time, and know where I got to",
+     "qd campaign new NAME -s hosts.txt --by rack -- CMD; qd campaign run NAME"),
+    ("Larger jobs", "Which settings matter, and how much?",
+     "qd doe run design.json -s hosts.txt -- 'CMD {factor}'; qd doe analyze ..."),
+    ("Larger jobs", "Half the fleet against the other half",
+     "qd split -s hosts.txt --ab --out ab/"),
+    ("Larger jobs", "What were temperature and power doing meanwhile?",
+     "qd join RUN splunk-export.csv --window +-30 --agg mean,max"),
+    ("Stores and output", "Keep one project's runs apart",
+     "qd store new NAME; qd store use NAME"),
+    ("Stores and output", "Into a spreadsheet", "qd export latest --format csv"),
+    ("Stores and output", "On the floor plan",
+     "qd floor latest --layout floor.dc"),
+    ("Help", "New to qd? Somewhere to try it, no fleet needed",
+     "qd demo   (then docs/getting-started.md: ten minutes, a question a step)"),
+    ("Help", "Can this machine drive the toolchain?", "qd doctor"),
 ]
 
 
@@ -5051,10 +5073,15 @@ def cmd_demo(args):
 
 
 def cmd_hints(args):
-    w = max(len(q) for q, _ in HINTS)
-    lines = ["%s hints -- what you want to know, and the command" % PROG, ""]
-    for q, c in HINTS:
-        lines.append("  %-*s  %s" % (w, q, c))
+    """The hints under the card's headings, in its order."""
+    w = max(len(q) for _, q, _ in HINTS)
+    lines = ["%s hints -- what you want to know, and the command" % PROG]
+    for group in GROUPS:
+        rows = [(q, c) for g, q, c in HINTS if g == group]
+        if rows:
+            lines.extend(["", group])
+        for q, c in rows:
+            lines.append("  %-*s  %s" % (w, q, c))
     sys.stdout.write(render.page(lines))
     return 0
 
@@ -6039,10 +6066,14 @@ def build_parser():
                     help="print the demo's requirements, a CSV for qd check "
                     "--against, and file nothing")
     sp.set_defaults(fn=cmd_demo)
+    sp = verb("start", "the start card: the few commands to begin with, "
+              "as bare qd prints it (qd --help: every command)")
+    sp.set_defaults(fn=cmd_start)
     sp = verb("help", "every verb and every flag; with VERB, that verb's "
-              "help, as qd VERB --help prints it")
+              "help, as qd VERB --help prints it; qd help basics: the "
+              "start card")
     sp.add_argument("topic", nargs="?", metavar="VERB",
-                    help="the verb to print the help of")
+                    help="the verb to print the help of, or basics")
     sp.set_defaults(fn=None)
     return p, sub
 
@@ -6106,7 +6137,8 @@ def main(argv=None):
         argv, tail = argv[:i], argv[i + 1:]
     parser, sub = build_parser()
     if not argv:
-        sys.stdout.write(__doc__.lstrip())
+        # bare qd: the start card; qd --help, the full one (QD-058)
+        sys.stdout.write(START)
         return 0
     try:
         args = parser.parse_args(argv)
@@ -6117,10 +6149,16 @@ def main(argv=None):
     if args.version:
         out(VERSION_TEXT)
         return 0
-    if args.help or not args.verb:
+    if args.help:
         sys.stdout.write(__doc__.lstrip())
         return 0
+    if not args.verb:
+        sys.stdout.write(START)
+        return 0
     if args.verb == "help":
+        if args.topic == "basics":
+            sys.stdout.write(START)
+            return 0
         if args.topic is not None:
             return verb_help(sub, args.topic)
         sys.stdout.write(full_help(parser, sub))
