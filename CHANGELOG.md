@@ -5,6 +5,30 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.46.1 — 2026-11-19
+
+Every use of column `A` in the docs and help now says what it is: provost's
+name for a column nothing names, `A`, `B`, ... as a spreadsheet's (QD-047).
+
+### Changed
+- **README:** "Thirty seconds" also says that `qd show latest` shows the
+  columns, and reads the sample run's `[provost: uname: A]` (the dataset,
+  then its columns); the demo block, "Over time"'s `qd trend latest A`,
+  `qd ask`'s opening paragraph (linking Concepts) and "Reading it back"'s
+  `qd freq latest A` each carry a short gloss.
+- **`qd --help`**'s core-loop `qd freq latest A` (reworded, still 50 lines
+  of at most 80 columns), **`qd hints`**' `qd ask` entry, **`qd help
+  ask`**, the demo's WHAT TO DO NEXT and `qd setup`'s run tip say what `A`
+  is (`quarterdeck/cli.py`, `demo.py`, `firstrun.py`).
+- **docs/getting-started.md:** the demo's WHAT TO DO NEXT, the kernel
+  step (now linking Concepts) and the own-fleet loop.
+
+### Tests
+- `tests/test_run.sh`: a one-word answer files a column named `A`
+  (`[...: A]` on the summary, `host,A` from `qd show`), on whichever
+  provost path the suite runs, so a change in provost's naming fails
+  rather than leaving the docs wrong.
+
 ## 0.43.0 — 2026-11-19
 
 Your own named probes: `qd probe add NAME -- COMMAND` gives a command a

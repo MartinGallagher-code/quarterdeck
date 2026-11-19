@@ -268,7 +268,8 @@ def summary(cli, path, made):
         ("%s store use %s" % (PROG, NAME),
          "read the demo from here on (qd store ls: the others)"),
         ("%s log" % PROG, "the runs it holds, oldest first"),
-        ("%s freq demo-kernel A" % PROG, "who runs which kernel"),
+        ("%s freq demo-kernel A" % PROG,
+         "who runs which kernel (A: uname -r's answer)"),
         ("", "the walkthrough, ten minutes, a question a step: "
          "docs/getting-started.md,\n      " + GUIDE)]))
     sys.stdout.write(render.page(lines))
