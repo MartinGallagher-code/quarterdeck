@@ -2,83 +2,53 @@
 # SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 """qd -- run it everywhere, keep what came back, read it any way you like.
 
-Usage: qd run [HOSTS] [OPTIONS] -- COMMAND     on every host -> a dataset
-       qd probe [NAME...] [HOSTS]              ask by name: facts, sysctl, gpu
-       qd do  [OPTIONS] -- TOOL ARGS...        mx, iperf, agree, reckon, ...
-       qd import PATH...                       output already on disk
-       qd split [HOSTS] --by rack|--into N...  one host list into several
-       qd campaign new|run|status|retry|ls     a system in parts, progress kept
-       qd doe plan|run|status|analyze          designed experiments
-       qd log [RUN]                            what the store holds
-       qd rm RUN... --yes                      delete runs (store clear: all)
-       qd store new|ls|use|rename|rm|clear|export|import
-                                               named stores: pick one, move one
-       qd view [RUN]                           full-screen; ] [ page the store
-       qd show|stats|freq|hist|outliers|pivot|trend RUN ...
-       qd diff [OLD] NEW                       what changed between two
-       qd again [RUN]                          RUN once more, as it ran, and
-                                               what changed since
-       qd compare RUN --last N -c COL          N runs side by side
-       qd changes RUN -c COL [--last N]        where each host's level moved
-       qd peers define|ls|show|rm              hosts that should agree, named
-       qd baseline set|ls|show|rm              qualified baselines, for
-                                               compare --baseline NAME
-       qd check RUN --against limits.tsv       pass/fail by requirement
-       qd join RUN TELEMETRY [--window +-30]   beside Splunk/CloudVision/
-                                               Prometheus samples, by host
-                                               and time
-       qd report RUN|campaign:NAME --out DIR   an evidence package: data,
-                                               manifest, hashes, summary
-       qd export RUN [--format overlay]        CSV, JSON, the viewer's TSV,
-                                               Splunk HEC, OpenMetrics
-       qd web                                  the store in a browser
-       qd floor RUN --layout floor.dc          paint it on the floor plan
-       qd demo                                 a made-up fleet's week, in
-                                               the store demo, to learn on
-       qd hosts | doctor [HOST] | hints | help [VERB]
+Run
+  qd run [HOSTS] [OPTIONS] -- COMMAND  on every host -> a dataset
+  qd ask [HOSTS] [OPTIONS] -- COMMAND  then who agrees and who differs
+  qd probe [NAME...] [HOSTS]           ask by name: facts, sysctl, gpu
+  qd do [OPTIONS] -- TOOL ARGS...      mx, iperf, agree, reckon, dcprobe
+  qd import PATH... | hosts [HOSTS]    output on disk; the host list
+Read it back
+  qd log [RUN] | show RUN | coverage   what is kept; a table; tests owed
+  qd stats|freq|hist|odd|outliers RUN  spread, who said which, far ones
+  qd pivot|trend RUN                   long to wide; a sparkline a host
+  qd view [RUN] | web                  full-screen; in a browser
+Over time
+  qd diff [OLD] NEW | again [RUN]      what changed; a run once more
+  qd compare RUN --last N -c COL       N runs side by side
+  qd changes RUN -c COL [--last N]     where each host's level moved
+Judge and report
+  qd check RUN --against F [--rule R]  pass/fail by requirement, one verdict
+  qd report RUN|campaign:NAME -o DIR   an evidence package
+  qd peers define|ls|show|rm           hosts that should agree, named
+  qd baseline set|ls|show|rm           blessed runs: compare --baseline
+Larger jobs
+  qd split [HOSTS] --by rack|--into N  one host list into several
+  qd campaign new|run|status|retry|ls  a system in parts, progress kept
+  qd doe plan|run|status|analyze       designed experiments
+  qd join RUN TELEMETRY                beside Splunk/Prometheus samples
+Stores and output
+  qd store new|ls|use|rename|rm|clear|export|import    named stores
+  qd rm RUN... --yes                   delete runs from the store
+  qd export RUN [--format F] | floor   CSV, JSON, HEC...; the floor plan
+Help
+  qd hints | doctor [HOST] | start | demo | help [VERB]
 
-Examples:
-  qd run --servers hosts.txt -- uname -r
-  qd run -- uptime                      no hosts named: this machine, no ssh
-  qd run --via srun -- nvidia-smi -L    every node of the Slurm allocation
-  qd probe facts inventory -s hosts.txt
-  qd compare facts -c cpu.busy_pct --last 5
-  qd split -s hosts.txt --by rack --out lists/
-  qd campaign new burn -s hosts.txt --by rack -- ./burnin.sh
-  qd campaign run burn                  qd campaign status burn
-  qd doe run iperf.json -s hosts.txt -- 'iperf3 -c peer -P {streams}'
-  qd doe analyze iperf -c mbps
-  qd do -- mx run --for 60
-  qd stats latest A --by rack           qd outliers latest mbps
-  qd peers define sku --by sku          qd outliers latest mbps --peers sku
-  qd baseline set gold iperf --last 5 --peers sku -c mbps
-  qd compare iperf --last 5 --baseline gold
-  qd diff kernel@wr01 kernel@wr02       qd compare facts@lab facts@bench
-  qd import splunk.csv --telemetry      qd join latest~1 latest --agg max,p99
-  qd view latest                        qd web
+The core loop:
+  qd run -s hosts.txt -- uname -r      every host, every answer, kept
+  qd freq latest A                     who said which
+  qd outliers latest COL               who is far from the rest
+  qd compare NAME -c COL --last 5      the last five runs, host by host
+  qd web                               all of it, in a browser
 
-RUN is latest, latest~1, a run id or a unique part of one, a run's
---name, ds:NAME for a whole provost dataset, or a file or directory to read
-without filing it.  Add :TABLE to pick one of a run's tables (latest:hosts),
-and @STORE to read it in another registered store (kernel@wr02,
-latest:hosts@wr01; reading commands only).
+RUN: latest, latest~1, a run id or part of one, a --name, ds:NAME, or a
+file; :TABLE picks a table, @STORE a registered store (latest:hosts@wr01).
+Stored by provost: --store, QD_STORE, else its own choice. See docs/concepts.md
 
-Everything is kept in provost's store (provost ls, provost source N):
---store, QD_STORE, else provost's own choice.  binnacle (pip install
-binnacle) gives qd its probes' instruments and campaigns' muster;
-design_of_experiments (pip install doehelper) its designs.
+Exit status: 0 done, every host answered; 1 a finding (a host that did
+not answer, a difference, a failed check); 2 usage error, or I/O failed.
 
-Exit status
-  0   done, and every host answered
-  1   a finding: a host that did not answer, a diff or a compare that
-      differs, a change qd changes found, a check that failed (qd
-      report: any finding it records)
-  2   usage error, or something could not be read or written
-
-New to qd?  `qd demo`, then the ten-minute walkthrough, which needs no
-fleet: docs/getting-started.md, or
-https://github.com/MartinGallagher-code/quarterdeck/blob/main/docs/getting-started.md
-
+New to qd? qd demo, then docs/getting-started.md: ten minutes, no fleet.
 Full manual: https://github.com/MartinGallagher-code/quarterdeck#readme
 """
 
@@ -562,13 +532,26 @@ def file_batch(prov, batch, what):
 
 
 def cmd_run(args):
+    got = start_run(args)
+    if got is None:
+        return 0
+    command, hs, job = got
+    report_run(args, command, hs, job)
+    return job.rc
+
+
+def start_run(args):
+    """What `qd run` does before it reports: the hosts, the command, the
+    fan-out and the filing.  -> (command, hosts, Job), or None for
+    --dry-run.  `qd ask` runs this, so its run is qd run's."""
     cmd = strip_dashes(args.command)
     if args.script:
         if not os.path.isfile(args.script):
             die("no such script: %s" % args.script)
     elif not cmd:
         die("nothing to run: put the command after --, e.g.\n"
-            "  %s run --servers hosts.txt -- uptime" % PROG)
+            "  %s %s --servers hosts.txt -- uptime"
+            % (PROG, getattr(args, "verb", None) or "run"))
     hs = collect(args)
     check_limit(args, hs)
     push = list(args.push or [])
@@ -591,9 +574,120 @@ def cmd_run(args):
     job = fleet_run(args, hs, command, label, push, extra=again)
     args._job = job
     if job is None:
+        return None
+    return command, hs, job
+
+
+def cmd_ask(args):
+    """qd ask [HOSTS] -- CMD (QD-059): `qd run`, then `qd freq latest A`,
+    in one step.  The run is start_run()'s, so it is filed exactly as qd
+    run files it; the count is stats.freq's, as qd freq counts.  What it
+    prints is the consensus -- each answer, how many gave it and who --
+    and the hosts that did not answer.  An answer provost read as more
+    than one column has no single value to count: qd run's own summary,
+    said so.  Exit 1 names its step: the run (a host did not answer) or
+    the count (the answers differ)."""
+    got = start_run(args)
+    if got is None:
         return 0
-    report_run(args, command, hs, job)
-    return job.rc
+    command, hs, job = got
+    t, entry = job.table, job.entry
+    bad = [r for r in job.last if r.outcome != fleet.OK]
+    ok = t.derive(rows=query.where(t, ["status=ok"]))
+    filled = [c for c in data_columns(t)
+              if ok.has(c) and ok.kind(c) != "empty"]
+    if len(filled) > 1:
+        out("%s ask: the answer is %d columns (%s), not one value to count:"
+            " qd run's summary instead" % (
+                PROG, len(filled), ", ".join(filled[:6]) +
+                (" ..." if len(filled) > 6 else "")))
+        report_run(args, command, hs, job, title=PROG + " ask")
+        return job.rc
+    lines = run_head_lines(command, hs, job, PROG + " ask")
+    col = filled[0] if filled else None
+    groups, silent = [], [r[ok.index("host")] for r in ok.rows]
+    if col is not None:
+        ci = ok.index(col)
+        said = ok.derive(rows=[r for r in ok.rows if r[ci].strip()])
+        silent = [r[ok.index("host")] for r in ok.rows
+                  if not r[ci].strip()]
+        groups = stats.freq(said, col)
+    lines.extend(ask_answer_lines(groups, silent, len(ok.rows), col))
+    lines.extend(did_not_answer_lines(bad))
+    findings = []
+    if bad:
+        findings.append("%s did not answer (the run)"
+                        % plural(len(bad), "host"))
+    if len(groups) > 1:
+        findings.append("%d different answers (the count)" % len(groups))
+    if silent and groups:
+        findings.append("%s answered with nothing (the count)"
+                        % plural(len(silent), "host"))
+    lines.append("")
+    if findings:
+        lines.append("  NOT ALIKE  " + "; ".join(findings))
+    elif len(ok.rows) == 1:
+        lines.append("  ALIKE  the one host answered%s" % (
+            "" if groups else ", printing nothing"))
+    elif groups:
+        lines.append("  ALIKE  all %d hosts said the same" % len(ok.rows))
+    else:
+        lines.append("  ALIKE  all %d hosts answered, printing nothing"
+                     % len(ok.rows))
+    lines.extend(ask_next_steps(col, bad, groups))
+    sys.stdout.write(render.page(lines))
+    return 1 if findings else 0
+
+
+def ask_answer_lines(groups, silent, answered, col, limit=8):
+    """The answers, most common first: how many gave each, and who (cut
+    short past `limit` hosts); then the hosts that answered with nothing,
+    which is not an answer (blank is not measured)."""
+    if not answered:
+        return []
+    if not groups:
+        head = "%s answered, and printed nothing" % plural(answered, "host")
+    else:
+        head = "%s from %s%s" % (
+            plural(len(groups), "different answer") if len(groups) > 1
+            else "one answer", plural(answered, "host"),
+            (" (column %s)" % col) if col else "")
+    lines = ["", "  ANSWERS  " + head]
+    w = len(str(max([n for _, n, _ in groups] + [len(silent)])))
+    for v, n, labels in groups:
+        vl = v.split("\n")
+        lines.append("    %*d  %s%s" % (
+            w, n, render.clip(vl[0], 70),
+            ("  (+%s)" % plural(len(vl) - 1, "line")) if len(vl) > 1
+            else ""))
+        lines.append("    %*s  %s" % (w, "", label_list(labels,
+                                                         limit=limit)))
+    if silent:
+        lines.append("    %*d  (printed nothing)" % (w, len(silent)))
+        lines.append("    %*s  %s" % (w, "", label_list(silent,
+                                                         limit=limit)))
+    return lines
+
+
+def ask_next_steps(col, bad, groups):
+    """What qd ask ran, as the plain commands, and where to go next."""
+    tips = []
+    if col is not None:
+        cut = any(len(lb) > 8 for _, _, lb in groups)
+        tips.append(("%s freq latest %s%s" % (PROG, col,
+                                             " --all-labels" if cut else ""),
+                     "the count above, as qd freq gives it" +
+                     (", every host named" if cut else "")))
+    if bad:
+        tips.append(("%s show latest --where status!=ok" % PROG,
+                     "the %s that did not answer, with why"
+                     % plural(len(bad), "host")))
+        tips.append(("%s run --rerun latest -- ..." % PROG,
+                     "the same again on only those %s"
+                     % plural(len(bad), "host")))
+    tips.append(("%s show latest" % PROG, "every host's answer, as a table"))
+    tips.append(("%s view latest" % PROG, "explore it full-screen"))
+    return next_steps(tips)
 
 
 def policy_of(args):
@@ -1155,7 +1249,9 @@ def data_columns(t):
     return [c for c in rest if c != "dataset"]
 
 
-def report_run(args, command, hs, job, title=None):
+def run_head_lines(command, hs, job, title=None):
+    """A run's summary line, and where it was stored: what `qd run -q`
+    prints, and what `qd ask` starts with."""
     t, entry = job.table, job.entry
     passes, interrupted, last = job.passes, job.interrupted, job.last
     counts = outcome_counts(last)
@@ -1199,10 +1295,13 @@ def report_run(args, command, hs, job, title=None):
             else ""))
         for n in entry.meta.get("notes", []):
             lines.append("  note     %s" % n)
-    if args.quiet:
-        sys.stdout.write(render.page(lines))
-        return
-    bad = [r for r in last if r.outcome != fleet.OK]
+    return lines
+
+
+def did_not_answer_lines(bad):
+    """DID NOT ANSWER: each host that was not ok, its status and why; the
+    hosts never started, by name.  [] when every host answered."""
+    lines = []
     tried = [r for r in bad if r.outcome != fleet.NOT_RUN]
     if bad:
         lines.append("")
@@ -1221,6 +1320,19 @@ def report_run(args, command, hs, job, title=None):
         lines.append("    not-run: %s%s" % (", ".join(skipped[:12]), (
             " and %d more" % (len(skipped) - 12)) if len(skipped) > 12
             else ""))
+    return lines
+
+
+def report_run(args, command, hs, job, title=None):
+    t, entry = job.table, job.entry
+    passes, last = job.passes, job.last
+    dcols = data_columns(t)
+    lines = run_head_lines(command, hs, job, title)
+    if args.quiet:
+        sys.stdout.write(render.page(lines))
+        return
+    bad = [r for r in last if r.outcome != fleet.OK]
+    lines.extend(did_not_answer_lines(bad))
     ok_rows = [row for row in t.rows if row[t.index("status")] == fleet.OK]
     if args.preview and ok_rows:
         show = ["host"] + (["pass"] if passes > 1 else []) + (
@@ -1671,6 +1783,148 @@ def cmd_log(args):
 
 
 # ---------------------------------------------------------------------------
+# coverage: which hosts each named test has run on (QD-053)
+# ---------------------------------------------------------------------------
+
+COVERAGE_COLUMNS = ["host", "name", "status", "counted", "owed", "run",
+                    "when", "listed"]
+
+
+def cmd_coverage(args):
+    from . import coverage as cov
+    from . import split as splitmod
+    st = home_store(args)
+    hs = collect(args, local=False)
+    listed, seen = [], set()
+    for h in hs:
+        if h.name not in seen:
+            seen.add(h.name)
+            listed.append(h)
+    runs = cov.fleet_runs(st)
+    every = cov.names_newest_first(runs)
+    left = 0
+    if args.names:
+        names = []
+        for n in args.names:
+            if n in names:
+                continue
+            if n not in every:
+                if any(e.name == n for e in st.entries()):
+                    die("%s has runs in %s, but none on the fleet: coverage "
+                        "reads the host rows that qd run, qd probe on the "
+                        "hosts, a campaign's parts and a design's points "
+                        "file" % (n, st.shown()))
+                warn("no run named %s in the store %s (qd log lists them): "
+                     "every host is never" % (n, st.shown()))
+            names.append(n)
+    else:
+        if not every:
+            die("no runs on the fleet in the store %s yet -- qd run or qd "
+                "probe files one (or point --store at another)" % st.shown())
+        names = every if args.all else every[:cov.DEFAULT_NAMES]
+        left = len(every) - len(names)
+    since, since_shown = None, ""
+    if args.since:
+        since, since_shown = cov.parse_since(st, args.since, st.resolve)
+    grid = cov.latest(st, runs, names, since)
+
+    # counts, the owed and the hosts no list holds, name by name
+    counts, owe = {}, {}
+    for n in names:
+        c = dict((k, 0) for k in cov.COUNTED)
+        owe[n] = []
+        for h in listed:
+            cell = grid[n].get(h.name)
+            c[cov.NEVER if cell is None else cell["counted"]] += 1
+            if cov.owed(cell):
+                owe[n].append(h)
+        counts[n] = c
+    stray = {}
+    for n in names:
+        for host, cell in grid[n].items():
+            if host not in seen:
+                stray.setdefault(host, []).append((n, cell))
+    owing = sum(len(owe[n]) for n in names)
+
+    paths = {}
+    if args.owed:
+        groups = splitmod.unique([(splitmod.group_name("", n), owe[n])
+                                  for n in names])
+        written = splitmod.write_lists(
+            groups, args.owed, how="never, or not ok (qd coverage%s)" % (
+                ", since " + since_shown if since_shown else ""))
+        paths = dict(zip(names, written))
+
+    fmt = args.format or "text"
+    if fmt != "text":
+        rows = []
+        for h in listed:
+            for n in names:
+                cell = grid[n].get(h.name)
+                if cell is None:
+                    rows.append([h.name, n, cov.NEVER, cov.NEVER, "yes", "",
+                                 "", "yes"])
+                else:
+                    rows.append([h.name, n, cell["status"], cell["counted"],
+                                 "yes" if cov.owed(cell) else "no",
+                                 cell["run"], cell["when"], "yes"])
+        for host in sorted(stray):
+            for n, cell in stray[host]:
+                rows.append([host, n, cell["status"], cell["counted"], "",
+                             cell["run"], cell["when"], "no"])
+        t = tablemod.Table(list(COVERAGE_COLUMNS), rows, "coverage")
+        emit(args, t, [])
+        return 1 if owing else 0
+
+    lines = ["%s coverage -- %s against %s, in %s%s" % (
+        PROG, plural(len(listed), "host"), plural(len(names), "name"),
+        st.shown(), ", since " + since_shown if since_shown else "")]
+    w = max(len(n) for n in names)
+    for n in names:
+        c = counts[n]
+        lines.append("  %-*s  %d ok, %d failed, %d unreachable, %d never%s"
+                     % (w, n, c[cov.OK], c[cov.FAILED], c[cov.UNREACHABLE],
+                        c[cov.NEVER], "   (%d owed)" % len(owe[n])
+                        if owe[n] else "   (none owed)"))
+    if left:
+        lines.append("  (%s more, older: --all shows them, or name them)"
+                     % plural(left, "name"))
+    lines.append("")
+    rows = []
+    for h in listed:
+        row = [h.name]
+        for n in names:
+            cell = grid[n].get(h.name)
+            row.append(cov.NEVER if cell is None else
+                       "%s %s" % (cell["status"], cell["run"]))
+        rows.append(row)
+    lines.extend(render.render_rows(["host"] + names, rows, max_cell=48,
+                                    width=width_of(args), indent="  "))
+    if stray:
+        lines.append("")
+        lines.append("  not in the host list, and not counted: %s" % "; ".join(
+            "%s (%s)" % (host, ", ".join("%s %s" % (n, cell["status"])
+                                         for n, cell in stray[host]))
+            for host in sorted(stray)))
+    tips = []
+    if paths:
+        for n in names:
+            if owe[n]:
+                probe = any(e.name == n and e.meta.get("tool") == "probe"
+                            for e in runs)
+                tips.append(("%s probe %s -s %s" % (PROG, n, paths[n])
+                             if probe else "%s run -s %s --name %s -- ..."
+                             % (PROG, paths[n], n), "the %s that owe %s" % (
+                                 plural(len(owe[n]), "host"), n)))
+    elif owing:
+        tips.append(("%s coverage ... --owed DIR" % PROG,
+                     "write each name's owed hosts as a host list"))
+    lines.extend(next_steps(tips))
+    sys.stdout.write(render.page(lines))
+    return 1 if owing else 0
+
+
+# ---------------------------------------------------------------------------
 # Reading a dataset
 # ---------------------------------------------------------------------------
 
@@ -1930,15 +2184,11 @@ def cmd_outliers(args):
     return 0
 
 
-def report_categorical(args, t, s):
-    """outliers --categorical: within each group of hosts that ought to be
-    alike, the value most of them have, and every host that has another
-    (QD-034)."""
-    from . import differs
-    cols = [c.strip() for c in args.column.split(",") if c.strip()] \
-        if args.column else None
-    match = [c.strip() for c in args.match.split(",") if c.strip()] \
-        if args.match else None
+def categorical_groups(args, s):
+    """The groups --categorical compares hosts within: the --peers group,
+    else the rack, else the whole fleet.  (row -> group or None, the
+    group's column name, how it is said, the columns grouped by -- which
+    are not compared within the groups).  qd odd shares it."""
     pg = peers_of(args)
     if pg is not None:
         at = pg.assigner(s)
@@ -1956,6 +2206,19 @@ def report_categorical(args, t, s):
             "NAME groups them)"
     # what the hosts are grouped by is not compared within the groups
     by = [s.colname(b) for b in pg.by if s.has(b)] if pg is not None else []
+    return at, gname, how, by
+
+
+def report_categorical(args, t, s):
+    """outliers --categorical: within each group of hosts that ought to be
+    alike, the value most of them have, and every host that has another
+    (QD-034)."""
+    from . import differs
+    cols = [c.strip() for c in args.column.split(",") if c.strip()] \
+        if args.column else None
+    match = [c.strip() for c in args.match.split(",") if c.strip()] \
+        if args.match else None
+    at, gname, how, by = categorical_groups(args, s)
     res = differs.find(s, at, cols, match, gname, by)
     differ = [r for r in res.rows if r[-1] == differs.DIFFERS]
     split = [r for r in res.rows if r[-1] == differs.SPLIT]
@@ -2000,6 +2263,7 @@ def report_categorical(args, t, s):
 
 def cmd_check(args):
     from . import check as checkmod
+    from . import rule as rulemod
     checks = checkmod.read_thresholds(args.against)
     level = (args.fail_level or "info").strip().lower()
     if level not in checkmod.SEVERITIES:
@@ -2007,24 +2271,36 @@ def cmd_check(args):
             args.fail_level, ", ".join(checkmod.SEVERITIES)), 2)
     waivers = checkmod.read_waivers(args.waivers, checks) \
         if args.waivers else None
+    manual = checkmod.read_manual(args.manual, checks) \
+        if args.manual else None
+    rule = None
+    if (args.rule or "").strip():
+        rule = rulemod.parse(args.rule, checks)
     t = load(args)
     s = subset(args, t)
     ref = check_reference(args, checkmod)
-    results = checkmod.run(s, checks, waivers, ref=ref)
-    n = checkmod.counts(results)
     e = getattr(t, "entry", None)
+    run_day = checkmod.decided_on(
+        (e.meta.get("created") or "")[:10]) if e is not None else None
+    results = checkmod.run(s, checks, waivers, ref=ref, manual=manual,
+                           run_day=run_day)
+    overall = rulemod.evaluate(rule, results, level) if rule else None
+    n = checkmod.counts(results)
     if args.each:
-        cols = checkmod.columns(checkmod.EACH_COLUMNS, checks, waivers, ref)
+        cols = checkmod.columns(checkmod.EACH_COLUMNS, checks, waivers, ref,
+                                manual)
         vt = tablemod.Table(cols, checkmod.each_rows(results, cols),
                             "check")
     else:
         cols = checkmod.columns(checkmod.SUMMARY_COLUMNS, checks, waivers,
-                                ref)
+                                ref, manual)
         vt = tablemod.Table(cols, checkmod.summary_rows(results, cols),
                             "check")
     head = "%s check -- %s against %s (%s): %s" % (
         PROG, source_name(t), args.against, scope(args, t, s),
         checkmod.counts_text(n, waivers is not None))
+    if rule:
+        head += "; rule %s: %s" % (overall, rule.why)
     lines = [head]
     if e is not None:
         m = e.meta
@@ -2035,6 +2311,15 @@ def cmd_check(args):
         lines.append("  waivers %s: %d, %d expired" % (
             args.waivers, len(waivers),
             sum(1 for w in waivers if w.expired())))
+    if manual is not None:
+        early = [m for m in manual if run_day is not None and
+                 m.day() is not None and m.day() < run_day]
+        lines.append("  manual %s: %s by %s%s%s" % (
+            args.manual, plural(len(manual), "result"),
+            ", ".join(checkmod._uniq(m.by for m in manual)),
+            ", %d undated" % sum(1 for m in manual if not m.date)
+            if any(not m.date for m in manual) else "",
+            ", %d dated before the run" % len(early) if early else ""))
     if ref is not None:
         lines.append("  limits relative to the baseline are held to %s"
                      % ref.describe())
@@ -2043,8 +2328,13 @@ def cmd_check(args):
         lines.append("  %s below --fail-level %s (%s): shown, not failing "
                      "the run" % (plural(len(soft), "failure"), level,
                                   ", ".join(r.chk.req for r in soft[:10])))
+    if rule:
+        lines.extend(rule_lines(rulemod, rule, results))
     lines.append("")
     lines.extend(render.render_table(vt, width=width_of(args), indent="  "))
+    if rule:
+        # the overall verdict as one more row, for every format and --keep
+        vt.rows.append(rule_row(vt.columns, rule, overall))
     if args.keep:
         rid = keep_check(args, vt, t, len(checks))
         lines.append("")
@@ -2054,14 +2344,42 @@ def cmd_check(args):
         from . import exporters
         name, stamp, props = exporters.junit_suite(
             e, source_name(t), [("thresholds", args.against),
-                                ("waivers", args.waivers)])
+                                ("waivers", args.waivers),
+                                ("manual", args.manual)])
         if level != "info":
             props.append(("fail_level", level))
         write_text(args.output or "-",
                    exporters.to_junit(vt, name, stamp, props))
     else:
         emit(args, vt, lines)
+    if rule:
+        return 0 if overall == checkmod.PASS else 1
     return 1 if hard else 0
+
+
+def rule_lines(rulemod, rule, results):
+    """--rule under the head: the rule, a line per call with its verdict
+    and why, and the requirements it leaves out, which count for
+    nothing."""
+    out = rulemod.lines(rule, indent="  rule ")
+    named = rulemod.named(rule)
+    left = []
+    for r in results:
+        if r.chk.req not in named and r.chk.req not in left:
+            left.append(r.chk.req)
+    if left:
+        out.append("    not in the rule, so not counted: %s" % ", ".join(
+            left[:10]) + (" ..." if len(left) > 10 else ""))
+    return out
+
+
+def rule_row(cols, rule, overall):
+    """The verdict table's row for --rule: req (rule), the rule as its
+    limit, the why as its observed, the overall verdict."""
+    from . import rule as rulemod
+    cells = {"req": rulemod.ROW_REQ, "observed": rule.why,
+             "limit": rule.shown, "verdict": overall}
+    return [cells.get(c, "") for c in cols]
 
 
 def check_reference(args, checkmod):
@@ -2090,12 +2408,22 @@ def keep_check(args, vt, t, nchecks):
     rid = new_run_id(st, label)
     b = filing.Batch()
     vt.name = "check"
-    vt.notes = ["qd check %s --against %s%s%s" % (
+    vt.notes = ["qd check %s --against %s%s%s%s" % (
         run_label(t) or getattr(t, "source", ""),
         os.path.abspath(args.against),
         (" --waivers %s" % os.path.abspath(args.waivers))
         if args.waivers else "",
-        (" --baseline %s" % args.baseline) if args.baseline else "")]
+        (" --manual %s" % os.path.abspath(args.manual))
+        if getattr(args, "manual", None) else "",
+        (" --baseline %s" % args.baseline) if args.baseline else "") +
+        ((" --rule %s" % shlex.quote(args.rule.strip())) if (args.rule or "").strip()
+         else "")]
+    if getattr(args, "manual", None):
+        # a manual result is a claim nobody can recheck: the run keeps
+        # the file it came from by name and content (QD-052)
+        from .exporters import _sha256
+        vt.notes.append("manual %s sha256 %s" % (
+            os.path.basename(args.manual), _sha256(args.manual)))
     added = add_tables(b, rid, label, [(os.path.abspath(args.against), vt)])
     if not added:
         b.cleanup()
@@ -2217,6 +2545,321 @@ def report_peer_outliers(args, t, s, col, per, method, k, pg):
         lines.append("  %s in no peer group of %s: left out" % (
             plural(none, "row"), pg.name))
     return lines, ot
+
+
+# ---------------------------------------------------------------------------
+# odd: every column at once, the hosts unlike the rest (QD-062)
+# ---------------------------------------------------------------------------
+#
+# `qd outliers` asks about one column, and a newcomer does not know which
+# to ask about.  qd odd runs the same two checks over every column of a
+# run -- numbers by the median and MAD (stats.outliers, or
+# stats.peer_outliers with --peers), words by the value most of the group
+# has (differs.find, grouped as --categorical groups) -- and ranks what
+# they find.  The two are ranked apart: a robust z has no ceiling and a
+# rarity is a share, and one scale for both would rank by the choice of
+# scale, not by how odd a host is.
+
+ODD_LISTS = ("numbers", "values")
+ODD_COLUMNS = ["list", "group", "host", "column", "value", "typical",
+               "score", "agree"]
+
+
+class OddResult(object):
+    def __init__(self):
+        self.numbers = []       # (column, group, row of stats.outliers)
+        self.values = []        # (column, group, host, value, typical,
+        #                          agree, measured, rarity)
+        self.checked_numbers = []
+        self.checked_values = []
+        self.agree = []         # every host says the same
+        self.blank = []         # fewer than half the rows measured it
+        self.identities = []    # per-host identities, left out
+        self.mixed_tests = []   # value, in a results table of several tests
+        self.no_host = []       # words, in a table with no host column
+        self.split = []         # (group, column): no majority
+        self.not_ok = []        # (host, status): did not answer in the run
+        self.none = 0           # rows in no peer group
+        self.how = ""           # what the words are compared within
+
+    def found(self):
+        return bool(self.numbers or self.values)
+
+    def hosts(self):
+        return set([r[2][0] for r in self.numbers] +
+                   [r[2] for r in self.values])
+
+
+def odd_find(args, s):
+    """Every column of s worth reading, through the outlier code that
+    `qd outliers` and `qd outliers --categorical` use; an OddResult."""
+    from . import differs
+    res = OddResult()
+    pg = peers_of(args)
+    at, gname, res.how, by = categorical_groups(args, s)
+    hc = differs.host_column(s)
+    match = differs.match_columns(s) if hc else []
+    cand, ident = differs.default_columns(
+        s, set(match) | set([gname]) | set(by))
+    if "capture" in s.columns or "stdout" in s.columns:
+        # a qd run: what the hosts said, not the host list's attributes
+        said = set(data_columns(s))
+        cand = [c for c in cand if c in said]
+        ident = [c for c in ident if c in said]
+    res.identities = ident
+    nrows = len(s.rows)
+    nums, words = [], []
+    for c in cand:
+        kind = s.kind(c)
+        filled = [v.strip() for v in s.values(c) if v.strip()]
+        # blank is not measured: a column most rows left blank is not
+        # read, and in the rest a blank is no value of its own
+        if kind == "empty" or len(filled) * 2 < nrows:
+            res.blank.append(c)
+            continue
+        if kind == "num":
+            distinct = set(v for v in s.numbers(c) if v is not None)
+        else:
+            distinct = set(filled)
+        if len(distinct) < 2:
+            res.agree.append(c)
+        elif kind != "num":
+            (words if hc else res.no_host).append(c)
+        elif s.is_results() and c == "value" and \
+                len(set(s.values("test"))) > 1:
+            res.mixed_tests.append(c)
+        else:
+            nums.append(c)
+    groups = None
+    if pg is not None:
+        groups, res.none = pg.split(s)
+    for c in nums:
+        per = stats.default_per(s, c)
+        if groups is not None:
+            got, _ = stats.peer_outliers(groups, c, per, args.z)
+        else:
+            got = [("", r) for r in stats.outliers(s, c, per, args.z)[0]]
+        res.checked_numbers.append(c)
+        res.numbers.extend((c, g, r) for g, r in got)
+    if words:
+        found = differs.find(s, at, words, None, gname, by)
+        if pg is None:
+            res.none = found.none
+        res.checked_values = list(words)
+        same = {}
+        for r in found.rows:
+            if r[-1] == differs.DIFFERS:
+                k = (r[0], r[1], r[2], r[4])
+                same[k] = same.get(k, 0) + 1
+        for g, m, c, h, v, maj, agree, measured, verdict in found.rows:
+            if verdict == differs.SPLIT:
+                if (g, c) not in res.split:
+                    res.split.append((g, c))
+                continue
+            rarity = 1.0 - float(same[(g, m, c, v)]) / int(measured)
+            res.values.append((c, g, h + ("/" + m if m else ""), v, maj,
+                               int(agree), int(measured), rarity))
+    # the ranking: numbers by how far out, in robust z; with the fleet in
+    # exact agreement (MAD 0, every difference infinitely far), the column
+    # fewer hosts differ in first
+    hits = {}
+    for c, g, r in res.numbers:
+        hits[(c, g)] = hits.get((c, g), 0) + 1
+    res.numbers.sort(key=lambda x: (-abs(x[2][4]), hits[(x[0], x[1])],
+                                    x[0], str(x[1]), str(x[2][0])))
+    # words by rarity: the share of the group that says something else
+    res.values.sort(key=lambda x: (-x[7], -x[6], x[0], str(x[1]), x[2]))
+    if s.has("status"):
+        hi = s.index(hc) if hc else None
+        si = s.index("status")
+        for n, r in enumerate(s.rows, 1):
+            st = r[si].strip()
+            if st and st != fleet.OK:
+                res.not_ok.append((r[hi] if hi is not None
+                                   else "row %d" % n, st))
+    return res
+
+
+def odd_score(score):
+    if abs(score) == float("inf"):
+        return "+inf" if score > 0 else "-inf"
+    return "%+.1f" % score
+
+
+def odd_table(res, top):
+    rows = []
+    for c, g, (key, v, med, rel, score, side) in res.numbers[:top]:
+        rows.append(["numbers", g, str(key), c, stats.fmt_num(v),
+                     stats.fmt_num(med), odd_score(score), ""])
+    for c, g, h, v, maj, agree, measured, rarity in res.values[:top]:
+        rows.append(["values", g, h, c, v, maj,
+                     "%.0f%%" % (100.0 * rarity),
+                     "%d of %d" % (agree, measured)])
+    return tablemod.Table(list(ODD_COLUMNS), rows, "odd")
+
+
+def odd_names(cols, lim=6):
+    return ", ".join(cols[:lim]) + (" ..." if len(cols) > lim else "")
+
+
+def odd_command(args, column, words=False):
+    """The `qd outliers` that shows one column of what qd odd found."""
+    argv = ["qd", "outliers", args.ref or "latest", column]
+    if words:
+        argv.append("--categorical")
+    elif args.z != env_float("Z", 3.5):
+        argv.extend(["--z", stats.fmt_num(args.z)])
+    if args.peers:
+        argv.extend(["--peers", args.peers])
+    for w in args.where or []:
+        argv.extend(["--where", w])
+    if args.store:
+        argv.extend(["--store", args.store])
+    return " ".join(shlex.quote(a) for a in argv)
+
+
+def odd_next_steps(args, s, res):
+    tips = []
+    # the top column of each list, then each list's next: two at most
+    tops = []
+    for words, rows in ((False, res.numbers), (True, res.values)):
+        cols = []
+        for r in rows:
+            if r[0] not in cols:
+                cols.append(r[0])
+        tops.append([(words, c) for c in cols[:2]])
+    picks = []
+    for depth in range(2):
+        for cols in tops:
+            if len(cols) > depth and len(picks) < 2:
+                picks.append(cols[depth])
+    for words, c in picks:
+        tips.append((odd_command(args, c, words),
+                     "every host's %s against %s, in full" % (
+                         c, "its peers" if args.peers else "the rest")))
+    first = None
+    if res.numbers and s.has("host"):
+        first = str(res.numbers[0][2][0])
+    elif res.values and s.has("host"):
+        first = res.values[0][2].split("/")[0]
+    ref = args.ref or "latest"
+    extra = ["--store", args.store] if args.store else []
+    if first:
+        argv = ["qd", "show", ref, "--where", "host=" + first,
+                "--vertical"] + extra
+        tips.append((" ".join(shlex.quote(a) for a in argv),
+                     "everything %s said" % first))
+    if not res.found():
+        argv = ["qd", "stats", ref] + extra
+        tips.append((" ".join(shlex.quote(a) for a in argv),
+                     "every column's centre and spread"))
+    return next_steps(tips)
+
+
+def cmd_odd(args):
+    """qd odd [RUN]: the hosts unlike the rest, in any column, ranked."""
+    t = load(args)
+    s = subset(args, t)
+    res = odd_find(args, s)
+    top = args.top
+    ot = odd_table(res, top)
+    pg_how = None
+    if args.peers:
+        pg_how = res.how
+    hosts = res.hosts()
+    ncols = len(res.checked_numbers) + len(res.checked_values)
+    found_in = set(r[0] for r in res.numbers) | set(r[0] for r in res.values)
+    lines = ["%s odd -- %s (%s): %s %s, in %d of %s checked" % (
+        PROG, source_name(t), scope(args, t, s), plural(len(hosts), "host"),
+        "stands out" if len(hosts) == 1 else "stand out", len(found_in),
+        plural(ncols, "column")), ""]
+    if res.numbers:
+        lines.append("  Numbers far from the rest: robust z beyond %s, "
+                     "against %s" % (
+                         stats.fmt_num(args.z),
+                         "the whole run's median" if pg_how is None else
+                         "the median of each host's " + pg_how))
+        nt = ot.derive(rows=[r for r in ot.rows if r[0] == "numbers"])
+        keep = (["group"] if args.peers else []) + \
+            ["host", "column", "value", "typical", "score"]
+        nt = tablemod.Table(
+            [("robust_z" if c == "score" else
+              (args.peers if c == "group" else c)) for c in keep],
+            [[r[ODD_COLUMNS.index(c)] for c in keep] for r in nt.rows],
+            "odd")
+        lines.extend(render.render_table(nt, width=width_of(args),
+                                         indent="  "))
+        if len(res.numbers) > top:
+            lines.append("  ... and %d more (--top N shows more)"
+                         % (len(res.numbers) - top))
+        lines.append("")
+    if res.values:
+        lines.append("  Values unlike the rest of their %s: rarity is the "
+                     "share of it that says otherwise" % (
+                         "group" if res.how.startswith("the whole")
+                         else res.how))
+        vt = [r for r in ot.rows if r[0] == "values"]
+        keep = ["group", "host", "column", "value", "typical", "score",
+                "agree"]
+        if res.how.startswith("the whole"):
+            keep = keep[1:]
+        gcol = args.peers or "rack"
+        vt = tablemod.Table(
+            [("rarity" if c == "score" else gcol if c == "group" else c)
+             for c in keep],
+            [[r[ODD_COLUMNS.index(c)] for c in keep] for r in vt],
+            "odd")
+        lines.extend(render.render_table(vt, width=width_of(args),
+                                         indent="  "))
+        if len(res.values) > top:
+            lines.append("  ... and %d more (--top N shows more)"
+                         % (len(res.values) - top))
+        lines.append("")
+    if not res.found():
+        lines.append("  none: no host stands out in %s" % (
+            "any of the %s checked" % plural(ncols, "column") if ncols
+            else "any column: none had two values to compare"))
+        lines.append("")
+    lines.append("  checked: %s of numbers%s" % (
+        plural(len(res.checked_numbers), "column"),
+        " (%s)" % odd_names(res.checked_numbers)
+        if res.checked_numbers else ""))
+    lines.append("           %s of words%s" % (
+        plural(len(res.checked_values), "column"),
+        (" (%s), within each %s" % (odd_names(res.checked_values), res.how))
+        if res.checked_values else ""))
+    skipped = []
+    if res.agree:
+        skipped.append("every host agrees in %s" % odd_names(res.agree))
+    if res.blank:
+        skipped.append("mostly blank: %s" % odd_names(res.blank))
+    if res.identities:
+        skipped.append("per-host identities: %s" % odd_names(res.identities))
+    if res.mixed_tests:
+        skipped.append("value mixes tests (qd outliers RUN value --where "
+                       "test=NAME)")
+    if res.no_host:
+        skipped.append("words, with no host column to name: %s"
+                       % odd_names(res.no_host))
+    if skipped:
+        lines.append("  not checked: " + "; ".join(skipped))
+    if res.split:
+        lines.append("  split with no majority, so no host is the odd one: "
+                     "%s" % ", ".join(
+                         "%s in %s" % (c, g) if g != "(all)" else c
+                         for g, c in res.split[:6]) +
+                     (" ..." if len(res.split) > 6 else ""))
+    if res.not_ok:
+        lines.append("  did not answer in this run, so not measured: %s" % (
+            ", ".join("%s (%s)" % hs for hs in res.not_ok[:6]) +
+            (" ..." if len(res.not_ok) > 6 else "")))
+    if res.none:
+        lines.append("  %s in no %s: left out" % (
+            plural(res.none, "row"),
+            ("peer group of " + args.peers) if args.peers else "rack"))
+    lines.extend(odd_next_steps(args, s, res))
+    emit(args, ot, lines)
+    return 1 if res.found() else 0
 
 
 def cmd_pivot(args):
@@ -4873,57 +5516,115 @@ def doctor_ssh(args, lines):
     return True
 
 
+# The start card (QD-058): what bare `qd`, `qd start` and `qd help basics`
+# print, the few commands a newcomer needs; `qd --help` and `qd -h` print
+# the full card, the module docstring.  At most 25 lines of 80 columns,
+# and every command on it must parse (tests/test_help.sh).  The beginner
+# commands QD-057 designed are named here only once they land, each on
+# its own line:
+#   Getting started, after `qd demo`, in this order:
+#     qd setup  (QD-063)  check this machine, make a store, test your hosts
+#     qd ask    (QD-059)  ask every host; see who agrees and who differs;
+#                         it replaces the `qd run -- uname -r` line
+#     qd survey (QD-060)  everything about every host, and who stands out
+#     qd again  (QD-061)  run the last thing again; show what changed
+#     qd odd    (QD-062)  which hosts are unlike the rest, and in what
+START = """\
+qd -- run a command on many machines, keep every answer, and read it back.
+
+Getting started
+  qd demo                      a practice fleet to learn on, no machines needed
+  qd ask -- uname -r           ask every host; see who agrees and who differs
+  qd again                     run the last thing again; show what changed
+  qd odd                       which hosts are unlike the rest, and in what
+
+Looking at what you have
+  qd log                       what is kept
+  qd show latest               the last answers, as a table
+  qd web                       all of it in a browser
+
+Everything else: qd --help    One command: qd help VERB    Ideas: qd hints
+"""
+
+
+def cmd_start(args):
+    """The start card, as bare `qd` prints it."""
+    sys.stdout.write(START)
+    return 0
+
+
+# The card's headings (the module docstring), in its order; qd hints
+# prints its questions under the same ones (QD-040).
+GROUPS = ["Run", "Read it back", "Over time", "Judge and report",
+          "Larger jobs", "Stores and output", "Help"]
+
+# (heading, question, command): grouped by what the question is for
 HINTS = [
-    ("New to qd? Somewhere to try it, no fleet needed",
-     "qd demo   (then docs/getting-started.md: ten minutes, a question a step)"),
-    ("Is my host list even real?",
+    ("Run", "Is my host list even real?",
      "qd run --servers hosts.txt -- true            (then: reachable hosts.txt -i)"),
-    ("What does every host say about X?",
-     "qd run --servers hosts.txt -- uname -r   ->   qd freq latest A"),
-    ("Settings as columns",
+    ("Run", "What does every host say about X?",
+     "qd ask --servers hosts.txt -- uname -r   (qd run, then qd freq latest A)"),
+    ("Run", "Settings as columns",
      "qd run -s hosts.txt -- 'sysctl net.core.somaxconn vm.swappiness'"),
-    ("Watch it over time",
+    ("Run", "Watch it over time",
      "qd run -s hosts.txt --every 10 --count 30 -- cat /proc/loadavg"),
-    ("The servers in racks 1-3",
+    ("Run", "The servers in racks 1-3",
      "qd run --layout floor.dc --select 'rack[1-3]' -- ...   (needs binnacle)"),
-    ("Why is the fleet slow?",
+    ("Run", "Everything about every host",
+     "qd probe facts inventory -s hosts.txt"),
+    ("Run", "Why is the fleet slow?",
      "qd do -- agree script why-slow --servers hosts.txt --fleet-csv -- --csv"),
-    ("Packets per second, everyone to everyone",
+    ("Run", "Packets per second, everyone to everyone",
      "qd do -- mx run --for 60"),
-    ("TCP bandwidth, full mesh",
+    ("Run", "TCP bandwidth, full mesh",
      "qd do -- iperf-orchestrator --servers hosts.txt run"),
-    ("Was that what the hardware should do?",
-     "qd do -- reckon floor.dc --mx reports/ --overlay reckon.tsv"),
-    ("How is every host doing right now?",
+    ("Run", "How is every host doing right now?",
      "qd do -- dcprobe scan --servers hosts.txt -o host_status.tsv"),
-    ("Everything about every host", "qd probe facts inventory -s hosts.txt"),
-    ("Has it changed over the last five runs?",
+    ("Read it back", "Who is odd, and in what? Every column at once",
+     "qd odd latest"),
+    ("Read it back", "Who is far from the rest?", "qd outliers latest COLUMN"),
+    ("Read it back", "Centre and spread, per rack",
+     "qd stats latest COLUMN --by rack"),
+    ("Read it back", "One host's answer, exactly",
+     "provost source cNNNN   (qd log latest names them)"),
+    ("Read it back", "Look around",
+     "qd view   (everything: ] [ page, Enter opens)"),
+    ("Over time", "What changed since last time?", "qd diff latest"),
+    ("Over time", "The same again, and what changed",
+     "qd again   (the last run, its hosts and options; or qd again RUN)"),
+    ("Over time", "Has it changed over the last five runs?",
      "qd compare NAME -c COLUMN --last 5"),
-    ("A rack at a time, and know where I got to",
-     "qd campaign new NAME -s hosts.txt --by rack -- CMD; qd campaign run NAME"),
-    ("Which settings matter, and how much?",
-     "qd doe run design.json -s hosts.txt -- 'CMD {factor}'; qd doe analyze ..."),
-    ("Half the fleet against the other half", "qd split -s hosts.txt --ab --out ab/"),
-    ("What were temperature and power doing meanwhile?",
-     "qd join RUN splunk-export.csv --window +-30 --agg mean,max"),
-    ("Who is far from the rest?", "qd outliers latest COLUMN"),
-    ("Who is far from their own peers?",
-     "qd peers define sku --by sku; qd outliers latest COLUMN --peers sku"),
-    ("When did it start to slide?",
+    ("Over time", "When did it start to slide?",
      "qd changes NAME -c COLUMN --higher-is-better"),
-    ("Is a small slide real, or noise?",
+    ("Over time", "Every run of it, ever",
+     "qd show ds:NAME   or   provost show NAME"),
+    ("Judge and report", "Was that what the hardware should do?",
+     "qd do -- reckon floor.dc --mx reports/ --overlay reckon.tsv"),
+    ("Judge and report", "Who is far from their own peers?",
+     "qd peers define sku --by sku; qd outliers latest COLUMN --peers sku"),
+    ("Judge and report", "Is a small slide real, or noise?",
      "qd baseline set gold NAME --last 5; qd compare NAME --last 5 "
      "--baseline gold"),
-    ("Evidence for a test report",
+    ("Judge and report", "Evidence for a test report",
      "qd report latest --out evidence/ --check limits.tsv --zip"),
-    ("Centre and spread, per rack", "qd stats latest COLUMN --by rack"),
-    ("What changed since last time?", "qd diff latest"),
-    ("The same again, and what changed",
-     "qd again   (the last run, its hosts and options; or qd again RUN)"),
-    ("One host's answer, exactly", "provost source cNNNN   (qd log latest names them)"),
-    ("Every run of it, ever", "qd show ds:NAME   or   provost show NAME"),
-    ("Look around", "qd view   (everything: ] [ page, Enter opens)"),
-    ("On the floor plan", "qd floor latest --layout floor.dc"),
+    ("Judge and report", "Has every host had its facts, iperf and burn-in?",
+     "qd coverage facts iperf burnin -s hosts.txt --owed owed/"),
+    ("Larger jobs", "A rack at a time, and know where I got to",
+     "qd campaign new NAME -s hosts.txt --by rack -- CMD; qd campaign run NAME"),
+    ("Larger jobs", "Which settings matter, and how much?",
+     "qd doe run design.json -s hosts.txt -- 'CMD {factor}'; qd doe analyze ..."),
+    ("Larger jobs", "Half the fleet against the other half",
+     "qd split -s hosts.txt --ab --out ab/"),
+    ("Larger jobs", "What were temperature and power doing meanwhile?",
+     "qd join RUN splunk-export.csv --window +-30 --agg mean,max"),
+    ("Stores and output", "Keep one project's runs apart",
+     "qd store new NAME; qd store use NAME"),
+    ("Stores and output", "Into a spreadsheet", "qd export latest --format csv"),
+    ("Stores and output", "On the floor plan",
+     "qd floor latest --layout floor.dc"),
+    ("Help", "New to qd? Somewhere to try it, no fleet needed",
+     "qd demo   (then docs/getting-started.md: ten minutes, a question a step)"),
+    ("Help", "Can this machine drive the toolchain?", "qd doctor"),
 ]
 
 
@@ -4943,10 +5644,15 @@ def cmd_again(args):
 
 
 def cmd_hints(args):
-    w = max(len(q) for q, _ in HINTS)
-    lines = ["%s hints -- what you want to know, and the command" % PROG, ""]
-    for q, c in HINTS:
-        lines.append("  %-*s  %s" % (w, q, c))
+    """The hints under the card's headings, in its order."""
+    w = max(len(q) for _, q, _ in HINTS)
+    lines = ["%s hints -- what you want to know, and the command" % PROG]
+    for group in GROUPS:
+        rows = [(q, c) for g, q, c in HINTS if g == group]
+        if rows:
+            lines.extend(["", group])
+        for q, c in rows:
+            lines.append("  %-*s  %s" % (w, q, c))
     sys.stdout.write(render.page(lines))
     return 0
 
@@ -5260,6 +5966,26 @@ def build_parser():
                     help="-- COMMAND...")
     sp.set_defaults(fn=cmd_run)
 
+    sp = verb("ask", "run a command on every host and show who agrees and "
+              "who differs: qd run, then qd freq latest A")
+    add_hosts(sp)
+    g = add_ssh(sp)
+    g.add_argument("--push", action="append", metavar="FILE",
+                   help="copy FILE to each host first, repeatable")
+    g.add_argument("--script", metavar="FILE",
+                   help="push FILE and run it; the words after -- are its "
+                   "arguments")
+    g = add_failing(sp)
+    g.add_argument("--name", help="the run's name: the provost dataset its "
+                   "answers go to, and what `qd show NAME` finds")
+    add_safety(sp)
+    sp.add_argument("command", nargs=argparse.REMAINDER,
+                    help="-- COMMAND...")
+    # one pass, always kept: what qd run does with no --every, --count or
+    # --no-store, and the preview qd run's summary shows when the answer
+    # is more than one column
+    sp.set_defaults(fn=cmd_ask, count=1, every=None, no_store=False,
+                    preview=20, quiet=False)
     sp = verb("again", "run a run again as it ran -- its command, hosts, "
               "--via, --sudo, --timeout and --name -- and show what changed")
     sp.add_argument("ref", nargs="?", default="latest", metavar="RUN",
@@ -5311,6 +6037,24 @@ def build_parser():
                     help="the last N runs (20)")
     sp.add_argument("--all", action="store_true", help="every run")
     sp.set_defaults(fn=cmd_log)
+
+    sp = verb("coverage", "which hosts each named test has run on, and "
+              "how it went; the hosts that still owe it")
+    sp.add_argument("names", nargs="*", metavar="NAME",
+                    help="a run's --name or a probe's (facts, iperf, "
+                    "burnin); none: every name in the store, newest first")
+    add_hosts(sp)
+    sp.add_argument("--since", metavar="DATE|RUN",
+                    help="a run that started before this (YYYY-MM-DD, UTC, "
+                    "or a run: latest~3, an id, a name) counts as never")
+    sp.add_argument("--all", action="store_true",
+                    help="with no NAME, every name, not the newest 8")
+    sp.add_argument("--owed", metavar="DIR",
+                    help="write DIR/NAME.txt for each name: the hosts that "
+                    "owe it (never, or not ok), with their attributes, a "
+                    "host list qd run -s reads")
+    add_format(sp)
+    sp.set_defaults(fn=cmd_coverage)
 
     sp = verb("show", "print a dataset as a table")
     sp.add_argument("ref", nargs="?", metavar="RUN")
@@ -5404,16 +6148,40 @@ def build_parser():
     add_format(sp)
     sp.set_defaults(fn=cmd_outliers)
 
+    sp = verb("odd", "which hosts are unlike the rest, in any column: "
+              "every column's outliers at once, ranked")
+    sp.add_argument("ref", metavar="RUN", nargs="?",
+                    help="the run to read (default: latest)")
+    sp.add_argument("--top", type=positive, default=20, metavar="N",
+                    help="list at most N hosts of each kind, numbers and "
+                    "values (20)")
+    sp.add_argument("--peers", metavar="NAME",
+                    help="each host against its own peer group of NAME, not "
+                    "the whole run (numbers) or its rack (values)")
+    sp.add_argument("--z", type=float, default=env_float("Z", 3.5),
+                    help="robust z-score past which a number is out "
+                    "(QD_Z, 3.5)")
+    add_query(sp, sort=False)
+    add_format(sp)
+    sp.set_defaults(fn=cmd_odd)
+
     sp = verb("check", "pass or fail against a thresholds file, by "
               "requirement")
     sp.add_argument("ref", metavar="RUN")
     sp.add_argument("--against", required=True, metavar="FILE",
                     help="thresholds: req, column, op, limit [limit2, where, "
-                    "agg, unit, note, severity] "
+                    "agg, unit, note, severity, weight]; agg is each, mean, median, "
+                    "min, max, sum, stdev, range, p05..p99, or unitless cv, "
+                    "skew, kurtosis (excess), zmax (robust |z|, as qd "
+                    "outliers) "
                     "(README: \"Against requirements: qd check\")")
     sp.add_argument("--waivers", default=env("WAIVERS"), metavar="FILE",
                     help="excuse failures: req, justification [expires, "
                     "where, expect, granted_by] (QD_WAIVERS)")
+    sp.add_argument("--manual", default=env("MANUAL"), metavar="FILE",
+                    help="a person's results for op manual reqs: req, "
+                    "verdict (pass, fail), by [date, where, note] "
+                    "(QD_MANUAL)")
     sp.add_argument("--fail-level", default=env("FAIL_LEVEL", "info"),
                     metavar="LEVEL", help="exit 1 only for a failure at or "
                     "above this severity: info, low, medium, high, critical "
@@ -5423,6 +6191,13 @@ def build_parser():
                     "baseline+2 is held to: an earlier run, or a qualified "
                     "baseline from qd baseline set (host by host under "
                     "each)")
+    sp.add_argument("--rule", default=env("RULE"), metavar="RULE",
+                    help="one verdict from the reqs, which sets the exit "
+                    "status: all(..), any(..), not(..), atleast(N, ..), "
+                    "weighted(0.8, ..) over reqs and globs, quoted, e.g. "
+                    "'all(SYS-1*, atleast(3, SYS-2*))'; weights from a "
+                    "weight column, blank 1 (QD_RULE) "
+                    "(README: \"One verdict from many: --rule\")")
     sp.add_argument("--each", action="store_true",
                     help="a row per host per check, not one per check")
     sp.add_argument("--keep", action="store_true",
@@ -5928,10 +6703,14 @@ def build_parser():
                     help="print the demo's requirements, a CSV for qd check "
                     "--against, and file nothing")
     sp.set_defaults(fn=cmd_demo)
+    sp = verb("start", "the start card: the few commands to begin with, "
+              "as bare qd prints it (qd --help: every command)")
+    sp.set_defaults(fn=cmd_start)
     sp = verb("help", "every verb and every flag; with VERB, that verb's "
-              "help, as qd VERB --help prints it")
+              "help, as qd VERB --help prints it; qd help basics: the "
+              "start card")
     sp.add_argument("topic", nargs="?", metavar="VERB",
-                    help="the verb to print the help of")
+                    help="the verb to print the help of, or basics")
     sp.set_defaults(fn=None)
     return p, sub
 
@@ -5995,7 +6774,8 @@ def main(argv=None):
         argv, tail = argv[:i], argv[i + 1:]
     parser, sub = build_parser()
     if not argv:
-        sys.stdout.write(__doc__.lstrip())
+        # bare qd: the start card; qd --help, the full one (QD-058)
+        sys.stdout.write(START)
         return 0
     try:
         args = parser.parse_args(argv)
@@ -6006,10 +6786,16 @@ def main(argv=None):
     if args.version:
         out(VERSION_TEXT)
         return 0
-    if args.help or not args.verb:
+    if args.help:
         sys.stdout.write(__doc__.lstrip())
         return 0
+    if not args.verb:
+        sys.stdout.write(START)
+        return 0
     if args.verb == "help":
+        if args.topic == "basics":
+            sys.stdout.write(START)
+            return 0
         if args.topic is not None:
             return verb_help(sub, args.topic)
         sys.stdout.write(full_help(parser, sub))
