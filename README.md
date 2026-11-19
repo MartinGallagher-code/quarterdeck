@@ -71,8 +71,8 @@ ones first.
 
 | Heading | Commands |
 |---|---|
-| Run | `run`, `probe`, `do`, `import`, `hosts` |
-| Read it back | `log`, `show`, `stats`, `freq`, `hist`, `outliers`, `pivot`, `trend`, `view`, `web` |
+| Run | `run`, `ask`, `probe`, `do`, `import`, `hosts` |
+| Read it back | `log`, `show`, `coverage`, `stats`, `freq`, `hist`, `outliers`, `odd`, `pivot`, `trend`, `view`, `web` |
 | Over time | `diff`, `compare`, `changes` |
 | Judge and report | `check`, `report`, `peers`, `baseline` |
 | Larger jobs | `split`, `campaign`, `doe`, `join` |
@@ -107,6 +107,7 @@ printf '%s\n' 'node[01-24] rack=r1' 'node[25-48] rack=r2' > hosts.txt
 
 qd run -- uname -r                       # every host, every answer, kept
 qd freq latest A                         # who runs which kernel
+qd ask -- uname -r                       # both at once: who agrees, who differs
 qd probe facts                           # why-slow's readings, a column each
 qd stats facts cpu.busy_pct --by rack    # centre and spread, per rack
 qd outliers facts mem.available_pct      # who is far from everybody else
@@ -964,6 +965,67 @@ sshd, a push run on one host went from five logins to one
 
 Exit status is 0 when every host answered, 1 when one didn't (or
 `--max-fail` stopped the run), and 2 for a usage error.
+
+---
+
+## Who agrees, who differs: `qd ask`
+
+"What does every host say about X?" in one step: `qd ask` is `qd run`
+followed by `qd freq latest A`. It runs the command, files the run
+exactly as `qd run` would, and prints the consensus instead of the whole
+table: each answer, how many hosts gave it and who they are, the most
+common first; then the hosts that did not answer, and why.
+
+```bash
+qd ask -s hosts.txt -- uname -r            # who runs which kernel
+qd ask -- uname -r                         # no hosts named: this machine (--via local)
+qd ask -s hosts.txt --sudo -- 'sysctl -n vm.swappiness'
+qd ask --rerun latest -- uname -r          # only the hosts that did not answer last time
+```
+
+```text
+qd ask -- uname -r: 4 hosts, 3 ok, 1 unreachable   [provost: uname: A]
+  stored   20261118-201754-uname in ~/.provost  (4 rows, 3 captures c0001..c0003)
+
+  ANSWERS  2 different answers from 3 hosts (column A)
+    2  6.1.0-18-amd64
+       node01 node02
+    1  6.1.0-13-amd64
+       node03
+
+  DID NOT ANSWER
+    node09  unreachable      ssh: connect to host node09 port 22: Connection timed out
+
+  NOT ALIKE  1 host did not answer (the run); 2 different answers (the count)
+
+  WHAT TO DO NEXT
+    * qd freq latest A                   the count above, as qd freq gives it
+    * qd show latest --where status!=ok  the 1 host that did not answer, with why
+    * qd run --rerun latest -- ...       the same again on only those 1 host
+    * qd show latest                     every host's answer, as a table
+    * qd view latest                     explore it full-screen
+```
+
+- **Every host option `qd run` takes** (`-s`, `-S`, `--layout`/`--select`,
+  `--first`, `--rerun`), and its ssh, failure and safety options (`--via`,
+  `--sudo`, `--push`, `--script`, `--retries`, `--max-fail`, `--dry-run`,
+  `--limit`, `--allow`, `--read-only`, ...), with the same `QD_*`
+  variables. It is one pass and always kept: `--every`, `--count` and
+  `--no-store` are `qd run`'s.
+- **A host list longer than eight** is cut short (`(+N more)`); `qd freq
+  latest A --all-labels` names every host, and WHAT TO DO NEXT then says
+  so.
+- **A host that answered but printed nothing** is shown apart, as
+  `(printed nothing)`: blank is not measured, so it is not an answer that
+  agrees with anything.
+- **An answer of several columns** (`df`, `cat /proc/meminfo`) has no one
+  value to count. `qd ask` says so and prints `qd run`'s summary instead,
+  with its preview and its next steps; `qd freq latest COLUMN` counts one
+  of them.
+
+Exit status is 0 when every host answered and all said the same, 1 when
+a host did not answer or the answers differ (the verdict line names
+which: *the run* or *the count*), and 2 for a usage error.
 
 ---
 
@@ -2684,7 +2746,7 @@ The numbers, and how they were measured, are in
 | | |
 |---|---|
 | 0 | done, and every host answered |
-| 1 | a finding: a host that did not answer, a host `qd odd` finds unlike the rest, a diff or compare that differs, a change or a slide `qd changes` found, a check that failed or was not measured, nothing to bin, a join that found no telemetry in any window, a host that still owes a test `qd coverage` names, a report that records any of these |
+| 1 | a finding: a host that did not answer, answers that differ (`qd ask`), a host `qd odd` finds unlike the rest, a diff or compare that differs, a change or a slide `qd changes` found, a check that failed or was not measured, nothing to bin, a join that found no telemetry in any window, a host that still owes a test `qd coverage` names, a report that records any of these |
 | 2 | a usage error, or something could not be read or written |
 | other | `qd do` passes on the tool's own |
 

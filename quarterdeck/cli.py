@@ -4,6 +4,7 @@
 
 Run
   qd run [HOSTS] [OPTIONS] -- COMMAND  on every host -> a dataset
+  qd ask [HOSTS] [OPTIONS] -- COMMAND  then who agrees and who differs
   qd probe [NAME...] [HOSTS]           ask by name: facts, sysctl, gpu
   qd do [OPTIONS] -- TOOL ARGS...      mx, iperf, agree, reckon, dcprobe
   qd import PATH... | hosts [HOSTS]    output on disk; the host list
@@ -508,13 +509,26 @@ def file_batch(prov, batch, what):
 
 
 def cmd_run(args):
+    got = start_run(args)
+    if got is None:
+        return 0
+    command, hs, job = got
+    report_run(args, command, hs, job)
+    return job.rc
+
+
+def start_run(args):
+    """What `qd run` does before it reports: the hosts, the command, the
+    fan-out and the filing.  -> (command, hosts, Job), or None for
+    --dry-run.  `qd ask` runs this, so its run is qd run's."""
     cmd = strip_dashes(args.command)
     if args.script:
         if not os.path.isfile(args.script):
             die("no such script: %s" % args.script)
     elif not cmd:
         die("nothing to run: put the command after --, e.g.\n"
-            "  %s run --servers hosts.txt -- uptime" % PROG)
+            "  %s %s --servers hosts.txt -- uptime"
+            % (PROG, getattr(args, "verb", None) or "run"))
     hs = collect(args)
     check_limit(args, hs)
     push = list(args.push or [])
@@ -532,9 +546,120 @@ def cmd_run(args):
                           if command.split() else "run")
     job = fleet_run(args, hs, command, label, push)
     if job is None:
+        return None
+    return command, hs, job
+
+
+def cmd_ask(args):
+    """qd ask [HOSTS] -- CMD (QD-059): `qd run`, then `qd freq latest A`,
+    in one step.  The run is start_run()'s, so it is filed exactly as qd
+    run files it; the count is stats.freq's, as qd freq counts.  What it
+    prints is the consensus -- each answer, how many gave it and who --
+    and the hosts that did not answer.  An answer provost read as more
+    than one column has no single value to count: qd run's own summary,
+    said so.  Exit 1 names its step: the run (a host did not answer) or
+    the count (the answers differ)."""
+    got = start_run(args)
+    if got is None:
         return 0
-    report_run(args, command, hs, job)
-    return job.rc
+    command, hs, job = got
+    t, entry = job.table, job.entry
+    bad = [r for r in job.last if r.outcome != fleet.OK]
+    ok = t.derive(rows=query.where(t, ["status=ok"]))
+    filled = [c for c in data_columns(t)
+              if ok.has(c) and ok.kind(c) != "empty"]
+    if len(filled) > 1:
+        out("%s ask: the answer is %d columns (%s), not one value to count:"
+            " qd run's summary instead" % (
+                PROG, len(filled), ", ".join(filled[:6]) +
+                (" ..." if len(filled) > 6 else "")))
+        report_run(args, command, hs, job, title=PROG + " ask")
+        return job.rc
+    lines = run_head_lines(command, hs, job, PROG + " ask")
+    col = filled[0] if filled else None
+    groups, silent = [], [r[ok.index("host")] for r in ok.rows]
+    if col is not None:
+        ci = ok.index(col)
+        said = ok.derive(rows=[r for r in ok.rows if r[ci].strip()])
+        silent = [r[ok.index("host")] for r in ok.rows
+                  if not r[ci].strip()]
+        groups = stats.freq(said, col)
+    lines.extend(ask_answer_lines(groups, silent, len(ok.rows), col))
+    lines.extend(did_not_answer_lines(bad))
+    findings = []
+    if bad:
+        findings.append("%s did not answer (the run)"
+                        % plural(len(bad), "host"))
+    if len(groups) > 1:
+        findings.append("%d different answers (the count)" % len(groups))
+    if silent and groups:
+        findings.append("%s answered with nothing (the count)"
+                        % plural(len(silent), "host"))
+    lines.append("")
+    if findings:
+        lines.append("  NOT ALIKE  " + "; ".join(findings))
+    elif len(ok.rows) == 1:
+        lines.append("  ALIKE  the one host answered%s" % (
+            "" if groups else ", printing nothing"))
+    elif groups:
+        lines.append("  ALIKE  all %d hosts said the same" % len(ok.rows))
+    else:
+        lines.append("  ALIKE  all %d hosts answered, printing nothing"
+                     % len(ok.rows))
+    lines.extend(ask_next_steps(col, bad, groups))
+    sys.stdout.write(render.page(lines))
+    return 1 if findings else 0
+
+
+def ask_answer_lines(groups, silent, answered, col, limit=8):
+    """The answers, most common first: how many gave each, and who (cut
+    short past `limit` hosts); then the hosts that answered with nothing,
+    which is not an answer (blank is not measured)."""
+    if not answered:
+        return []
+    if not groups:
+        head = "%s answered, and printed nothing" % plural(answered, "host")
+    else:
+        head = "%s from %s%s" % (
+            plural(len(groups), "different answer") if len(groups) > 1
+            else "one answer", plural(answered, "host"),
+            (" (column %s)" % col) if col else "")
+    lines = ["", "  ANSWERS  " + head]
+    w = len(str(max([n for _, n, _ in groups] + [len(silent)])))
+    for v, n, labels in groups:
+        vl = v.split("\n")
+        lines.append("    %*d  %s%s" % (
+            w, n, render.clip(vl[0], 70),
+            ("  (+%s)" % plural(len(vl) - 1, "line")) if len(vl) > 1
+            else ""))
+        lines.append("    %*s  %s" % (w, "", label_list(labels,
+                                                         limit=limit)))
+    if silent:
+        lines.append("    %*d  (printed nothing)" % (w, len(silent)))
+        lines.append("    %*s  %s" % (w, "", label_list(silent,
+                                                         limit=limit)))
+    return lines
+
+
+def ask_next_steps(col, bad, groups):
+    """What qd ask ran, as the plain commands, and where to go next."""
+    tips = []
+    if col is not None:
+        cut = any(len(lb) > 8 for _, _, lb in groups)
+        tips.append(("%s freq latest %s%s" % (PROG, col,
+                                             " --all-labels" if cut else ""),
+                     "the count above, as qd freq gives it" +
+                     (", every host named" if cut else "")))
+    if bad:
+        tips.append(("%s show latest --where status!=ok" % PROG,
+                     "the %s that did not answer, with why"
+                     % plural(len(bad), "host")))
+        tips.append(("%s run --rerun latest -- ..." % PROG,
+                     "the same again on only those %s"
+                     % plural(len(bad), "host")))
+    tips.append(("%s show latest" % PROG, "every host's answer, as a table"))
+    tips.append(("%s view latest" % PROG, "explore it full-screen"))
+    return next_steps(tips)
 
 
 def policy_of(args):
@@ -1096,7 +1221,9 @@ def data_columns(t):
     return [c for c in rest if c != "dataset"]
 
 
-def report_run(args, command, hs, job, title=None):
+def run_head_lines(command, hs, job, title=None):
+    """A run's summary line, and where it was stored: what `qd run -q`
+    prints, and what `qd ask` starts with."""
     t, entry = job.table, job.entry
     passes, interrupted, last = job.passes, job.interrupted, job.last
     counts = outcome_counts(last)
@@ -1140,10 +1267,13 @@ def report_run(args, command, hs, job, title=None):
             else ""))
         for n in entry.meta.get("notes", []):
             lines.append("  note     %s" % n)
-    if args.quiet:
-        sys.stdout.write(render.page(lines))
-        return
-    bad = [r for r in last if r.outcome != fleet.OK]
+    return lines
+
+
+def did_not_answer_lines(bad):
+    """DID NOT ANSWER: each host that was not ok, its status and why; the
+    hosts never started, by name.  [] when every host answered."""
+    lines = []
     tried = [r for r in bad if r.outcome != fleet.NOT_RUN]
     if bad:
         lines.append("")
@@ -1162,6 +1292,19 @@ def report_run(args, command, hs, job, title=None):
         lines.append("    not-run: %s%s" % (", ".join(skipped[:12]), (
             " and %d more" % (len(skipped) - 12)) if len(skipped) > 12
             else ""))
+    return lines
+
+
+def report_run(args, command, hs, job, title=None):
+    t, entry = job.table, job.entry
+    passes, last = job.passes, job.last
+    dcols = data_columns(t)
+    lines = run_head_lines(command, hs, job, title)
+    if args.quiet:
+        sys.stdout.write(render.page(lines))
+        return
+    bad = [r for r in last if r.outcome != fleet.OK]
+    lines.extend(did_not_answer_lines(bad))
     ok_rows = [row for row in t.rows if row[t.index("status")] == fleet.OK]
     if args.preview and ok_rows:
         show = ["host"] + (["pass"] if passes > 1 else []) + (
@@ -5352,8 +5495,7 @@ def doctor_ssh(args, lines):
 # commands QD-057 designed are named here only once they land, each on
 # its own line, under Getting started, after `qd demo`, in this order:
 #     qd setup  (QD-063)  check this machine, make a store, test your hosts
-#     qd ask    (QD-059)  ask every host; see who agrees and who differs;
-#                         it replaces the `qd run -- uname -r` line
+#                         (before qd ask)
 #     qd survey (QD-060)  everything about every host, and who stands out
 #     qd again  (QD-061)  run the last thing again; show what changed
 #     qd odd    (QD-062)  landed: on the card, last of these
@@ -5362,7 +5504,7 @@ qd -- run a command on many machines, keep every answer, and read it back.
 
 Getting started
   qd demo                      a practice fleet to learn on, no machines needed
-  qd run -- uname -r           ask every host in hosts.txt (or just this one)
+  qd ask -- uname -r           ask every host; see who agrees and who differs
   qd odd                       which hosts are unlike the rest, and in what
 
 Looking at what you have
@@ -5390,7 +5532,7 @@ HINTS = [
     ("Run", "Is my host list even real?",
      "qd run --servers hosts.txt -- true            (then: reachable hosts.txt -i)"),
     ("Run", "What does every host say about X?",
-     "qd run --servers hosts.txt -- uname -r   ->   qd freq latest A"),
+     "qd ask --servers hosts.txt -- uname -r   (qd run, then qd freq latest A)"),
     ("Run", "Settings as columns",
      "qd run -s hosts.txt -- 'sysctl net.core.somaxconn vm.swappiness'"),
     ("Run", "Watch it over time",
@@ -5779,6 +5921,27 @@ def build_parser():
     sp.add_argument("command", nargs=argparse.REMAINDER,
                     help="-- COMMAND...")
     sp.set_defaults(fn=cmd_run)
+
+    sp = verb("ask", "run a command on every host and show who agrees and "
+              "who differs: qd run, then qd freq latest A")
+    add_hosts(sp)
+    g = add_ssh(sp)
+    g.add_argument("--push", action="append", metavar="FILE",
+                   help="copy FILE to each host first, repeatable")
+    g.add_argument("--script", metavar="FILE",
+                   help="push FILE and run it; the words after -- are its "
+                   "arguments")
+    g = add_failing(sp)
+    g.add_argument("--name", help="the run's name: the provost dataset its "
+                   "answers go to, and what `qd show NAME` finds")
+    add_safety(sp)
+    sp.add_argument("command", nargs=argparse.REMAINDER,
+                    help="-- COMMAND...")
+    # one pass, always kept: what qd run does with no --every, --count or
+    # --no-store, and the preview qd run's summary shows when the answer
+    # is more than one column
+    sp.set_defaults(fn=cmd_ask, count=1, every=None, no_store=False,
+                    preview=20, quiet=False)
 
     sp = verb("do", "run a toolchain command here and keep what it left")
     sp.add_argument("--name", help="the run's name (default the tool's)")

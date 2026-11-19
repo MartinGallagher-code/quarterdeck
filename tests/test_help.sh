@@ -284,12 +284,12 @@ t_start_card_names_only_verbs_that_parse() {
     unit start start.txt
     assert_status "$RC" 0
     assert_eq "$OUT" "ok 9"
-    # a beginner command named before it lands (QD-059's qd ask)
-    awk '{ print } /^Getting started$/ { print "  qd ask -- uname -r           ask every host" }' \
+    # a command named that is not a verb
+    awk '{ print } /^Getting started$/ { print "  qd poll -- uname -r          ask every host" }' \
         start.txt > ask.txt
     unit start ask.txt
     assert_status "$RC" 1
-    assert_eq "$OUT" "not a verb: ask: qd ask -- uname -r"
+    assert_eq "$OUT" "not a verb: poll: qd poll -- uname -r"
     # a command that no longer parses, in the footer
     sed 's/Ideas: qd hints/Ideas: qd hints --srevers/' start.txt > flag.txt
     unit start flag.txt
