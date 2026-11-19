@@ -55,6 +55,572 @@ responses at once (QD-067, the first step of QD-066's fio tuning study).
   that had failed was counted as measured and skipped.
 - README's "Designed experiments" has a worked fio screen;
   docs/getting-started.md's map and `qd hints` name `qd doe init fio`.
+## 0.43.0 — 2026-11-19
+
+Your own named probes: `qd probe add NAME -- COMMAND` gives a command a
+name, asked for like the probes qd ships, with fio as the README's worked
+example (QD-054).
+
+### Added
+- **`qd probe add NAME [--note TEXT] [--replace] -- COMMAND`** saves a
+  probe, **`qd probe rm NAME...`** forgets it, and **`qd probe`** lists the
+  saved ones beside qd's own, kind `yours`, with each command in full
+  under the table. `qd probe NAME [HOSTS]` runs one exactly as `qd run
+  --name NAME -- COMMAND` would: every fleet option `qd probe` takes, a run
+  named after the probe with its command whole and no tool, so `qd show`,
+  `qd compare NAME --last 5` and `qd check NAME` find it; its notes say
+  `your probe NAME`. Named beside qd's own probes it runs after them, a
+  run of its own (`quarterdeck/probes.py`: `load_saved()`, `add_saved()`,
+  `rm_saved()`, `check_saved_name()`, `get()` and `available()` knowing
+  kind `saved`; `quarterdeck/cli.py`: `cmd_probe()`, `probe_catalogue()`,
+  `probe_saved()`, the probe verb's `--note` and `--replace`, and `main()`
+  cutting `qd probe`'s command off at `--` as it does `campaign`'s and
+  `doe`'s).
+- **Kept in `probes.json` beside `config.json`** (`~/.config/quarterdeck/`,
+  `$XDG_CONFIG_HOME/quarterdeck/`), written whole and renamed into place,
+  never in a store: a store from another machine brings no commands to run
+  on this fleet.
+- **Refused, exit 2:** a name that is not a run's name as it is (letters,
+  digits, `.`, `_`, `-`, starting and ending with a letter or digit, at
+  most 64, no `..`, not `unsorted` or `qd.*`), a probe or group qd ships,
+  the words `add`, `rm` and `latest`, and `add` over a saved name without
+  `--replace`.
+- **Never a way around a policy.** A saved probe is not a probe qd ships:
+  `--allow` and `--read-only` check its command (not its name), and the
+  mutation guard reads it, a saved `rm -rf` needing `--yes` at every run
+  (`add` warns). Asked beside qd's own probes, it is checked before any of
+  them runs, so a refusal leaves nothing half done. `check_danger()` takes
+  the line to repeat with `--yes`, so it names `qd probe NAME --yes`.
+- **`qd --help`**, **`qd hints`** and `docs/getting-started.md`'s command
+  map name `qd probe add` and `rm`; the README's "Asking by name: `qd
+  probe`" has "Your own probes: `qd probe add`", with a fio random-read
+  probe (`--output-format=json`), the columns provost files from fio's
+  JSON and a `qd check` limit on IOPS and on p99 latency; "Allow-lists and
+  read-only" says a saved probe's command must match.
+
+### Tests
+- **`tests/test_saved.sh`** (new, in `TIMES`): add, list, run, replace and
+  rm with the config in a temporary `HOME`; a run filed under its name,
+  its command whole, and `qd compare NAME` reading two (and three, beside
+  qd's own probes); clashes, bad names and `add` without `--replace` each
+  exit 2 and change nothing; `--read-only` with no allow-list refusing a
+  saved probe (nothing filed, `policy.log` written) while `os` runs, a
+  saved probe asked beside `os` refused before `os` runs, an allow-list
+  naming the probe's name not allowing it and one matching its command
+  allowing it; the mutation guard stopping a saved `rm -rf` (with `--allow
+  'rm *'` too) until `--yes`; another config over the same store listing
+  no probe; and fio's JSON (`tests/corpus/fio/randread.json`, fio 3.36's
+  shape, no fio needed) filed by the provost under test into the README's
+  columns and values, with the README's limits giving a pass and a fail.
+- `tests/help_unit.py` cuts `qd probe`'s command at `--`, as `main()` does.
+- Merged after QD-040's regrouped `qd --help` card and QD-060's `qd
+  survey`: `run_probes()` keeps survey's `say` and returned runs beside
+  the saved probes' fifth field, and the card's `survey | probe` line
+  names your own probes.
+
+## 0.42.0 — 2026-11-19
+
+`qd setup`: a first-run guide that checks this machine, makes and selects
+a store, finds or writes the host list, and tests every host (QD-063,
+from the design in QD-057).
+
+### Added
+- **`qd setup [HOSTS] [--yes] [--store-name NAME]`** (new
+  `quarterdeck/firstrun.py`; `cmd_setup` and the verb in
+  `quarterdeck/cli.py`). Four steps, each a plain command called as that
+  command runs, so `--store`, `--via`, `--sudo` and every `QD_*` variable
+  mean what they mean there: `qd doctor`'s report; when no store is active
+  (or the demo is), an offer to make `main` and select it (`qd store new`,
+  `qd store use`); the host list as `qd run` finds it, or an offer to write
+  `hosts.txt` from typed names; `qd run -- true` on every host, keeping
+  nothing, with each host that did not answer listed with why and what to
+  do for its kind of failure (a key, a host key, a name that does not
+  resolve, a host that is down, a timeout, a login that fails). Then a
+  summary, and WHAT TO DO NEXT naming `qd ask -- uname -r`, `qd survey`
+  (`qd run` and `qd probe facts inventory` in a qd without them yet) and
+  `qd demo`.
+- **It asks only at a terminal**, checking `sys.stdin.isatty()` before
+  every question: with stdin not a terminal it checks everything, changes
+  nothing that needs an answer, and says what to run instead. `--yes`
+  answers the store's question for a script; it never writes `hosts.txt`
+  and never picks among stores already registered. `hosts.txt` is created
+  (`open(..., "x")`), never overwritten, and the active store is changed
+  only when asked. The test run is filed nowhere, so a second `qd setup`
+  changes nothing and reports every step done.
+- **Exit status:** 0 when this machine is ready (`qd doctor` exits 0 and
+  provost is here) and every host answered; 1 when it is not ready or a
+  host did not answer, the summary naming the step; 2 on a usage error, a
+  host list that cannot be read, or a write that was refused.
+- **`qd --help`** has a `qd setup` line, and its "New to qd?" note names
+  it; **`qd hints`** has a hint for it; the README has "Your own fleet,
+  the first time: `qd setup`"; `docs/getting-started.md` names it in "Your
+  own fleet" and in its map of every command.
+
+### Tests
+- **`tests/test_setup.sh`** (new, 9 cases), each an account of its own
+  with no `QD_STORE` and the fake fleet: a fresh account with stdin from
+  `/dev/null` asks nothing and changes nothing; `--yes` makes and selects
+  `main`, and a second run changes neither qd's config nor the store; a
+  store already active, and stores registered with none active, are left
+  as they are; the demo active is replaced only when asked; an unreachable
+  host and one whose name does not resolve are each listed with why and
+  what to do, exit 1; a bad `--store-name`, an empty `hosts.txt` and a
+  `hosts.txt` already there exit 2 or are refused, the file unchanged;
+  driven at a terminal by Python's `pty`, it asks, makes the store and
+  writes `hosts.txt` from the answers, and a run after it finds it all
+  done. Every command it lists under WHAT TO DO NEXT parses with
+  `build_parser()`. `TIMES` gives the setup suite 20 seconds.
+- Merged after QD-040's regrouped `qd --help` card: `setup` shares the
+  Run line with `hosts`, `import` moves to `rm`'s line under Stores and
+  output to keep the card at 50 lines, and `setup` is on the start card
+  under Getting started, as QD-058's note above `START` asks.
+
+## 0.41.0 — 2026-11-19
+
+`qd survey [HOSTS]`: every host asked the standard questions, and one
+screen of who stands out (QD-060, from QD-057's beginner layer).
+
+### Added
+- **`qd survey`** runs `qd probe facts inventory` -- the same runs, under
+  the same names, with `qd run`'s host options -- and prints, in about 40
+  lines at most for any fleet: the values most hosts share (`os`,
+  `kernel`, `bios_version`, `cpu_model`, `cpu.count`, `mem.total_kb`: a
+  fixed list, blanks not counted), the hosts that differ from the rest of
+  their rack in them (`outliers --categorical`), the numeric outliers by
+  median and MAD (`facts`' load, memory, disk, retransmit and temperature
+  readings, and `packages`' count), and the hosts that did not answer.
+  Each section names three hosts and counts the rest; `FOUND` names the
+  step that found each thing; WHAT TO DO NEXT lists the plain `probe`,
+  `freq` and `outliers` commands with real column names. binnacle missing
+  skips `facts`, named with how to get it; no hosts named surveys this
+  machine and points to `qd demo`. Exit 0 when every host answered and
+  nothing stands out, 1 otherwise, 2 on a usage error
+  (`quarterdeck/survey.py`, new; `quarterdeck/cli.py`: `cmd_survey`, the
+  `survey` verb, and `run_probes()`, `qd probe`'s fan-out taken out of
+  `cmd_probe` so the survey runs exactly it). Nothing is recounted: the
+  figures are `stats.freq`, `report_categorical` and `stats.outliers`,
+  each given the Namespace qd's own parser makes from the command printed
+  for it.
+- **`qd --help`** lists `qd survey [HOSTS]`; **`qd hints`**' "Everything
+  about every host" names it beside `qd probe facts inventory`; README's
+  "Every host, and who stands out: `qd survey`"; `docs/getting-started.md`'s
+  map of every command (`tests/test_demo.sh` requires every verb there).
+
+### Tests
+- **`tests/test_survey.sh`** (new, in `TIMES`): on the fake fleet, with a
+  stand-in `uname -r` and a stand-in binnacle: one odd kernel, one numeric
+  outlier and one unreachable host are named, exit 1, with the step that
+  found each; the runs filed match `qd probe facts inventory`'s; binnacle
+  missing is a skip, exit 0; no hosts is this machine, pointing to `qd
+  demo`; every WHAT TO DO NEXT command parses and the read ones run; 16
+  hosts with four of each finding stay within 40 lines; usage errors exit
+  2; the card, hints and `qd help survey` name it.
+- Merged after QD-040's regrouped `qd --help` card: `survey` leads the
+  line `probe` had under Run, and is on the start card under Getting
+  started, as QD-058's note above `START` asks.
+
+## 0.40.0 — 2026-11-19
+
+`qd again [RUN]` runs a run once more, as it ran, and shows what changed
+(QD-061).
+
+### Added
+- **`qd again [RUN]`** (default `latest`; any reference `qd diff` takes)
+  runs RUN's command again on RUN's hosts with its `--via`, `--sudo`,
+  `--timeout`, `--name` and passes, files the new run, then prints `qd
+  diff RUN NEW`. The hosts are RUN's host file read again while it is
+  there, else the hosts RUN ran on, with their addresses and attributes.
+  It prints the command, the hosts and the plain `qd run` before it runs,
+  asks before a `--sudo` run when stdin is a terminal (never otherwise;
+  `--yes` skips it), and ends with which step found what and WHAT TO DO
+  NEXT. Exit 0 when every host answered and nothing changed, 1 when a host
+  did not answer or something changed, 2 when RUN cannot be run again
+  exactly: a `qd do` run, a `qd import`, a campaign's part, a design point,
+  a probe, a run that pushed files, or one filed before 0.40.0. It is
+  composed of `qd run` (`cmd_run`, given the Namespace the parser makes of
+  the plain command) and `qd diff` (`cmd_diff`): no reader or statistic of
+  its own (`quarterdeck/again.py`; `cli.py`: the verb, `cmd_again`).
+- **`qd.runs` keeps `timeout_s`, `pushed` and `host_list`** for a `qd run`:
+  its `--timeout`, how many files it pushed, and the host files its list
+  was read from (`quarterdeck/store.py`; `cli.py` `cmd_run`, `collect()`;
+  `hosts.py` `collect_hosts(files=...)`). Blank in older runs.
+- **`qd --help`** has `qd again`'s line, **`qd hints`** suggests it, and the
+  README has "`again`: the same run once more, and what changed", and
+  `docs/getting-started.md`'s map of every command names it.
+
+### Changed
+- `--rerun`'s host reading is `last_pass_hosts()`, which `qd again` shares
+  (`cli.py`); `--rerun` behaves as before.
+
+### Tests
+- **`tests/test_again.sh`**: nothing changed (exit 0), a changed answer
+  (exit 1, the host named), a host now unreachable (exit 1), the host file
+  read again or its hosts kept, `--via pdsh` with `--timeout` and `--name`,
+  a `--via local` run, a `--sudo` run (no prompt with no terminal; asked
+  under a pseudo-terminal, `n` runs nothing), `--dry-run`, and every
+  refusal (exit 2); every WHAT TO DO NEXT command parses. `TIMES` gives it
+  90 seconds (530 here under load, scaled as diff and help scale).
+- Merged after QD-040's regrouped `qd --help` card: `again` shares the
+  Over time line with `diff`, and is on the start card under Getting
+  started, as QD-058's note above `START` asks.
+
+## 0.39.0 — 2026-11-19
+
+`qd ask [HOSTS] -- CMD` runs CMD on every host, files the run as `qd run`
+does, and prints who agrees and who differs: `qd run`, then `qd freq
+latest A`, in one step (QD-059, from the beginner design QD-057).
+
+### Added
+- **`qd ask`**: the run is `qd run`'s own (`start_run()`, the part of
+  `cmd_run` before it reports, now shared), so filing, `--store`, `--via`,
+  `--sudo`, `--rerun`, `--retries`, `--max-fail`, the safety options and
+  every `QD_*` variable behave as in `qd run`; with no hosts named it is
+  this machine, by `--via local` (QD-037). It prints the run's summary
+  line, then ANSWERS: each distinct answer, most common first, with its
+  count and its hosts (past eight, `(+N more)`), counted by `stats.freq`
+  as `qd freq` counts; the hosts that answered with nothing, apart (blank
+  is not measured); DID NOT ANSWER, each host with its status and why; a
+  verdict, ALIKE or NOT ALIKE, naming the step that found something ("1
+  host did not answer (the run)", "2 different answers (the count)"); and
+  WHAT TO DO NEXT: `qd freq latest A`, `qd show latest`, `qd view latest`,
+  and for hosts that did not answer `qd show latest --where status!=ok`
+  and `qd run --rerun latest -- ...`. An answer provost read as more than
+  one column has no single value to count: it says so and prints `qd
+  run`'s summary instead. Exit 0 when every host answered alike, 1 when a
+  host did not answer or the answers differ, 2 on a usage error. One pass,
+  always kept: no `--every`, `--count` or `--no-store` (`qd run` has them).
+  (`quarterdeck/cli.py`: `cmd_ask`, `ask_answer_lines`, `ask_next_steps`,
+  the `ask` verb in `build_parser()`.)
+- **`qd --help`** lists `qd ask` under Run, and `qd hints`' "What does
+  every host say about X?" now suggests it. Bare `qd`'s start card shows
+  `qd ask -- uname -r` in place of the `qd run` stand-in (QD-058). README:
+  *Who agrees, who differs: `qd ask`*, a line in *Thirty seconds*, the
+  `qd --help` heading table and the exit-status table;
+  `docs/getting-started.md`'s map of every command names it (under Run).
+
+### Changed
+- `report_run()`'s summary line and its DID NOT ANSWER block are now
+  `run_head_lines()` and `did_not_answer_lines()`, which `qd ask` shares;
+  `qd run`'s output is unchanged. "nothing to run" names the verb typed
+  (`qd ask ... -- uptime` from `qd ask`).
+
+### Tests
+- **`tests/test_ask.sh`** (new, in `TIMES`): every host agreeing (0); two
+  answers, most common first, with counts and hosts (1, "the count"); a
+  host unreachable and a failed command, listed with status and reason
+  (1, "the run"); both at once; a three-column answer falling back to `qd
+  run`'s summary; hosts that printed nothing; a long host list cut short;
+  its run compared with `qd run`'s for the same command and hosts through
+  `qd log`, the rows, `qd.runs` and `qd.hosts`; no hosts named (this
+  machine, no ssh); `qd run`'s host options (`--first`, `--name`,
+  `--dry-run`, `--limit`, `--rerun`, `--retries`, `--max-fail`, `--sudo`);
+  usage errors (2); the card and the hints. Every WHAT TO DO NEXT command
+  is parsed by `build_parser()`.
+- Merged after QD-040's regrouped `qd --help` card: `ask` has its own
+  line under Run, and on the start card `qd ask -- uname -r` takes the
+  place of `qd run -- uname -r`, as QD-058's note above `START` asks.
+  `tests/test_help.sh`'s not-a-verb case names `qd poll` now.
+
+## 0.38.0 — 2026-11-19
+
+`qd odd [RUN]`: the hosts unlike the rest, in any column, ranked -- every
+column's outliers at once, for when you do not know which column to ask
+about (QD-062, from the beginner design QD-057).
+
+### Added
+- **`qd odd [RUN]`** (default: latest) runs the outlier checks `qd
+  outliers` already has over every column of RUN: numbers by the median
+  and MAD (`stats.outliers`, or `stats.peer_outliers` with `--peers`),
+  words by the value most of the rack or peer group has
+  (`differs.find`, as `--categorical` groups them). Nothing is
+  recomputed: it calls that code a column at a time. Each host that
+  stands out is listed with the column, its value and the typical one.
+- **Two ranked lists**, not one: numbers by robust z (MAD 0: the column
+  fewer hosts differ in first), words by rarity, the share of the
+  host's group that says something else. A robust z has no ceiling and a
+  rarity is a share, so one scale for both would mislead. `--top N` (20)
+  limits each list; `--format` gives one table of both (`list, group,
+  host, column, value, typical, score, agree`).
+- What it reads: in a `qd run`, the columns after `capture` (what the
+  hosts said, not the host list's attributes or qd's bookkeeping); in a
+  file, every column. Per-host identities, uptime and times are left out
+  and named. A column every host agrees in, and one fewer than half the
+  rows measured, is not checked: blank is not measured, never zero. A
+  host that did not answer the run is named apart, not called odd; a
+  column split with no majority is named, with no odd one.
+- `--peers NAME` holds each host against its own peer group, as `qd
+  outliers --peers` does; `--z` (`QD_Z`, 3.5) and `--where` as there.
+- WHAT TO DO NEXT gives the `qd outliers` command for the top column of
+  each list (two at most), with the same `--peers`, `--z`, `--where` and
+  `--store`, and `qd show RUN --where host=H --vertical` for the first
+  host named; `qd stats RUN` when nothing stands out.
+- Exit status: 0 when nothing stands out, 1 when a host does, 2 on a
+  usage error. Read-only: it files nothing.
+- On the `qd --help` card's usage lines, in `qd hints` ("Who is odd, and
+  in what?"), in the README ("Who is odd: `qd odd`", under Reading
+  it back; a line in Thirty seconds and the exit status table), and in
+  the map of docs/getting-started.md (its test wants every verb there).
+
+### Changed
+- `quarterdeck/cli.py`: `report_categorical`'s grouping (peer group, else
+  rack, else the whole fleet) is now `categorical_groups()`, shared with
+  `qd odd`; `qd outliers --categorical` is unchanged.
+
+### Tests
+- **`tests/test_odd.sh`** (new, in `TIMES`): the demo's planted slow host
+  (`demo-iperf`, robust z −225.8) and odd kernel (`demo-kernel`, 92%)
+  each ranked first, from the demo's own answers through its stand-in
+  launcher; a run where every host agrees exits 0; a blank is neither a
+  zero nor a word of its own, and a mostly blank column is not checked;
+  `--top` per list and `--format json`; `--peers`, beside the plain `qd
+  outliers --peers`; a filed `qd run` on fake hosts, where qd's own
+  columns are not read and the host that did not answer is named apart;
+  usage errors exit 2; the card, `qd hints` and `qd help odd`. Every
+  WHAT TO DO NEXT command is parsed by `build_parser()` and then run.
+- Merged after QD-040's regrouped `qd --help` card: `odd` leads the
+  Read it back line with `pivot` and `trend`, and on the start card under
+  Getting started, as QD-058's note above `START` asks.
+
+## 0.37.0 — 2026-11-19
+
+`qd coverage`: which hosts each named test has run on, how it went, and
+a host list of the ones that still owe it (QD-053).
+
+### Added
+- **`qd coverage [NAME...] [HOSTS]`** (`quarterdeck/coverage.py`, new,
+  and `cmd_coverage` in `quarterdeck/cli.py`). A row per host of the list
+  (`-s`, `-S`, `--layout`, `QD_SERVERS`, a `hosts.txt`; none is an error,
+  not this machine), a column per name (a run's `--name`, a probe's, a
+  campaign's), each cell the host's latest status in a run of that name
+  and the run it came from: `ok`, `failed`/`timeout`/`push-failed`
+  (counted as failed), `unreachable`, or `never`. Latest is by when the
+  run started, then the order filed, never by id; a host's last pass and
+  try count; a `not-run` row is not an answer. The head counts each name's
+  ok, failed, unreachable and never. Read from `qd.runs` and `qd.hosts`
+  alone.
+- **A host the runs saw that the list does not hold** is listed under the
+  grid, and not counted.
+- **With no NAME**, the eight names run most recently, newest first, and
+  how many more there are; `--all` for every one.
+- **`--since DATE|RUN`**: a run that started before a date
+  (`YYYY-MM-DD`, UTC) or a run (`latest~3`, an id, a name) is not read,
+  so an old ok is never.
+- **`--owed DIR`** writes `DIR/NAME.txt` per name: the hosts that owe it
+  (never, or not ok), with the list's attributes, a host list `qd run -s`
+  reads back. A name nothing is owed for gets a file with no hosts in it.
+- **`--format csv|tsv|json|ndjson|md`**: `host, name, status, counted,
+  owed, run, when, listed`, a row per host and name.
+- **Exit status** 1 when a listed host owes a name shown, 0 when none
+  does, 2 for usage. A name the store has no run of is every host never,
+  said on stderr; a name with no runs on the fleet (`qd do`, `qd
+  import`), and an empty store with no NAME, are exit 2.
+- The `qd --help` card has its line, `qd hints` a hint, and README a
+  section, "Which hosts have had it: `qd coverage`"; the exit-status
+  table and card name it.
+
+### Tests
+- **`tests/test_coverage.sh`** (new, in `TIMES`): three named runs over
+  overlapping hosts, some failed and one unreachable, with a host off the
+  list: the grid, the counts, the CSV and JSON and the exit status; a list
+  owing nothing is exit 0; no NAME is every name, newest first; the owed
+  list written, run with `qd run -s` on the stand-in ssh, and nothing
+  owed after; `--since` a run and a date; a name the store lacks, an empty
+  store, no host list, a name not on the fleet.
+
+## 0.36.1 — 2026-11-19
+
+A Concepts page: the words and run references every qd command assumes,
+in one place, checked against qd itself (QD-042).
+
+### Added
+- **`docs/concepts.md`** (new): run, pass, table (`data`, `hosts`), row,
+  capture, dataset and column, with provost's `A`, `B`, ... for a field
+  it found no name for (linked to provost's rule, not restated); the
+  store, the active, a named and a remote store; blank; how to name a
+  run; peer group, baseline, campaign, requirement, waiver and
+  telemetry; and exit status 0, 1 (a finding) and 2. A sentence or two
+  and one example each, and a link to the manual's section. A small
+  plain-text picture (60 columns) of run, hosts, captures, rows and
+  dataset. The sdist ships it (`MANIFEST.in`).
+
+### Changed
+- **The run-reference table moved** from README's "Named stores" to the
+  page's "Naming a run", with an example each against the demo store and
+  the forms the table had left out (`last`, `~N`, `prev~N`, a bare
+  dataset name). "Named stores" links to it and keeps `@STORE`'s details.
+- **README:** the front matter links the page, and the first `qd freq
+  latest A` is followed by what `A` is.
+- **`docs/getting-started.md`:** "Four words" links the page.
+- **`qd --help`:** the RUN paragraph ends with a pointer to
+  `docs/concepts.md`.
+
+### Tests
+- **`tests/test_concepts.sh`** (new suite, in `TIMES`) with
+  **`tests/concepts_unit.py`**: every `qd` command on the page parses
+  with `build_parser()`; every reference form `quarterdeck/store.py`
+  resolves (read from `Store.resolve()`'s pattern, prefixes and returns,
+  `split_ref()`, `split_store()` and `load_ref()`) is in the page's
+  table, and nothing the resolver does not take; the page's links, and
+  the links to it from README.md and docs/, land (files and anchors;
+  provost's docs too where `QD_PROVOST` is a clone); and README,
+  the walkthrough and `qd --help` point at it. Each check is also run on
+  a broken copy.
+- **`tests/test_demo.sh`**: the walkthrough case runs every "Naming a
+  run" example against the demo store, each exiting 0 as the page says.
+
+## 0.36.0 — 2026-11-19
+
+`qd check --manual FILE` records a person's pass or fail for a
+requirement nothing measures, with who decided, when and why, in the same
+verdict table, JUnit and `--keep` record as the measured ones (QD-052).
+
+### Added
+- **`op manual`** in the thresholds file: a requirement a person decides
+  (the cabling inspected, the labels right). `column` may be blank;
+  `limit`, `limit2`, `unit` and `agg` must be (refused with exit 2
+  otherwise). Without a result it is **not measured**, so the run exits
+  1 (`quarterdeck/check.py`).
+- **`--manual FILE`** (`QD_MANUAL`) on `qd check`: a TSV or CSV of `req`,
+  `verdict` (pass or fail), `by` [`date`, `where`, `note`]. A result
+  covers the rows its `where` picks (one bare word is a host), or every
+  row of the check; when results disagree on a row the fail stands; a
+  row no result covers is not measured. Folded in before waivers, so a
+  waiver excuses a manual fail and `expect fail` makes a manual pass an
+  unexpected pass; `--rule`, `--each`, severities and every format take
+  it as any verdict (`quarterdeck/check.py`, `quarterdeck/cli.py`).
+- **Refused with exit 2, naming the line**: a `req` no check has, or one
+  whose check is measured; a verdict other than pass or fail; a blank
+  `req`, `verdict` or `by`; a date qd cannot read (YYYY-MM-DD, or with a
+  time); a `where` it cannot parse.
+- With `--manual`, the verdict table gains `decided_by`, `decided` and
+  `decision_note`, and the head counts the results, who gave them, the
+  undated ones and those **dated before the run**. A result older than
+  the run is warned of in its check's note, not refused: an inspection
+  is often made the day before.
+- **JUnit**: a manual testcase carries `by` and `date` as properties; a
+  manual fail is `<failure type="manual">` naming who decided and when;
+  the suite names the manual file with its sha256
+  (`quarterdeck/exporters.py`). A testcase of a check with no column is
+  named by its limit alone.
+- **`--keep`** files the manual columns, names `--manual` in the run's
+  command, and adds a note of the file's name and sha256 (`qd log`).
+- README "A person's results: `--manual`", beside "Waivers"; a `--help`
+  line; `tests/test_check.sh` (seven cases).
+
+### Unchanged
+- Without `--manual` and without a manual row, every format's output is
+  what 0.35.0 gave (checked byte for byte against 0.35.0 for text, csv,
+  json, junit and md, with and without `--each`, waivers and `--rule`).
+- `qd report --check` does not take `--manual`: a manual check there is
+  not measured.
+
+## 0.35.0 — 2026-11-19
+
+`qd check --rule` gives one overall verdict built from the requirements:
+all, any, not, at least N of, and a weighted score against a threshold
+(QD-051).
+
+### Added
+- **`--rule RULE`** (`QD_RULE`) on `qd check`: a small prefix grammar,
+  `all(..)`, `any(..)`, `not(..)`, `atleast(N, ..)` and `weighted(T,
+  ..)`, over `req`s and globs of them (`SYS-2*`), nested as deep as
+  wanted; `weighted` takes requirements and globs only. With a rule, the
+  exit status is 0 when the overall verdict passes and 1 when it fails or
+  is not measured; a requirement the rule does not name counts for
+  nothing, and the head says which. The verdicts of the checks are not
+  changed (`quarterdeck/rule.py`, new).
+- **Three-valued, so blank is never a pass**: a requirement is pass,
+  fail or not measured (its checks taken together); a call is not
+  measured when the unmeasured could still decide it, and `not` of not
+  measured is not measured. A waived check counts as a pass, an
+  unexpected pass as a fail, a failure below `--fail-level` as a pass.
+- **A `weight` column** in the thresholds file for `weighted()`: a
+  number 0 or more, once per requirement (two different weights for one
+  are refused with exit 2); blank is 1 (`quarterdeck/check.py`).
+- **The overall verdict in every format**: the head line gives it and why
+  (`2 of 4 SYS-2* passed, need 3`), with a line per call beneath; CSV,
+  TSV, JSON and the rest carry one more row, `req` `(rule)`, the rule as
+  its `limit` and the why as its `observed`, and so does what `--keep`
+  files, whose command names the rule; JUnit has one more testcase
+  (`classname` `rule`) and the suite properties `rule`, `rule.verdict`
+  and `rule.why` (`quarterdeck/cli.py`, `quarterdeck/exporters.py`).
+  `qd report` does not count that row as a check
+  (`quarterdeck/report.py`).
+- **A rule qd cannot read is refused with exit 2**, naming what is wrong:
+  an unknown `req`, a glob matching nothing (or several where one
+  belongs), N outside 1 to the count, a threshold outside 0 to 1, the
+  same requirement twice in one list, weights adding up to 0, an unknown
+  call, or anything left over.
+- README "One verdict from many: `--rule`", with a worked example;
+  `qd check --help` names the calls. Five cases in `tests/test_check.sh`.
+
+### Unchanged
+- Without `--rule`, output and exit status are what they were.
+
+## 0.34.0 — 2026-11-19
+
+`qd check` can pass or fail on how alike the hosts are: `agg` takes `cv`,
+`skew`, `kurtosis` and `zmax` (QD-050).
+
+### Added
+- **Four spread and shape aggregates for a thresholds file's `agg`.**
+  `cv` is the sample stdev over the mean's size; `skew` the adjusted
+  Fisher-Pearson sample skewness (G1, Excel's `SKEW`); `kurtosis` the
+  sample excess kurtosis (G2, Excel's `KURT`, 0 for a normal
+  distribution); `zmax` the largest robust |z|, 0.6745 (x - median) /
+  MAD, worked out by `qd outliers`' own code, so the two agree on the
+  worst host and its score, which the note names. `agg zmax`, `op <=
+  3.5` reads "no host is an outlier".
+- **Not measured, with the reason**, below each one's fewest values (2,
+  3, 4 and 3), for a mean of 0 (`cv`), every value the same (`skew`,
+  `kurtosis`) and a MAD of 0 (`zmax`).
+- **Unitless**: a limit with a unit on one of them is refused with exit
+  2, naming the check, and the column's unit does not scale them. A
+  percentage tolerance or baseline offset is a share, and is taken.
+- **`--baseline` works on them**: a relative limit is held to the same
+  figure over the baseline's rows of the same hosts.
+- `qd check --help` names every `agg`; README "Against requirements: `qd
+  check`" has a "Spread and shape" section with the definitions.
+
+### Changed
+- `quarterdeck/stats.py`: `robust_z()` is the one formula `outliers()`
+  and `zmax` score by; `shape()` works out the four. In
+  `quarterdeck/check.py` the baseline values an aggregate is held to are
+  found by one helper, `_baseline_values()`, shared by the old
+  aggregates and the new; their output is unchanged.
+- Tests: seven cases in `tests/test_check.sh` (hand-worked values on 1,
+  2, 3, 4, 100; not measured; units refused; zmax against `qd outliers`;
+  a file's old rows unchanged beside new ones; JUnit, waivers, severity,
+  `--keep`; `--baseline`).
+
+## 0.33.1 — 2026-11-19
+
+How long a small run takes to file, measured and recorded, and the provost
+that files it quickly named (QD-056).
+
+### Changed
+- **The README names provost 2.28.0 as the version that files a small run
+  quickly.** A one-host `qd run -- ls` spent almost all of its time in
+  provost's filing; 2.28.0 reads its strategies' confidence ceilings in one
+  scan rather than one process per strategy file, and reads a capture of a
+  dataset the store already has (`qd.runs`, `qd.hosts`, a command run
+  before) with that dataset's strategy first. qd is unchanged: any provost
+  still works, an older one is only slower. Measured on a shared 4-core
+  Linux machine, a one-host run into a store that has its datasets went
+  from 747 processes to 275, and its `provost batch` took 41% of the time
+  (33% with `-j 1`).
+
+### Docs
+- **`docs/scale.md` has a "Small runs" section:** a one-host run's time and
+  process count before and after, and what changed.
+
+### Tests
+- **`tests/small_run.sh`** (new) prints a one-host `qd run -- ls`'s median
+  time over 5 runs, with `--no-store`, into a new store and into a store
+  that has the run's datasets, and the processes (and `awk` processes) one
+  run starts, counted with strace where it is installed. It never fails on
+  a time or a count. CI runs it as a report (the **small run** job, which
+  cannot fail the run), with PyPI's provost and with provost's `main`.
 
 ## 0.33.0 — 2026-11-18
 
@@ -1066,7 +1632,6 @@ onto it.
   report shares; and a run's table can be read by its listing
   (`Run.load_info`), which two of a `qd do`'s same-named tables need.
   Neither changes any output.
-
 
 ## 0.9.1 — 2026-11-10
 
