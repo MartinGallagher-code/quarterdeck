@@ -278,6 +278,8 @@ EOF
 
 t_setup_is_on_the_card_and_in_the_hints() {
     assert_contains "$(qd --help)" "qd setup [HOSTS]"
+    assert_contains "$(qd --help)" "your own fleet: qd setup"
+    assert_contains "$(qd)" "qd setup "
     assert_contains "$(qd hints)" "qd setup"
     assert_contains "$(qd setup --help)" "--store-name NAME"
 }

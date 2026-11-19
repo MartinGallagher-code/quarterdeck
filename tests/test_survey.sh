@@ -219,6 +219,7 @@ t_usage_errors_exit_2() {
 
 t_the_card_and_hints_name_it() {
     assert_contains "$(qd --help)" "qd survey [HOSTS]"
+    assert_contains "$(qd)" "qd survey "
     assert_contains "$(qd hints)" "qd survey -s hosts.txt"
     assert_contains "$(qd help survey)" "usage: qd survey"
 }
