@@ -5,6 +5,51 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.40.0 — 2026-11-19
+
+`qd again [RUN]` runs a run once more, as it ran, and shows what changed
+(QD-061).
+
+### Added
+- **`qd again [RUN]`** (default `latest`; any reference `qd diff` takes)
+  runs RUN's command again on RUN's hosts with its `--via`, `--sudo`,
+  `--timeout`, `--name` and passes, files the new run, then prints `qd
+  diff RUN NEW`. The hosts are RUN's host file read again while it is
+  there, else the hosts RUN ran on, with their addresses and attributes.
+  It prints the command, the hosts and the plain `qd run` before it runs,
+  asks before a `--sudo` run when stdin is a terminal (never otherwise;
+  `--yes` skips it), and ends with which step found what and WHAT TO DO
+  NEXT. Exit 0 when every host answered and nothing changed, 1 when a host
+  did not answer or something changed, 2 when RUN cannot be run again
+  exactly: a `qd do` run, a `qd import`, a campaign's part, a design point,
+  a probe, a run that pushed files, or one filed before 0.40.0. It is
+  composed of `qd run` (`cmd_run`, given the Namespace the parser makes of
+  the plain command) and `qd diff` (`cmd_diff`): no reader or statistic of
+  its own (`quarterdeck/again.py`; `cli.py`: the verb, `cmd_again`).
+- **`qd.runs` keeps `timeout_s`, `pushed` and `host_list`** for a `qd run`:
+  its `--timeout`, how many files it pushed, and the host files its list
+  was read from (`quarterdeck/store.py`; `cli.py` `cmd_run`, `collect()`;
+  `hosts.py` `collect_hosts(files=...)`). Blank in older runs.
+- **`qd --help`** has `qd again`'s line, **`qd hints`** suggests it, and the
+  README has "`again`: the same run once more, and what changed", and
+  `docs/getting-started.md`'s map of every command names it.
+
+### Changed
+- `--rerun`'s host reading is `last_pass_hosts()`, which `qd again` shares
+  (`cli.py`); `--rerun` behaves as before.
+
+### Tests
+- **`tests/test_again.sh`**: nothing changed (exit 0), a changed answer
+  (exit 1, the host named), a host now unreachable (exit 1), the host file
+  read again or its hosts kept, `--via pdsh` with `--timeout` and `--name`,
+  a `--via local` run, a `--sudo` run (no prompt with no terminal; asked
+  under a pseudo-terminal, `n` runs nothing), `--dry-run`, and every
+  refusal (exit 2); every WHAT TO DO NEXT command parses. `TIMES` gives it
+  90 seconds (530 here under load, scaled as diff and help scale).
+- Merged after QD-040's regrouped `qd --help` card: `again` shares the
+  Over time line with `diff`, and is on the start card under Getting
+  started, as QD-058's note above `START` asks.
+
 ## 0.39.0 — 2026-11-19
 
 `qd ask [HOSTS] -- CMD` runs CMD on every host, files the run as `qd run`

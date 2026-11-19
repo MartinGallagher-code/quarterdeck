@@ -14,7 +14,7 @@ Read it back
   qd odd [RUN] | pivot|trend RUN       unlike the rest; wide; a sparkline
   qd view [RUN] | web                  full-screen; in a browser
 Over time
-  qd diff [OLD] NEW                    what changed between two
+  qd diff [OLD] NEW | again [RUN]      what changed; a run once more
   qd compare RUN --last N -c COL       N runs side by side
   qd changes RUN -c COL [--last N]     where each host's level moved
 Judge and report
@@ -126,7 +126,7 @@ def out(text=""):
 
 # the verbs that file into the store, or delete from it; and the actions
 # that do, of the verbs that only sometimes do
-WRITES = ("run", "probe", "do", "import", "rm")
+WRITES = ("run", "probe", "do", "import", "rm", "again")
 WRITE_ACTIONS = {"campaign": ("new", "run", "retry"), "doe": ("run",),
                  "peers": ("define", "rm"), "baseline": ("set", "rm")}
 
@@ -206,7 +206,16 @@ def collect(args, local=True):
     every way of naming a fleet (hostmod.collect_hosts).  When nothing
     names one, this machine (QD-037), unless `local` is False: `qd split`
     and `qd campaign new` over one workstation are more likely a forgotten
-    -s than meant, so they keep refusing."""
+    -s than meant, so they keep refusing.
+
+    args._host_files is set to the host files the list was read from
+    (absolute paths), or [] when anything else named a host or --first
+    cut it: what `qd run` records for `qd again` (QD-061), which hands
+    its hosts back in args._hosts_given."""
+    args._host_files = []
+    given = getattr(args, "_hosts_given", None)
+    if given is not None:
+        return list(given)
     if getattr(args, "rerun", None):
         if args.servers or args.server or args.layout or args.select:
             die("--rerun is the host list -- the hosts that were not ok in "
@@ -225,11 +234,14 @@ def collect(args, local=True):
         hs = launch.allocation_hosts(launch.need_allocation(
             launch.allocation()))
         return hs[:args.first] if args.first is not None else hs
+    files = []
     hs = hostmod.collect_hosts(
         servers=args.servers, inline=args.server, layout=args.layout,
         selectors=args.select, first=args.first,
         manifest_argv=manifest_argv() if args.layout else None,
-        allow_none=True)
+        allow_none=True, files=files)
+    if files and None not in files and args.first is None:
+        args._host_files = files
     if hs is None:
         if not local:
             die(hostmod.NO_HOSTS)
@@ -278,33 +290,44 @@ def rerun_hosts(args):
                 % (ref, shown_id(e)))
         ids.append(e.id)
         vias.add(e.meta.get("via") or "ssh")
-        rows = e.store.host_rows(e.id)
-        last = max([int(h.get("pass") or 1) for h in rows] or [1])
-        final, order = {}, []
-        for h in rows:
-            if int(h.get("pass") or 1) != last:
+        for h, row in last_pass_hosts(e):
+            if row.get("status") == fleet.OK or h.name in seen:
                 continue
-            name = h.get("host", "")
-            if name not in final:
-                order.append(name)
-            if name not in final or int(h.get("attempt") or 1) >= int(
-                    final[name].get("attempt") or 1):
-                final[name] = h
-        for name in order:
-            h = final[name]
-            if h.get("status") == fleet.OK or name in seen:
-                continue
-            seen.add(name)
-            addr = h.get("addr") or ""
-            hs.append(hostmod.parse_host_token(
-                "%s=%s" % (name, addr) if addr else name,
-                storemod.split_attrs(h.get("attrs"))))
+            seen.add(h.name)
+            hs.append(h)
     args._rerun_of = ids
     args._rerun_via = vias.pop() if len(vias) == 1 else None
     if not hs:
         die("nothing to rerun: every host in %s answered ok"
             % ", ".join(ids), 0)
     return hs
+
+
+def last_pass_hosts(e):
+    """[(Host, qd.hosts row)] for every host in run e's last pass, in its
+    order, with the address and attributes it ran with; the row is the
+    host's last try (--retries): a host that answered on its second try
+    is ok.  --rerun's hosts are the ones not ok; `qd again`'s, all."""
+    rows = e.store.host_rows(e.id)
+    last = max([int(h.get("pass") or 1) for h in rows] or [1])
+    final, order = {}, []
+    for h in rows:
+        if int(h.get("pass") or 1) != last:
+            continue
+        name = h.get("host", "")
+        if name not in final:
+            order.append(name)
+        if name not in final or int(h.get("attempt") or 1) >= int(
+                final[name].get("attempt") or 1):
+            final[name] = h
+    got = []
+    for name in order:
+        h = final[name]
+        addr = h.get("addr") or ""
+        got.append((hostmod.parse_host_token(
+            "%s=%s" % (name, addr) if addr else name,
+            storemod.split_attrs(h.get("attrs"))), h))
+    return got
 
 
 def strip_dashes(cmd):
@@ -544,7 +567,12 @@ def start_run(args):
     label = args.name or (os.path.basename(args.script) if args.script
                           else os.path.basename(command.split()[0])
                           if command.split() else "run")
-    job = fleet_run(args, hs, command, label, push)
+    # what `qd again` (QD-061) needs to run it again exactly, beside the
+    # via and sudo every fan-out records
+    again = {"timeout_s": "%g" % args.timeout, "pushed": len(push),
+             "host_list": "\n".join(getattr(args, "_host_files", []))}
+    job = fleet_run(args, hs, command, label, push, extra=again)
+    args._job = job
     if job is None:
         return None
     return command, hs, job
@@ -5505,6 +5533,7 @@ qd -- run a command on many machines, keep every answer, and read it back.
 Getting started
   qd demo                      a practice fleet to learn on, no machines needed
   qd ask -- uname -r           ask every host; see who agrees and who differs
+  qd again                     run the last thing again; show what changed
   qd odd                       which hosts are unlike the rest, and in what
 
 Looking at what you have
@@ -5559,6 +5588,8 @@ HINTS = [
     ("Read it back", "Look around",
      "qd view   (everything: ] [ page, Enter opens)"),
     ("Over time", "What changed since last time?", "qd diff latest"),
+    ("Over time", "The same again, and what changed",
+     "qd again   (the last run, its hosts and options; or qd again RUN)"),
     ("Over time", "Has it changed over the last five runs?",
      "qd compare NAME -c COLUMN --last 5"),
     ("Over time", "When did it start to slide?",
@@ -5602,6 +5633,12 @@ def cmd_demo(args):
         die("qd demo files into the store named demo, and no other: "
             "--store is for the commands that read it (qd log --store demo)")
     return demo.cmd_demo(sys.modules[__name__], args)
+
+
+def cmd_again(args):
+    """qd again [RUN]: RUN once more, as it ran, then qd diff (again.py)."""
+    from . import again
+    return again.cmd_again(sys.modules[__name__], args)
 
 
 def cmd_hints(args):
@@ -5713,22 +5750,26 @@ def seconds(text):
     return v
 
 
-def add_ssh(sp):
+def add_ssh(sp, again=False):
+    """The ssh group; `again` leaves out --via, --timeout and --sudo,
+    which `qd again` takes from the run it repeats (QD-061)."""
     g = sp.add_argument_group("ssh")
-    g.add_argument("--via", default=env("VIA"), metavar="LAUNCHER",
-                   help="how the hosts are reached: ssh (default), srun "
-                   "(inside a Slurm allocation; its nodes by default), "
-                   "pdsh, clush, or local: this machine without ssh, the "
-                   "default when no hosts are named (QD_VIA)")
+    if not again:
+        g.add_argument("--via", default=env("VIA"), metavar="LAUNCHER",
+                       help="how the hosts are reached: ssh (default), srun "
+                       "(inside a Slurm allocation; its nodes by default), "
+                       "pdsh, clush, or local: this machine without ssh, "
+                       "the default when no hosts are named (QD_VIA)")
     g.add_argument("-u", "--user", default=env("SSH_USER"),
                    help="ssh user (QD_SSH_USER; default: your ssh config)")
     g.add_argument("-j", "--jobs", type=positive,
                    default=env_int("JOBS", 32),
                    help="hosts contacted at once (QD_JOBS, 32)")
-    g.add_argument("--timeout", type=seconds,
-                   default=env_float("TIMEOUT", 60.0),
-                   help="per-host command timeout, seconds; past it the "
-                   "command is stopped on the host (QD_TIMEOUT, 60)")
+    if not again:
+        g.add_argument("--timeout", type=seconds,
+                       default=env_float("TIMEOUT", 60.0),
+                       help="per-host command timeout, seconds; past it the "
+                       "command is stopped on the host (QD_TIMEOUT, 60)")
     g.add_argument("--max-output", type=positive, metavar="BYTES",
                    default=env_int("MAX_OUTPUT", 4 * 1024 * 1024),
                    help="per-host output cap; past it the command is "
@@ -5743,8 +5784,9 @@ def add_ssh(sp):
     g.add_argument("--reuse", action="store_true",
                    help="one ssh connection per host for the whole command "
                    "(ControlMaster), closed at the end (QD_SSH_REUSE=1)")
-    g.add_argument("--sudo", action="store_true",
-                   help="run the command under sudo -n")
+    if not again:
+        g.add_argument("--sudo", action="store_true",
+                       help="run the command under sudo -n")
     g.add_argument("--rate", default=env("RATE"), metavar="N/s",
                    help="no more than N new connections a second, evenly "
                    "spaced: for a bastion's MaxStartups (QD_RATE)")
@@ -5942,6 +5984,15 @@ def build_parser():
     # is more than one column
     sp.set_defaults(fn=cmd_ask, count=1, every=None, no_store=False,
                     preview=20, quiet=False)
+    sp = verb("again", "run a run again as it ran -- its command, hosts, "
+              "--via, --sudo, --timeout and --name -- and show what changed")
+    sp.add_argument("ref", nargs="?", default="latest", metavar="RUN",
+                    help="the run to repeat (latest): any reference qd diff "
+                    "takes")
+    add_ssh(sp, again=True)
+    add_failing(sp)
+    add_safety(sp)
+    sp.set_defaults(fn=cmd_again)
 
     sp = verb("do", "run a toolchain command here and keep what it left")
     sp.add_argument("--name", help="the run's name (default the tool's)")

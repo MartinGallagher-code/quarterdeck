@@ -73,7 +73,7 @@ ones first.
 |---|---|
 | Run | `run`, `ask`, `probe`, `do`, `import`, `hosts` |
 | Read it back | `log`, `show`, `coverage`, `stats`, `freq`, `hist`, `outliers`, `odd`, `pivot`, `trend`, `view`, `web` |
-| Over time | `diff`, `compare`, `changes` |
+| Over time | `again`, `diff`, `compare`, `changes` |
 | Judge and report | `check`, `report`, `peers`, `baseline` |
 | Larger jobs | `split`, `campaign`, `doe`, `join` |
 | Stores and output | `store`, `rm`, `export`, `floor` |
@@ -2321,6 +2321,49 @@ than two.
 Changes are listed worst first: a status that got worse, then a value that
 went blank, then the biggest relative change. The exit status is 1 when
 anything differs, like `diff(1)`.
+
+### `again`: the same run once more, and what changed
+
+```bash
+qd again                 # the latest run, again, then qd diff
+qd again kernel          # RUN: any reference qd diff takes (a name, an id, latest~2, ID@STORE)
+qd again --dry-run       # what it would run, and nothing more
+```
+
+`qd again [RUN]` (default `latest`) answers "what changed since last
+time?" without retyping anything. It runs RUN's command again, on RUN's
+hosts, with RUN's `--via`, `--sudo`, `--timeout`, `--name` and passes
+(`--every`, `--count`), files the new run, then prints `qd diff RUN NEW`.
+The hosts are RUN's host file read again when it is still there (`-s
+FILE`, `QD_SERVERS`, or the `hosts.txt` it found), so a host added since
+is in the new run and shows as new in the diff. When the file has gone,
+or the hosts were named some other way (`-S`, a range, `--layout`,
+`--rerun`, this machine), they are the hosts RUN ran on, with the
+addresses and attributes they ran with.
+
+Before it runs anything it prints the command, the hosts and how they are
+reached, and the plain `qd run` it amounts to when that fits on a line.
+A `--sudo` run asks `run this as root (sudo) on N hosts? [y/N]` first
+when stdin is a terminal; with nothing attached to stdin it never asks,
+and `--yes` skips the question. The ssh options that are not part of the
+record (`--ssh`, `-u`, `-j`, `--ssh-config`, `--reuse`, `--rate`, ...),
+`--max-fail`, `--retries` and the safety flags (`--limit`, `--allow`,
+`--read-only`, `--dry-run`) are taken as `qd run` takes them. The run is
+`qd run` itself, so filing, the allow-list, the mutation guard and every
+`QD_*` variable behave as there. Its summary line is printed, the diff
+whole, then which step found what, and WHAT TO DO NEXT with the plain
+commands.
+
+The exit status is 0 when every host answered and nothing changed, 1
+when a host did not answer or the diff found a change (the summary's
+`FOUND` lines say which), and 2 when RUN cannot be run again exactly.
+That is a `qd do` run or a `qd import`, a campaign's part (`qd campaign
+retry`), a design point (`qd doe run`), a probe (`qd probe NAME` asks it
+again), a run that pushed files (`--push`, `--script`: the store does not
+keep them), and a run filed before qd 0.40.0, whose record keeps no
+`--timeout`. Each says why and what to run instead. `qd.runs` keeps what
+`qd again` reads, from 0.40.0 on: `timeout_s`, `pushed` and `host_list`
+(the host files, as absolute paths).
 
 ---
 
