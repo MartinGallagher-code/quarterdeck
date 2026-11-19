@@ -1949,23 +1949,29 @@ def cmd_check(args):
             args.fail_level, ", ".join(checkmod.SEVERITIES)), 2)
     waivers = checkmod.read_waivers(args.waivers, checks) \
         if args.waivers else None
+    manual = checkmod.read_manual(args.manual, checks) \
+        if args.manual else None
     rule = None
     if (args.rule or "").strip():
         rule = rulemod.parse(args.rule, checks)
     t = load(args)
     s = subset(args, t)
     ref = check_reference(args, checkmod)
-    results = checkmod.run(s, checks, waivers, ref=ref)
+    e = getattr(t, "entry", None)
+    run_day = checkmod.decided_on(
+        (e.meta.get("created") or "")[:10]) if e is not None else None
+    results = checkmod.run(s, checks, waivers, ref=ref, manual=manual,
+                           run_day=run_day)
     overall = rulemod.evaluate(rule, results, level) if rule else None
     n = checkmod.counts(results)
-    e = getattr(t, "entry", None)
     if args.each:
-        cols = checkmod.columns(checkmod.EACH_COLUMNS, checks, waivers, ref)
+        cols = checkmod.columns(checkmod.EACH_COLUMNS, checks, waivers, ref,
+                                manual)
         vt = tablemod.Table(cols, checkmod.each_rows(results, cols),
                             "check")
     else:
         cols = checkmod.columns(checkmod.SUMMARY_COLUMNS, checks, waivers,
-                                ref)
+                                ref, manual)
         vt = tablemod.Table(cols, checkmod.summary_rows(results, cols),
                             "check")
     head = "%s check -- %s against %s (%s): %s" % (
@@ -1983,6 +1989,15 @@ def cmd_check(args):
         lines.append("  waivers %s: %d, %d expired" % (
             args.waivers, len(waivers),
             sum(1 for w in waivers if w.expired())))
+    if manual is not None:
+        early = [m for m in manual if run_day is not None and
+                 m.day() is not None and m.day() < run_day]
+        lines.append("  manual %s: %s by %s%s%s" % (
+            args.manual, plural(len(manual), "result"),
+            ", ".join(checkmod._uniq(m.by for m in manual)),
+            ", %d undated" % sum(1 for m in manual if not m.date)
+            if any(not m.date for m in manual) else "",
+            ", %d dated before the run" % len(early) if early else ""))
     if ref is not None:
         lines.append("  limits relative to the baseline are held to %s"
                      % ref.describe())
@@ -2007,7 +2022,8 @@ def cmd_check(args):
         from . import exporters
         name, stamp, props = exporters.junit_suite(
             e, source_name(t), [("thresholds", args.against),
-                                ("waivers", args.waivers)])
+                                ("waivers", args.waivers),
+                                ("manual", args.manual)])
         if level != "info":
             props.append(("fail_level", level))
         write_text(args.output or "-",
@@ -2070,14 +2086,22 @@ def keep_check(args, vt, t, nchecks):
     rid = new_run_id(st, label)
     b = filing.Batch()
     vt.name = "check"
-    vt.notes = ["qd check %s --against %s%s%s" % (
+    vt.notes = ["qd check %s --against %s%s%s%s" % (
         run_label(t) or getattr(t, "source", ""),
         os.path.abspath(args.against),
         (" --waivers %s" % os.path.abspath(args.waivers))
         if args.waivers else "",
+        (" --manual %s" % os.path.abspath(args.manual))
+        if getattr(args, "manual", None) else "",
         (" --baseline %s" % args.baseline) if args.baseline else "") +
         ((" --rule %s" % shlex.quote(args.rule.strip())) if (args.rule or "").strip()
          else "")]
+    if getattr(args, "manual", None):
+        # a manual result is a claim nobody can recheck: the run keeps
+        # the file it came from by name and content (QD-052)
+        from .exporters import _sha256
+        vt.notes.append("manual %s sha256 %s" % (
+            os.path.basename(args.manual), _sha256(args.manual)))
     added = add_tables(b, rid, label, [(os.path.abspath(args.against), vt)])
     if not added:
         b.cleanup()
@@ -5433,6 +5457,10 @@ def build_parser():
     sp.add_argument("--waivers", default=env("WAIVERS"), metavar="FILE",
                     help="excuse failures: req, justification [expires, "
                     "where, expect, granted_by] (QD_WAIVERS)")
+    sp.add_argument("--manual", default=env("MANUAL"), metavar="FILE",
+                    help="a person's results for op manual reqs: req, "
+                    "verdict (pass, fail), by [date, where, note] "
+                    "(QD_MANUAL)")
     sp.add_argument("--fail-level", default=env("FAIL_LEVEL", "info"),
                     metavar="LEVEL", help="exit 1 only for a failure at or "
                     "above this severity: info, low, medium, high, critical "

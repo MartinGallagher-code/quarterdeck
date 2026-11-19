@@ -5,6 +5,52 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.36.0 — 2026-11-19
+
+`qd check --manual FILE` records a person's pass or fail for a
+requirement nothing measures, with who decided, when and why, in the same
+verdict table, JUnit and `--keep` record as the measured ones (QD-052).
+
+### Added
+- **`op manual`** in the thresholds file: a requirement a person decides
+  (the cabling inspected, the labels right). `column` may be blank;
+  `limit`, `limit2`, `unit` and `agg` must be (refused with exit 2
+  otherwise). Without a result it is **not measured**, so the run exits
+  1 (`quarterdeck/check.py`).
+- **`--manual FILE`** (`QD_MANUAL`) on `qd check`: a TSV or CSV of `req`,
+  `verdict` (pass or fail), `by` [`date`, `where`, `note`]. A result
+  covers the rows its `where` picks (one bare word is a host), or every
+  row of the check; when results disagree on a row the fail stands; a
+  row no result covers is not measured. Folded in before waivers, so a
+  waiver excuses a manual fail and `expect fail` makes a manual pass an
+  unexpected pass; `--rule`, `--each`, severities and every format take
+  it as any verdict (`quarterdeck/check.py`, `quarterdeck/cli.py`).
+- **Refused with exit 2, naming the line**: a `req` no check has, or one
+  whose check is measured; a verdict other than pass or fail; a blank
+  `req`, `verdict` or `by`; a date qd cannot read (YYYY-MM-DD, or with a
+  time); a `where` it cannot parse.
+- With `--manual`, the verdict table gains `decided_by`, `decided` and
+  `decision_note`, and the head counts the results, who gave them, the
+  undated ones and those **dated before the run**. A result older than
+  the run is warned of in its check's note, not refused: an inspection
+  is often made the day before.
+- **JUnit**: a manual testcase carries `by` and `date` as properties; a
+  manual fail is `<failure type="manual">` naming who decided and when;
+  the suite names the manual file with its sha256
+  (`quarterdeck/exporters.py`). A testcase of a check with no column is
+  named by its limit alone.
+- **`--keep`** files the manual columns, names `--manual` in the run's
+  command, and adds a note of the file's name and sha256 (`qd log`).
+- README "A person's results: `--manual`", beside "Waivers"; a `--help`
+  line; `tests/test_check.sh` (seven cases).
+
+### Unchanged
+- Without `--manual` and without a manual row, every format's output is
+  what 0.35.0 gave (checked byte for byte against 0.35.0 for text, csv,
+  json, junit and md, with and without `--each`, waivers and `--rule`).
+- `qd report --check` does not take `--manual`: a manual check there is
+  not measured.
+
 ## 0.35.0 — 2026-11-19
 
 `qd check --rule` gives one overall verdict built from the requirements:

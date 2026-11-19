@@ -319,12 +319,14 @@ def junit_suite(entry, fallback, inputs=()):
 
 def _testcase_name(r, ix, each, crowded):
     col, lim = r[ix["column"]], r[ix["limit"]]
+    # a manual requirement may name no column (QD-052)
+    what = "%s %s" % (col, lim) if col else lim
     if each:
         host = r[ix["row"]]
         if not host:
-            return "%s %s" % (col, lim)
-        return "%s, %s %s" % (host, col, lim) if crowded else host
-    name = "%s %s" % (col, lim)
+            return what
+        return "%s, %s" % (host, what) if crowded else host
+    name = what
     agg = r[ix["agg"]] if "agg" in ix else ""
     if agg and agg != "each":
         name = "%s of %s" % (agg, name)
@@ -378,6 +380,9 @@ def to_junit(table, name, timestamp="", properties=()):
     unexpected  <failure>: a waiver expected a failure, and it passed
     not measured  <error>: never a pass, and CI must not count it as one
     waived      <skipped>, with the justification and the expiry
+
+    A manual verdict (QD-052, a decided_by cell) carries `by` and `date`
+    as properties of its testcase, and its failure is type manual.
     """
     from . import check as checkmod
     cols = [c.lower() for c in table.columns]
@@ -435,12 +440,25 @@ def to_junit(table, name, timestamp="", properties=()):
         by = cell(r, "granted_by")
         inner = []
         sev = cell(r, "severity")
-        if sev:
-            inner += ["      <properties>",
-                      "        <property name=\"severity\" value=%s/>"
-                      % xml_attr(sev),
-                      "      </properties>"]
-        if verdict == checkmod.FAIL:
+        decided_by, decided = cell(r, "decided_by"), cell(r, "decided")
+        tprops = [(k, v) for k, v in (("severity", sev),
+                                      ("by", decided_by),
+                                      ("date", decided)) if v]
+        if tprops:
+            inner.append("      <properties>")
+            inner += ["        <property name=%s value=%s/>" % (
+                xml_attr(k), xml_attr(v)) for k, v in tprops]
+            inner.append("      </properties>")
+        if verdict == checkmod.FAIL and decided_by:
+            said = cell(r, "decision_note")
+            inner.append("      <failure type=\"manual\" message=%s>%s"
+                         "</failure>" % (xml_attr(
+                             "failed by a person's decision: %s%s%s" % (
+                                 decided_by,
+                                 (" on " + decided) if decided else "",
+                                 (": " + said) if said else "")),
+                             xml_text(note)))
+        elif verdict == checkmod.FAIL:
             inner.append("      <failure type=\"fail\" message=%s>%s"
                          "</failure>" % (xml_attr(
                              "observed %s; want %s" % (seen, want)),
