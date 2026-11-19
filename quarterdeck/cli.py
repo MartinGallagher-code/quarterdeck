@@ -5,7 +5,7 @@
 Run
   qd run [HOSTS] [OPTIONS] -- COMMAND  on every host -> a dataset
   qd ask [HOSTS] [OPTIONS] -- COMMAND  then who agrees and who differs
-  qd survey [HOSTS] | probe [NAME...]  the standard set; or ask by name
+  qd survey [HOSTS] | probe [NAME...]  the standard set; by name, or yours
   qd do [OPTIONS] -- TOOL ARGS...      mx, iperf, agree, reckon, dcprobe
   qd setup [HOSTS] | hosts [HOSTS]     first run, step by step; the host list
 Read it back
@@ -100,9 +100,10 @@ DANGER = [
 ]
 
 
-def check_danger(command, yes, verb="run"):
+def check_danger(command, yes, verb="run", again=None):
     """Refuse a command agree would refuse, unless --yes; `verb` is the qd
-    command to repeat with --yes (run, campaign new, doe run)."""
+    command to repeat with --yes (run, campaign new, doe run), or `again`
+    the whole line to repeat (a saved probe's)."""
     for pat, label in DANGER:
         if re.search(pat, command):
             if yes:
@@ -112,8 +113,9 @@ def check_danger(command, yes, verb="run"):
                 extra = ("  (nothing is attached to this terminal, so there "
                          "is nobody to confirm)")
             die("refusing to run this on a fleet: it looks like %s.%s\n"
-                "  If you meant it, add --yes:\n    %s %s --yes ... -- %s"
-                % (label, extra, PROG, verb, command))
+                "  If you meant it, add --yes:\n    %s"
+                % (label, extra, again or "%s %s --yes ... -- %s"
+                   % (PROG, verb, command)))
 
 
 # ---------------------------------------------------------------------------
@@ -4219,28 +4221,17 @@ def split_flag(args):
 
 def cmd_probe(args):
     from . import probes
+    if args.names and args.names[0] in ("add", "rm"):
+        return probe_saved(args, probes)
+    if args.command is not None:
+        die("a command after -- is for `%s probe add NAME -- COMMAND`; a "
+            "probe is asked for by name" % PROG)
+    for flag, on in (("--note", args.note is not None),
+                     ("--replace", args.replace)):
+        if on:
+            die("%s is for `%s probe add`" % (flag, PROG))
     if not args.names:
-        rows = []
-        for name, kind, how, what, needs in probes.CATALOGUE:
-            ok, where = probes.available((name, kind, how, what, needs))
-            rows.append([name, kind, "yes" if ok else "no: " + where, what])
-        lines = ["%s probe -- what to ask a fleet, by name" % PROG, ""]
-        lines.extend(render.render_rows(["probe", "kind", "here", "what"],
-                                        rows, max_cell=70,
-                                        width=width_of(args), indent="  "))
-        lines.append("")
-        lines.append("  groups: " + "; ".join(
-            "%s = %s" % (g, " ".join(ms))
-            for g, ms in sorted(probes.GROUPS.items())))
-        lines.extend(next_steps([
-            ("%s probe facts -s hosts.txt" % PROG,
-             "two hundred readings per host, from why-slow"),
-            ("%s probe inventory -s hosts.txt" % PROG,
-             "what every host is: os, disks, mounts, NUMA, GPUs, packages"),
-            ("%s compare facts -c cpu.busy_pct --last 5" % PROG,
-             "the same probe over time")]))
-        sys.stdout.write(render.page(lines))
-        return 0
+        return probe_catalogue(args, probes)
     names = probes.expand(args.names)
     missing = []
     for n in names:
@@ -4261,9 +4252,19 @@ def run_probes(args, names, say=True):
     from . import probes
     hs = collect(args)
     check_limit(args, hs)
+    # a saved probe is not one qd ships: its command answers to the
+    # mutation guard and the allow-list as `qd run`'s does, and before any
+    # probe runs, so a refusal leaves nothing half done
+    pol = policy_of(args)
+    for n in names:
+        p = probes.get(n)
+        if probes.is_saved(p):
+            check_danger(p[2], args.yes, again="%s probe %s --yes ...   "
+                         "(your probe %s runs: %s)" % (PROG, n, n, p[2]))
+            policymod.check(pol, p[2], "probe", len(hs), False, args.sudo)
     worst = 0
     done = {}
-    # the probes run on the hosts: (name, what, command, stdin)
+    # the probes run on the hosts: (name, what, command, stdin, saved)
     on_hosts = []
     for n in names:
         name, kind, how, what, needs = probes.get(n)
@@ -4274,20 +4275,32 @@ def run_probes(args, names, say=True):
             command = probes.script_command(how, " ".join(
                 ["python3", "-"] + [shlex.quote(a) for a in how[1]]))
             on_hosts.append((name, what, command,
-                             probes.script_path(how[0])))
+                             probes.script_path(how[0]), False))
         elif kind == "command":
-            on_hosts.append((name, what, how, None))
-    together = len(on_hosts) > 1 and args.count == 1 and not args.every \
+            on_hosts.append((name, what, how, None, False))
+        elif kind == "saved":
+            on_hosts.append((name, what or how, how, None, True))
+    # qd's own run together; a saved probe is filed as `qd run --name NAME
+    # -- COMMAND` files it, a run of its own with no tool
+    ours = [o for o in on_hosts if not o[4]]
+    together = len(ours) > 1 and args.count == 1 and not args.every \
         and not args.dry_run and not args.no_store
+    jobs = {}
     if together:
-        jobs = fleet_runs_together(args, hs, [
-            (name, command, stdin) for name, _, command, stdin in on_hosts],
-            extra={"tool": "probe"})
-    else:
-        jobs = [fleet_run(args, hs, command, name, extra={"tool": "probe"},
-                          stdin=stdin)
-                for name, _, command, stdin in on_hosts]
-    for (name, what, _, _), job in zip(on_hosts, jobs):
+        for o, job in zip(ours, fleet_runs_together(args, hs, [
+                (name, command, stdin)
+                for name, _, command, stdin, _ in ours],
+                extra={"tool": "probe"})):
+            jobs[o[0]] = job
+    for name, _, command, stdin, saved in on_hosts:
+        if name in jobs:
+            continue
+        jobs[name] = fleet_run(
+            args, hs, command, name, stdin=stdin,
+            extra={"notes": "your probe %s" % name} if saved
+            else {"tool": "probe"})
+    for name, what, _, _, _ in on_hosts:
+        job = jobs[name]
         if job is None:
             continue
         done[name] = job
@@ -4305,6 +4318,82 @@ def run_probes(args, names, say=True):
                      % (name, how[0], via_of(args)))
             worst = max(worst, probe_tool(args, name, how, hs))
     return worst, done
+
+
+def probe_catalogue(args, probes):
+    """`qd probe`: qd's own, and the user's beside them, each saved
+    probe's command in full so nobody runs one blind."""
+    rows = []
+    for name, kind, how, what, needs in probes.CATALOGUE:
+        ok, where = probes.available((name, kind, how, what, needs))
+        rows.append([name, kind, "yes" if ok else "no: " + where, what])
+    mine = probes.load_saved()
+    for n in sorted(mine):
+        shadow = n in probes.NAMES or n in probes.GROUPS
+        rows.append([n, "yours", "no: qd ships a probe of that name"
+                     if shadow else "yes",
+                     mine[n].get("note") or "(no note: its command is "
+                     "below)"])
+    lines = ["%s probe -- what to ask a fleet, by name" % PROG, ""]
+    lines.extend(render.render_rows(["probe", "kind", "here", "what"],
+                                    rows, max_cell=70,
+                                    width=width_of(args), indent="  "))
+    lines.append("")
+    lines.append("  groups: " + "; ".join(
+        "%s = %s" % (g, " ".join(ms))
+        for g, ms in sorted(probes.GROUPS.items())))
+    if mine:
+        lines.append("")
+        lines.append("  yours, from %s (run as `%s run --name NAME -- "
+                     "COMMAND` runs them):" % (
+                         storemod.tilde(probes.saved_path()), PROG))
+        w = max(len(n) for n in mine)
+        for n in sorted(mine):
+            lines.append("    %-*s  %s" % (w, n, mine[n]["command"]))
+    tips = [
+        ("%s probe facts -s hosts.txt" % PROG,
+         "two hundred readings per host, from why-slow"),
+        ("%s probe inventory -s hosts.txt" % PROG,
+         "what every host is: os, disks, mounts, NUMA, GPUs, packages"),
+        ("%s compare facts -c cpu.busy_pct --last 5" % PROG,
+         "the same probe over time")]
+    if not mine:
+        tips.append(("%s probe add NAME -- COMMAND" % PROG,
+                     "a command of yours, asked for by name"))
+    lines.extend(next_steps(tips))
+    sys.stdout.write(render.page(lines))
+    return 0
+
+
+def probe_saved(args, probes):
+    """`qd probe add NAME [--note TEXT] [--replace] -- COMMAND` and `qd
+    probe rm NAME...`: the user's own probes, in probes.json beside qd's
+    config.json -- never in a store (QD-054)."""
+    act, words = args.names[0], args.names[1:]
+    if act == "add":
+        if len(words) != 1:
+            die("usage: %s probe add NAME [--note TEXT] [--replace] -- "
+                "COMMAND" % PROG)
+        command = " ".join(strip_dashes(args.command or []))
+        entry, old = probes.add_saved(words[0], command, args.note,
+                                      args.replace)
+        out("%s probe %s: %s %s" % (
+            PROG, words[0], "replaced, now" if old else "saved:",
+            entry["command"]))
+        out("  kept in %s, not in a store; run it with `%s probe %s -s "
+            "hosts.txt`" % (storemod.tilde(probes.saved_path()), PROG,
+                            words[0]))
+        if any(re.search(pat, command) for pat, _ in DANGER):
+            warn("it looks like something the mutation guard stops: every "
+                 "run of it needs --yes")
+        return 0
+    if args.command is not None or args.note is not None or args.replace:
+        die("usage: %s probe rm NAME..." % PROG)
+    if not words:
+        die("usage: %s probe rm NAME..." % PROG)
+    for n, d in probes.rm_saved(words):
+        out("%s probe %s: removed (it ran: %s)" % (PROG, n, d["command"]))
+    return 0
 
 
 def probe_tool(args, name, how, hs):
@@ -5579,6 +5668,8 @@ HINTS = [
      "qd run --servers hosts.txt -- true            (then: reachable hosts.txt -i)"),
     ("Run", "What does every host say about X?",
      "qd ask --servers hosts.txt -- uname -r   (qd run, then qd freq latest A)"),
+    ("Run", "A command I run often, by name (fio, say)",
+     "qd probe add NAME -- COMMAND; qd probe NAME -s hosts.txt"),
     ("Run", "Settings as columns",
      "qd run -s hosts.txt -- 'sysctl net.core.somaxconn vm.swappiness'"),
     ("Run", "Watch it over time",
@@ -6518,10 +6609,17 @@ def build_parser():
     sp.set_defaults(fn=cmd_split)
 
     sp = verb("probe", "ask the fleet something by name: facts, health, "
-              "sysctl, gpu ... (none: the list)")
-    sp.add_argument("names", nargs="*", metavar="PROBE")
+              "sysctl, gpu ... (none: the list); add NAME -- COMMAND and "
+              "rm NAME: your own")
+    sp.add_argument("names", nargs="*", metavar="PROBE",
+                    help="probes and groups to run; or add NAME, rm NAME")
+    g = sp.add_argument_group("your own probes (add, rm)")
+    g.add_argument("--note", metavar="TEXT",
+                   help="add: what it measures, shown in the catalogue")
+    g.add_argument("--replace", action="store_true",
+                   help="add: save over a probe of yours of that name")
     add_fleet(sp, preview=12)
-    sp.set_defaults(fn=cmd_probe)
+    sp.set_defaults(fn=cmd_probe, command=None)
 
     sp = verb("survey", "ask every host the standard questions (facts, "
               "inventory); one screen of who stands out")
@@ -6814,11 +6912,12 @@ def main(argv=None):
     _stdio_safe()
     argv = list(sys.argv[1:] if argv is None else argv)
     argv = glue_sort(argv)
-    # `campaign` and `doe` take positionals and then a command after --;
+    # `campaign`, `doe` and `probe add` take positionals and then a
+    # command after --;
     # argparse would hand everything after the first positional to the
     # command, options included, so the command is cut off first.
     tail = None
-    if argv and argv[0] in ("campaign", "doe") and "--" in argv:
+    if argv and argv[0] in ("campaign", "doe", "probe") and "--" in argv:
         i = argv.index("--")
         argv, tail = argv[:i], argv[i + 1:]
     parser, sub = build_parser()

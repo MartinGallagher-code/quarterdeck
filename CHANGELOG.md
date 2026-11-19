@@ -5,6 +5,69 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.43.0 — 2026-11-19
+
+Your own named probes: `qd probe add NAME -- COMMAND` gives a command a
+name, asked for like the probes qd ships, with fio as the README's worked
+example (QD-054).
+
+### Added
+- **`qd probe add NAME [--note TEXT] [--replace] -- COMMAND`** saves a
+  probe, **`qd probe rm NAME...`** forgets it, and **`qd probe`** lists the
+  saved ones beside qd's own, kind `yours`, with each command in full
+  under the table. `qd probe NAME [HOSTS]` runs one exactly as `qd run
+  --name NAME -- COMMAND` would: every fleet option `qd probe` takes, a run
+  named after the probe with its command whole and no tool, so `qd show`,
+  `qd compare NAME --last 5` and `qd check NAME` find it; its notes say
+  `your probe NAME`. Named beside qd's own probes it runs after them, a
+  run of its own (`quarterdeck/probes.py`: `load_saved()`, `add_saved()`,
+  `rm_saved()`, `check_saved_name()`, `get()` and `available()` knowing
+  kind `saved`; `quarterdeck/cli.py`: `cmd_probe()`, `probe_catalogue()`,
+  `probe_saved()`, the probe verb's `--note` and `--replace`, and `main()`
+  cutting `qd probe`'s command off at `--` as it does `campaign`'s and
+  `doe`'s).
+- **Kept in `probes.json` beside `config.json`** (`~/.config/quarterdeck/`,
+  `$XDG_CONFIG_HOME/quarterdeck/`), written whole and renamed into place,
+  never in a store: a store from another machine brings no commands to run
+  on this fleet.
+- **Refused, exit 2:** a name that is not a run's name as it is (letters,
+  digits, `.`, `_`, `-`, starting and ending with a letter or digit, at
+  most 64, no `..`, not `unsorted` or `qd.*`), a probe or group qd ships,
+  the words `add`, `rm` and `latest`, and `add` over a saved name without
+  `--replace`.
+- **Never a way around a policy.** A saved probe is not a probe qd ships:
+  `--allow` and `--read-only` check its command (not its name), and the
+  mutation guard reads it, a saved `rm -rf` needing `--yes` at every run
+  (`add` warns). Asked beside qd's own probes, it is checked before any of
+  them runs, so a refusal leaves nothing half done. `check_danger()` takes
+  the line to repeat with `--yes`, so it names `qd probe NAME --yes`.
+- **`qd --help`**, **`qd hints`** and `docs/getting-started.md`'s command
+  map name `qd probe add` and `rm`; the README's "Asking by name: `qd
+  probe`" has "Your own probes: `qd probe add`", with a fio random-read
+  probe (`--output-format=json`), the columns provost files from fio's
+  JSON and a `qd check` limit on IOPS and on p99 latency; "Allow-lists and
+  read-only" says a saved probe's command must match.
+
+### Tests
+- **`tests/test_saved.sh`** (new, in `TIMES`): add, list, run, replace and
+  rm with the config in a temporary `HOME`; a run filed under its name,
+  its command whole, and `qd compare NAME` reading two (and three, beside
+  qd's own probes); clashes, bad names and `add` without `--replace` each
+  exit 2 and change nothing; `--read-only` with no allow-list refusing a
+  saved probe (nothing filed, `policy.log` written) while `os` runs, a
+  saved probe asked beside `os` refused before `os` runs, an allow-list
+  naming the probe's name not allowing it and one matching its command
+  allowing it; the mutation guard stopping a saved `rm -rf` (with `--allow
+  'rm *'` too) until `--yes`; another config over the same store listing
+  no probe; and fio's JSON (`tests/corpus/fio/randread.json`, fio 3.36's
+  shape, no fio needed) filed by the provost under test into the README's
+  columns and values, with the README's limits giving a pass and a fail.
+- `tests/help_unit.py` cuts `qd probe`'s command at `--`, as `main()` does.
+- Merged after QD-040's regrouped `qd --help` card and QD-060's `qd
+  survey`: `run_probes()` keeps survey's `say` and returned runs beside
+  the saved probes' fifth field, and the card's `survey | probe` line
+  names your own probes.
+
 ## 0.42.0 — 2026-11-19
 
 `qd setup`: a first-run guide that checks this machine, makes and selects
