@@ -251,8 +251,8 @@ t_bare_qd_prints_the_start_card() {
     lines="$(wc -l < start.txt | tr -d ' ')"
     [ "$lines" -le 25 ] || fail "bare qd is $lines lines, over 25"
     assert_eq "$(awk 'length > 80' start.txt)" ""
-    for want in "Getting started" "qd demo " "qd log " "qd show latest " \
-        "qd web " "qd --help" "qd help VERB" "qd hints"; do
+    for want in "Getting started" "qd demo " "qd odd " "qd log " \
+        "qd show latest " "qd web " "qd --help" "qd help VERB" "qd hints"; do
         assert_contains "$(cat start.txt)" "$want"
     done
     # not the full card
@@ -283,13 +283,13 @@ t_start_card_names_only_verbs_that_parse() {
     qd > start.txt
     unit start start.txt
     assert_status "$RC" 0
-    assert_eq "$OUT" "ok 8"
-    # a beginner command named before it lands (QD-059's qd ask)
-    awk '{ print } /^Getting started$/ { print "  qd ask -- uname -r           ask every host" }' \
+    assert_eq "$OUT" "ok 12"
+    # a command named that is not a verb
+    awk '{ print } /^Getting started$/ { print "  qd poll -- uname -r          ask every host" }' \
         start.txt > ask.txt
     unit start ask.txt
     assert_status "$RC" 1
-    assert_eq "$OUT" "not a verb: ask: qd ask -- uname -r"
+    assert_eq "$OUT" "not a verb: poll: qd poll -- uname -r"
     # a command that no longer parses, in the footer
     sed 's/Ideas: qd hints/Ideas: qd hints --srevers/' start.txt > flag.txt
     unit start flag.txt

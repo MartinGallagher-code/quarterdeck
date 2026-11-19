@@ -319,12 +319,14 @@ def junit_suite(entry, fallback, inputs=()):
 
 def _testcase_name(r, ix, each, crowded):
     col, lim = r[ix["column"]], r[ix["limit"]]
+    # a manual requirement may name no column (QD-052)
+    what = "%s %s" % (col, lim) if col else lim
     if each:
         host = r[ix["row"]]
         if not host:
-            return "%s %s" % (col, lim)
-        return "%s, %s %s" % (host, col, lim) if crowded else host
-    name = "%s %s" % (col, lim)
+            return what
+        return "%s, %s" % (host, what) if crowded else host
+    name = what
     agg = r[ix["agg"]] if "agg" in ix else ""
     if agg and agg != "each":
         name = "%s of %s" % (agg, name)
@@ -347,6 +349,28 @@ def junit_counts(table):
             sum(1 for v in vs if v == checkmod.WAIVED))
 
 
+RULE_REQ = "(rule)"
+
+
+def _rule_case(rule, verdict, why):
+    """--rule's overall verdict as a testcase: classname rule, name the
+    rule; a fail a <failure>, not measured an <error>."""
+    from . import check as checkmod
+    tc = "    <testcase classname=\"rule\" name=%s" % xml_attr(rule)
+    if verdict == checkmod.PASS:
+        return [tc + "/>"]
+    if verdict == checkmod.FAIL:
+        inner = "      <failure type=\"rule\" message=%s/>" % xml_attr(
+            "rule failed: " + why)
+    elif verdict == checkmod.UNMEASURED:
+        inner = "      <error type=\"not measured\" message=%s/>" % \
+            xml_attr("rule not measured: " + why)
+    else:
+        inner = "      <error type=\"unknown\" message=%s/>" % xml_attr(
+            "verdict %r is none qd check gives" % verdict)
+    return [tc + ">", inner, "    </testcase>"]
+
+
 def to_junit(table, name, timestamp="", properties=()):
     """JUnit XML of a verdict table, qd check's (one testcase per check)
     or qd check --each's (one per host per check): classname the req.
@@ -356,6 +380,9 @@ def to_junit(table, name, timestamp="", properties=()):
     unexpected  <failure>: a waiver expected a failure, and it passed
     not measured  <error>: never a pass, and CI must not count it as one
     waived      <skipped>, with the justification and the expiry
+
+    A manual verdict (QD-052, a decided_by cell) carries `by` and `date`
+    as properties of its testcase, and its failure is type manual.
     """
     from . import check as checkmod
     cols = [c.lower() for c in table.columns]
@@ -380,6 +407,14 @@ def to_junit(table, name, timestamp="", properties=()):
            '  <testsuite name=%s %s%s>' % (
                xml_attr(name), head,
                (" timestamp=" + xml_attr(timestamp)) if timestamp else "")]
+    # qd check --rule (QD-051): the overall verdict's row is a property
+    # of the suite as well as a testcase of its own
+    properties = list(properties)
+    for r in table.rows:
+        if r[ix["req"]] == RULE_REQ:
+            properties += [("rule", r[ix["limit"]]),
+                           ("rule.verdict", r[ix["verdict"]]),
+                           ("rule.why", cell(r, "observed"))]
     if properties:
         out.append("    <properties>")
         for k, v in properties:
@@ -388,6 +423,10 @@ def to_junit(table, name, timestamp="", properties=()):
         out.append("    </properties>")
     for r in table.rows:
         req, verdict = r[ix["req"]], r[ix["verdict"]]
+        if req == RULE_REQ:
+            out.extend(_rule_case(r[ix["limit"]], verdict,
+                                  cell(r, "observed")))
+            continue
         tc = "    <testcase classname=%s name=%s" % (
             xml_attr(req), xml_attr(_testcase_name(
                 r, ix, each, len(shapes.get(req, ())) > 1)))
@@ -401,12 +440,25 @@ def to_junit(table, name, timestamp="", properties=()):
         by = cell(r, "granted_by")
         inner = []
         sev = cell(r, "severity")
-        if sev:
-            inner += ["      <properties>",
-                      "        <property name=\"severity\" value=%s/>"
-                      % xml_attr(sev),
-                      "      </properties>"]
-        if verdict == checkmod.FAIL:
+        decided_by, decided = cell(r, "decided_by"), cell(r, "decided")
+        tprops = [(k, v) for k, v in (("severity", sev),
+                                      ("by", decided_by),
+                                      ("date", decided)) if v]
+        if tprops:
+            inner.append("      <properties>")
+            inner += ["        <property name=%s value=%s/>" % (
+                xml_attr(k), xml_attr(v)) for k, v in tprops]
+            inner.append("      </properties>")
+        if verdict == checkmod.FAIL and decided_by:
+            said = cell(r, "decision_note")
+            inner.append("      <failure type=\"manual\" message=%s>%s"
+                         "</failure>" % (xml_attr(
+                             "failed by a person's decision: %s%s%s" % (
+                                 decided_by,
+                                 (" on " + decided) if decided else "",
+                                 (": " + said) if said else "")),
+                             xml_text(note)))
+        elif verdict == checkmod.FAIL:
             inner.append("      <failure type=\"fail\" message=%s>%s"
                          "</failure>" % (xml_attr(
                              "observed %s; want %s" % (seen, want)),
