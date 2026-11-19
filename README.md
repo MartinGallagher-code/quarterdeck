@@ -71,9 +71,9 @@ ones first.
 
 | Heading | Commands |
 |---|---|
-| Run | `run`, `probe`, `do`, `import`, `hosts` |
-| Read it back | `log`, `show`, `stats`, `freq`, `hist`, `outliers`, `pivot`, `trend`, `view`, `web` |
-| Over time | `diff`, `compare`, `changes` |
+| Run | `run`, `ask`, `survey`, `probe`, `do`, `import`, `hosts` |
+| Read it back | `log`, `show`, `coverage`, `stats`, `freq`, `hist`, `outliers`, `odd`, `pivot`, `trend`, `view`, `web` |
+| Over time | `again`, `diff`, `compare`, `changes` |
 | Judge and report | `check`, `report`, `peers`, `baseline` |
 | Larger jobs | `split`, `campaign`, `doe`, `join` |
 | Stores and output | `store`, `rm`, `export`, `floor` |
@@ -2436,9 +2436,9 @@ when a host did not answer or the diff found a change (the summary's
 That is a `qd do` run or a `qd import`, a campaign's part (`qd campaign
 retry`), a design point (`qd doe run`), a probe (`qd probe NAME` asks it
 again), a run that pushed files (`--push`, `--script`: the store does not
-keep them), and a run filed before qd 0.32.0, whose record keeps no
+keep them), and a run filed before qd 0.40.0, whose record keeps no
 `--timeout`. Each says why and what to run instead. `qd.runs` keeps what
-`qd again` reads, from 0.32.0 on: `timeout_s`, `pushed` and `host_list`
+`qd again` reads, from 0.40.0 on: `timeout_s`, `pushed` and `host_list`
 (the host files, as absolute paths).
 
 ---

@@ -68,7 +68,7 @@ RUN_COLUMNS = ("run", "kind", "name", "command", "created", "finished",
 # files it pushed (--push, --script), and the host files its list was read
 # from (absolute paths, one a line; blank when anything else named a
 # host) -- what `qd again` needs to run it again exactly.  Blank in a run
-# filed before 0.32.0, and in any fan-out but qd run's
+# filed before 0.40.0, and in any fan-out but qd run's
 # preamble (QD-038): what the host's login shell printed before the
 # command, cut from its answer; blank in a run filed before 0.23.0
 HOST_COLUMNS = ("run", "host", "addr", "pass", "ts", "status", "rc",

@@ -5535,14 +5535,13 @@ def doctor_ssh(args, lines):
 # the full card, the module docstring.  At most 25 lines of 80 columns,
 # and every command on it must parse (tests/test_help.sh).  The beginner
 # commands QD-057 designed are named here only once they land, each on
-# its own line:
-#   Getting started, after `qd demo`, in this order:
+# its own line, under Getting started, after `qd demo`, in this order:
 #     qd setup  (QD-063)  check this machine, make a store, test your hosts
-#     qd ask    (QD-059)  ask every host; see who agrees and who differs;
-#                         it replaces the `qd run -- uname -r` line
+#                         (before qd ask)
 #     qd survey (QD-060)  everything about every host, and who stands out
+#                         (landed: on the card, after the run line)
 #     qd again  (QD-061)  run the last thing again; show what changed
-#     qd odd    (QD-062)  which hosts are unlike the rest, and in what
+#     qd odd    (QD-062)  landed: on the card, last of these
 START = """\
 qd -- run a command on many machines, keep every answer, and read it back.
 
@@ -5586,8 +5585,8 @@ HINTS = [
      "qd run -s hosts.txt --every 10 --count 30 -- cat /proc/loadavg"),
     ("Run", "The servers in racks 1-3",
      "qd run --layout floor.dc --select 'rack[1-3]' -- ...   (needs binnacle)"),
-    ("Run", "Everything about every host",
-     "qd probe facts inventory -s hosts.txt"),
+    ("Run", "Everything about every host, and who stands out",
+     "qd survey -s hosts.txt   or   qd probe facts inventory -s hosts.txt"),
     ("Run", "Why is the fleet slow?",
      "qd do -- agree script why-slow --servers hosts.txt --fleet-csv -- --csv"),
     ("Run", "Packets per second, everyone to everyone",
@@ -5596,9 +5595,9 @@ HINTS = [
      "qd do -- iperf-orchestrator --servers hosts.txt run"),
     ("Run", "How is every host doing right now?",
      "qd do -- dcprobe scan --servers hosts.txt -o host_status.tsv"),
+    ("Read it back", "Who is far from the rest?", "qd outliers latest COLUMN"),
     ("Read it back", "Who is odd, and in what? Every column at once",
      "qd odd latest"),
-    ("Read it back", "Who is far from the rest?", "qd outliers latest COLUMN"),
     ("Read it back", "Centre and spread, per rack",
      "qd stats latest COLUMN --by rack"),
     ("Read it back", "One host's answer, exactly",
@@ -5608,8 +5607,6 @@ HINTS = [
     ("Over time", "What changed since last time?", "qd diff latest"),
     ("Over time", "The same again, and what changed",
      "qd again   (the last run, its hosts and options; or qd again RUN)"),
-    ("Read it back", "Everything about every host, and who stands out",
-     "qd survey -s hosts.txt   or   qd probe facts inventory -s hosts.txt"),
     ("Over time", "Has it changed over the last five runs?",
      "qd compare NAME -c COLUMN --last 5"),
     ("Over time", "When did it start to slide?",
