@@ -71,7 +71,7 @@ ones first.
 
 | Heading | Commands |
 |---|---|
-| Run | `run`, `ask`, `probe`, `do`, `import`, `hosts` |
+| Run | `run`, `ask`, `survey`, `probe`, `do`, `import`, `hosts` |
 | Read it back | `log`, `show`, `coverage`, `stats`, `freq`, `hist`, `outliers`, `odd`, `pivot`, `trend`, `view`, `web` |
 | Over time | `again`, `diff`, `compare`, `changes` |
 | Judge and report | `check`, `report`, `peers`, `baseline` |

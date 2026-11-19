@@ -5539,6 +5539,7 @@ def doctor_ssh(args, lines):
 #     qd setup  (QD-063)  check this machine, make a store, test your hosts
 #                         (before qd ask)
 #     qd survey (QD-060)  everything about every host, and who stands out
+#                         (landed: on the card, after the run line)
 #     qd again  (QD-061)  run the last thing again; show what changed
 #     qd odd    (QD-062)  landed: on the card, last of these
 START = """\
@@ -5583,8 +5584,8 @@ HINTS = [
      "qd run -s hosts.txt --every 10 --count 30 -- cat /proc/loadavg"),
     ("Run", "The servers in racks 1-3",
      "qd run --layout floor.dc --select 'rack[1-3]' -- ...   (needs binnacle)"),
-    ("Run", "Everything about every host",
-     "qd probe facts inventory -s hosts.txt"),
+    ("Run", "Everything about every host, and who stands out",
+     "qd survey -s hosts.txt   or   qd probe facts inventory -s hosts.txt"),
     ("Run", "Why is the fleet slow?",
      "qd do -- agree script why-slow --servers hosts.txt --fleet-csv -- --csv"),
     ("Run", "Packets per second, everyone to everyone",
@@ -5605,8 +5606,6 @@ HINTS = [
     ("Over time", "What changed since last time?", "qd diff latest"),
     ("Over time", "The same again, and what changed",
      "qd again   (the last run, its hosts and options; or qd again RUN)"),
-    ("Read it back", "Everything about every host, and who stands out",
-     "qd survey -s hosts.txt   or   qd probe facts inventory -s hosts.txt"),
     ("Over time", "Has it changed over the last five runs?",
      "qd compare NAME -c COLUMN --last 5"),
     ("Over time", "When did it start to slide?",
