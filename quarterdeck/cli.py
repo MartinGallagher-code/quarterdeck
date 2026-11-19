@@ -7,7 +7,7 @@ Run
   qd ask [HOSTS] [OPTIONS] -- COMMAND  then who agrees and who differs
   qd survey [HOSTS] | probe [NAME...]  the standard set; or ask by name
   qd do [OPTIONS] -- TOOL ARGS...      mx, iperf, agree, reckon, dcprobe
-  qd import PATH... | hosts [HOSTS]    output on disk; the host list
+  qd setup [HOSTS] | hosts [HOSTS]     first run, step by step; the host list
 Read it back
   qd log [RUN] | show RUN | coverage   what is kept; a table; tests owed
   qd stats|freq|hist|outliers RUN      spread, who said which, far ones
@@ -29,7 +29,7 @@ Larger jobs
   qd join RUN TELEMETRY                beside Splunk/Prometheus samples
 Stores and output
   qd store new|ls|use|rename|rm|clear|export|import    named stores
-  qd rm RUN... --yes                   delete runs from the store
+  qd rm RUN... --yes | import PATH...  delete runs; output already on disk
   qd export RUN [--format F] | floor   CSV, JSON, HEC...; the floor plan
 Help
   qd hints | doctor [HOST] | start | demo | help [VERB]
@@ -48,7 +48,7 @@ Stored by provost: --store, QD_STORE, else its own choice. See docs/concepts.md
 Exit status: 0 done, every host answered; 1 a finding (a host that did
 not answer, a difference, a failed check); 2 usage error, or I/O failed.
 
-New to qd? qd demo, then docs/getting-started.md: ten minutes, no fleet.
+New to qd? qd demo, then docs/getting-started.md; your own fleet: qd setup.
 Full manual: https://github.com/MartinGallagher-code/quarterdeck#readme
 """
 
@@ -5547,6 +5547,7 @@ qd -- run a command on many machines, keep every answer, and read it back.
 
 Getting started
   qd demo                      a practice fleet to learn on, no machines needed
+  qd setup                     check this machine, make a store, test your hosts
   qd ask -- uname -r           ask every host; see who agrees and who differs
   qd survey                    everything about every host, and who stands out
   qd again                     run the last thing again; show what changed
@@ -5638,6 +5639,8 @@ HINTS = [
      "qd floor latest --layout floor.dc"),
     ("Help", "New to qd? Somewhere to try it, no fleet needed",
      "qd demo   (then docs/getting-started.md: ten minutes, a question a step)"),
+    ("Help", "First time on my own fleet: a store, a host list, who answers?",
+     "qd setup   (or qd setup -s hosts.txt --yes in a script)"),
     ("Help", "Can this machine drive the toolchain?", "qd doctor"),
 ]
 
@@ -5662,6 +5665,12 @@ def cmd_survey(args):
     of who stands out (survey.py, QD-060)."""
     from . import survey
     return survey.cmd_survey(sys.modules[__name__], args)
+
+
+def cmd_setup(args):
+    """qd setup: the first-run guide (firstrun.py)."""
+    from . import firstrun
+    return firstrun.cmd_setup(sys.modules[__name__], args)
 
 
 def cmd_hints(args):
@@ -6719,6 +6728,20 @@ def build_parser():
                     "clush or local (QD_VIA); exit 1 if it cannot run from "
                     "here")
     sp.set_defaults(fn=cmd_doctor)
+    sp = verb("setup", "first run: check this machine (qd doctor), make "
+              "and select a store if none is active, find the host list "
+              "or offer to write hosts.txt, and run true on every host; "
+              "asks only at a terminal")
+    add_hosts(sp)
+    add_ssh(sp)
+    g = sp.add_argument_group("setup")
+    g.add_argument("--yes", action="store_true",
+                   help="make and select the store without asking, for a "
+                   "script; it never writes hosts.txt, and never picks "
+                   "among stores already registered")
+    g.add_argument("--store-name", metavar="NAME",
+                   help="the store to make when none is active (main)")
+    sp.set_defaults(fn=cmd_setup)
     sp = verb("hints", "what you want to know -> the command")
     sp.set_defaults(fn=cmd_hints)
     sp = verb("demo", "file a made-up fleet's week in the store demo, to "

@@ -71,12 +71,12 @@ ones first.
 
 | Heading | Commands |
 |---|---|
-| Run | `run`, `ask`, `survey`, `probe`, `do`, `import`, `hosts` |
+| Run | `run`, `ask`, `survey`, `probe`, `do`, `setup`, `hosts` |
 | Read it back | `log`, `show`, `coverage`, `stats`, `freq`, `hist`, `outliers`, `odd`, `pivot`, `trend`, `view`, `web` |
 | Over time | `again`, `diff`, `compare`, `changes` |
 | Judge and report | `check`, `report`, `peers`, `baseline` |
 | Larger jobs | `split`, `campaign`, `doe`, `join` |
-| Stores and output | `store`, `rm`, `export`, `floor` |
+| Stores and output | `store`, `rm`, `import`, `export`, `floor` |
 | Help | `hints`, `doctor`, `start`, `demo`, `help` |
 
 `qd hints` maps questions to commands under the same headings, `qd help
@@ -177,6 +177,45 @@ it afresh, and `qd store rm demo --delete` removes it. A store named
 `demo` that is not qd's own is never touched. Filing takes a minute or
 so, several with a provost that has no `batch` (2.1.0); a demo stopped
 part-way leaves nothing behind.
+
+### Your own fleet, the first time: `qd setup`
+
+```bash
+qd setup                            # at a terminal: asks, then does
+qd setup -s hosts.txt --yes         # in a script: makes and selects the store, asks nothing
+```
+
+`qd setup` takes a newcomer from nothing to a first run in four steps,
+each one a plain command, run as that command runs, and says what each
+did:
+
+1. **This machine:** `qd doctor`'s report: ssh, provost, the launcher.
+2. **A store:** when none is active (or the demo is), it offers to make
+   one named `main` (`--store-name`) and select it: `qd store new main`,
+   `qd store use main`. A store chosen by `--store`, `QD_STORE` or
+   provost, or one already active, is left as it is; with stores
+   registered and none active it asks which, and never picks one itself.
+3. **The host list:** `-s`, `-S`, `--layout`, `QD_SERVERS`, `hosts.txt`
+   or `servers.txt`, as `qd run` finds it. With none, it offers to write
+   `hosts.txt` from the names typed (`node[01-12]`, `web1 web2`, `node01
+   rack=r1`), and never overwrites one.
+4. **Who answers:** `qd run -- true` on every host, keeping nothing. Each
+   host that did not answer is listed with why and what to do: a key
+   (`ssh-copy-id`), a host key to accept, a name that does not resolve, a
+   host that is down (`reachable`), or `qd doctor HOST`.
+
+A summary follows, then WHAT TO DO NEXT: `qd ask -- uname -r`, `qd
+survey` (the plain `qd run` and `qd probe` in a qd without them) and `qd
+demo`.
+
+A question is asked only when stdin is a terminal, checked before each
+one, so a script or CI never waits: there it checks everything, changes
+nothing that needs an answer, and says what to run instead. `--yes`
+answers the store's question for a script; nothing answers the host
+list's. Run again, it finds every step done and changes nothing. Exit
+status: 0 when this machine is ready and every host answered; 1 when it
+is not ready or a host did not answer, and the summary names which step;
+2 on a usage error or a write that was refused.
 
 ---
 

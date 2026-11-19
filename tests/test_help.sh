@@ -283,7 +283,7 @@ t_start_card_names_only_verbs_that_parse() {
     qd > start.txt
     unit start start.txt
     assert_status "$RC" 0
-    assert_eq "$OUT" "ok 11"
+    assert_eq "$OUT" "ok 12"
     # a command named that is not a verb
     awk '{ print } /^Getting started$/ { print "  qd poll -- uname -r          ask every host" }' \
         start.txt > ask.txt

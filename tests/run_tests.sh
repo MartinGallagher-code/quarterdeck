@@ -62,10 +62,11 @@ usage() { sed -n '5,25p' run_tests.sh | sed 's/^# \{0,1\}//'; }
 # (QD-059) timed here in a whole run beside local (366 s and 370 s, four
 # at a time on a loaded machine) and scaled to local's seconds in CI; survey
 # (QD-060) 548 here beside probe's 389, four at a time on a loaded
-# machine, scaled by probe's 112 in CI.  A
+# machine, scaled by probe's 112 in CI; setup
+# (QD-063) timed here, raised for CI.  A
 # run's last line, `seconds:`, gives every suite's, to measure them again
 # from.
-TIMES="demo:310 doe:236 peers:231 web:225 via:224 run:205 xstore:146 local:140 compare:132 ask:130 probe:112 operator:98 report:87 campaign:86 rm:81 do:78 remote:105 preamble:76 view:74 changes:60 pacing:54 store:41 stop:40 policy:37 read:35 join:30 ssh:25 export:24 runner:18 split:15 diff:17 check:12 analyze:6 cleanup:3 concepts:3 help:5 coverage:80 odd:60 again:90 survey:160"
+TIMES="demo:310 doe:236 peers:231 web:225 via:224 run:205 xstore:146 local:140 compare:132 ask:130 probe:112 operator:98 report:87 campaign:86 rm:81 do:78 remote:105 preamble:76 view:74 changes:60 pacing:54 store:41 stop:40 policy:37 read:35 join:30 ssh:25 export:24 runner:18 split:15 diff:17 check:12 analyze:6 cleanup:3 concepts:3 help:5 coverage:80 odd:60 again:90 survey:160 setup:20"
 UNLISTED=30
 
 # With --shard K/N, a suite listed here is split into that many parts (or
