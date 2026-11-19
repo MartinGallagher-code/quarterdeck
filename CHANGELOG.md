@@ -5,6 +5,41 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.28.1 — 2026-11-18
+
+`qd --help` groups every command by what it is for, everyday ones first,
+on one screen, and `qd hints` asks its questions under the same headings
+(QD-040).
+
+### Changed
+- **`qd --help`, the reference card, is regrouped by goal**: Run, Read it
+  back, Over time, Judge and report, Larger jobs, Stores and output, Help,
+  in that order, every verb `build_parser()` registers on one line under
+  one of them (`hosts` under Run, `demo` under Help). It is 49 lines of at
+  most 80 columns (it was 78, some over 80), and its 18 example lines are
+  five, the core loop: run, freq, outliers, compare, web. The RUN
+  paragraph, the store paragraph and the exit status are shortened to a
+  few lines each; `qd demo`, the walkthrough and the "Full manual" link
+  stay (`quarterdeck/cli.py`: the module docstring).
+- **`qd hints`** prints its questions under the card's headings, in the
+  card's order (`cli.GROUPS`; each `HINTS` entry now carries its
+  heading), and has three more: keeping one project's runs apart (`qd
+  store new`, `qd store use`), into a spreadsheet (`qd export --format
+  csv`) and whether this machine can drive the toolchain (`qd doctor`).
+- **The README** shows the card's headings and their commands under the
+  install lines; **docs/getting-started.md**'s map of every command uses
+  the same headings.
+
+### Tests
+- **`tests/test_help.sh`**: the card check reads the commands under the
+  headings, and fails on a verb on no line, a verb on two lines, headings
+  that are not `cli.GROUPS` in order, and a core-loop example that no
+  longer parses, each shown on a broken copy; new `qd --help fits a
+  screen` (at most 50 lines, none over 80 columns, one to six examples);
+  `qd hints prints every hint` checks its headings are the card's, in
+  order; the hints check also fails a hint whose heading is not one of
+  the card's (`tests/help_unit.py`: `card_parts()`, `groups`).
+
 ## 0.26.0 — 2026-11-18
 
 `qd help VERB` prints that verb's help, as `qd VERB --help` does, instead
