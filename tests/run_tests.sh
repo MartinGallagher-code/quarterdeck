@@ -55,11 +55,13 @@ usage() { sed -n '5,25p' run_tests.sh | sed 's/^# \{0,1\}//'; }
 # PyPI's provost 2.1.0 two at a time, raised for four, and weighted as the
 # seven jobs are (six file with `batch`); local (QD-037) timed here beside
 # via, on both of provost's paths, and scaled to via's seconds in CI; help
-# (QD-043, QD-045, QD-046) about a second here, rounded up for CI; odd
+# (QD-043, QD-045, QD-046) about a second here, rounded up for CI;
+# concepts (QD-042) two seconds here, rounded up the same way; coverage
+# (QD-053) 72 alone here with `batch`, raised for CI; odd
 # (QD-062) 97 here with `batch` beside peers' 378, scaled to its 231.  A
 # run's last line, `seconds:`, gives every suite's, to measure them again
 # from.
-TIMES="demo:310 doe:236 peers:231 web:225 via:224 run:205 xstore:146 local:140 compare:132 probe:112 operator:98 report:87 campaign:86 rm:81 do:78 remote:105 preamble:76 view:74 changes:60 pacing:54 store:41 stop:40 policy:37 read:35 join:30 ssh:25 export:24 runner:18 split:15 diff:17 check:12 analyze:6 cleanup:3 help:5 odd:60"
+TIMES="demo:310 doe:236 peers:231 web:225 via:224 run:205 xstore:146 local:140 compare:132 probe:112 operator:98 report:87 campaign:86 rm:81 do:78 remote:105 preamble:76 view:74 changes:60 pacing:54 store:41 stop:40 policy:37 read:35 join:30 ssh:25 export:24 runner:18 split:15 diff:17 check:12 analyze:6 cleanup:3 concepts:3 help:5 coverage:80 odd:60"
 UNLISTED=30
 
 # With --shard K/N, a suite listed here is split into that many parts (or
