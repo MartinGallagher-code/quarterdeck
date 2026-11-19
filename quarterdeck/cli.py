@@ -10,8 +10,8 @@ Run
   qd import PATH... | hosts [HOSTS]    output on disk; the host list
 Read it back
   qd log [RUN] | show RUN | coverage   what is kept; a table; tests owed
-  qd stats|freq|hist|odd|outliers RUN  spread, who said which, far ones
-  qd pivot|trend RUN                   long to wide; a sparkline a host
+  qd stats|freq|hist|outliers RUN      spread, who said which, far ones
+  qd odd [RUN] | pivot|trend RUN       unlike the rest; wide; a sparkline
   qd view [RUN] | web                  full-screen; in a browser
 Over time
   qd diff [OLD] NEW | again [RUN]      what changed; a run once more
