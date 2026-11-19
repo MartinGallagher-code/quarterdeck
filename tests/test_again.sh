@@ -302,7 +302,7 @@ t_what_cannot_be_rerun_is_refused() {
     qd_rc again 2> err
     assert_status "$QD_RC" 2
     assert_contains "$(cat err)" "is a probe: qd probe os asks it again"
-    # a run filed before 0.32.0 kept no timeout: played by qd run with
+    # a run filed before 0.40.0 kept no timeout: played by qd run with
     # the record's new fields left out
     "$PY" - "$QD_DIR" --ssh "$FAKE_BIN/ssh" -S a -q -- echo old > /dev/null <<'PYEOF'
 import sys
@@ -318,7 +318,7 @@ PYEOF
     n="$(runs)"
     qd_rc again 2> err
     assert_status "$QD_RC" 2
-    assert_contains "$(cat err)" "record does not keep its --timeout (it was filed before qd 0.32.0"
+    assert_contains "$(cat err)" "record does not keep its --timeout (it was filed before qd 0.40.0"
     # and nothing was run or filed
     assert_eq "$(runs)" "$n"
 }

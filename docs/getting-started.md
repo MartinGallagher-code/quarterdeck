@@ -323,16 +323,15 @@ what it can, `qd store rm demo --delete` removes it.
 ## Every command, by what it is for
 
 `qd COMMAND --help` gives any one's options, `qd help` all of them, and
-`qd hints` maps questions to commands. The README is the manual.
+`qd hints` maps questions to commands. The headings are `qd --help`'s;
+the README is the manual.
 
 | What for | Commands |
 |---|---|
-| Starting out | `qd demo`, `qd hints`, `qd doctor`, `qd help` |
-| Asking the fleet | `qd hosts` (the host list), `qd run` (a command), `qd probe` (by name: facts, sysctl, gpu ...), `qd do` (a toolchain tool, run here), `qd import` (output already on disk) |
-| Seeing what came back | `qd log` (the runs), `qd show` (a table), `qd view` (full-screen), `qd web` (a browser) |
-| Is the fleet consistent? | `qd freq` (who said which), `qd stats` (centre and spread), `qd hist`, `qd outliers` (far from the rest), `qd pivot` (long to wide), `qd peers` (hosts that should agree, named) |
-| Did it get worse? | `qd again` (the last run once more, and what changed), `qd diff` (two runs), `qd compare` (N runs), `qd changes` (when it stepped), `qd trend` (a sparkline a host), `qd baseline` (blessed runs to compare with) |
-| Does it meet spec? | `qd check` (pass or fail by requirement), `qd report` (an evidence package) |
-| Beside other data | `qd join` (telemetry by host and time), `qd export` (CSV, JSON, Splunk, OpenMetrics ...), `qd floor` (on the floor plan) |
-| A big system, in parts | `qd split` (a host list into several), `qd campaign` (part by part, progress kept), `qd doe` (designed experiments) |
-| Keeping the store | `qd store` (named stores: new, use, export, import ...), `qd rm` (delete runs) |
+| Run | `qd run` (a command on every host), `qd probe` (by name: facts, sysctl, gpu ...), `qd do` (a toolchain tool, run here), `qd import` (output already on disk), `qd hosts` (the host list) |
+| Read it back | `qd log` (the runs), `qd show` (a table), `qd stats` (centre and spread), `qd freq` (who said which), `qd hist`, `qd outliers` (far from the rest), `qd pivot` (long to wide), `qd trend` (a sparkline a host), `qd view` (full-screen), `qd web` (a browser) |
+| Over time | `qd again` (the last run once more, and what changed), `qd diff` (two runs), `qd compare` (N runs), `qd changes` (when it stepped) |
+| Judge and report | `qd check` (pass or fail by requirement), `qd report` (an evidence package), `qd peers` (hosts that should agree, named), `qd baseline` (blessed runs to compare with) |
+| Larger jobs | `qd split` (a host list into several), `qd campaign` (part by part, progress kept), `qd doe` (designed experiments), `qd join` (telemetry by host and time) |
+| Stores and output | `qd store` (named stores: new, use, export, import ...), `qd rm` (delete runs), `qd export` (CSV, JSON, Splunk, OpenMetrics ...), `qd floor` (on the floor plan) |
+| Help | `qd hints`, `qd doctor`, `qd start`, `qd demo`, `qd help` |

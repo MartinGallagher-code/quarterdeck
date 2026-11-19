@@ -5,7 +5,7 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
-## 0.32.0 — 2026-11-18
+## 0.40.0 — 2026-11-19
 
 `qd again [RUN]` runs a run once more, as it ran, and shows what changed
 (QD-061).
@@ -22,7 +22,7 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
   NEXT. Exit 0 when every host answered and nothing changed, 1 when a host
   did not answer or something changed, 2 when RUN cannot be run again
   exactly: a `qd do` run, a `qd import`, a campaign's part, a design point,
-  a probe, a run that pushed files, or one filed before 0.32.0. It is
+  a probe, a run that pushed files, or one filed before 0.40.0. It is
   composed of `qd run` (`cmd_run`, given the Namespace the parser makes of
   the plain command) and `qd diff` (`cmd_diff`): no reader or statistic of
   its own (`quarterdeck/again.py`; `cli.py`: the verb, `cmd_again`).
@@ -46,6 +46,72 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
   under a pseudo-terminal, `n` runs nothing), `--dry-run`, and every
   refusal (exit 2); every WHAT TO DO NEXT command parses. `TIMES` gives it
   90 seconds (530 here under load, scaled as diff and help scale).
+## 0.33.0 — 2026-11-18
+
+Bare `qd` prints a short start card for newcomers in place of the full
+card, which `qd --help` and `qd -h` still print (QD-058).
+
+### Changed
+- **Bare `qd`'s output changes**: it prints the start card, 12 lines of
+  at most 80 columns (`qd demo`, `qd run -- uname -r`, `qd log`, `qd show
+  latest`, `qd web`, and where to go next: `qd --help`, `qd help VERB`,
+  `qd hints`), not the 49-line reference card. A script that ran bare
+  `qd` for the full card should run `qd --help`; none was found in
+  quarterdeck or provost (`quarterdeck/cli.py`: `START`, `main()`).
+- The beginner commands QD-057 designed (`setup`, `ask`, `survey`,
+  `again`, `odd`) go on the start card as each lands; until `qd ask`
+  does, `qd run -- uname -r` stands in for it. A comment above `START`
+  says where each goes.
+
+### Added
+- **`qd start`** and **`qd help basics`** print the start card and exit 0.
+  `start` is on the full card's Help line, in the README's table and in
+  docs/getting-started.md's map.
+  `qd help stat` now names `stats, start` as the closest verbs.
+
+### Tests
+- **`tests/test_help.sh`**: bare `qd` prints the start card in at most 25
+  lines of 80 columns, and `qd start` and `qd help basics` print the same;
+  `qd --help` and `qd -h` print the full card; every command on the start
+  card names a verb `build_parser()` registers and parses
+  (`tests/help_unit.py start`), shown failing on a card that names `qd
+  ask` before it lands and on a bad flag. `tests/test_run.sh` reads
+  "Full manual:" from `qd --help`, no longer from bare `qd`.
+
+## 0.28.1 — 2026-11-18
+
+`qd --help` groups every command by what it is for, everyday ones first,
+on one screen, and `qd hints` asks its questions under the same headings
+(QD-040).
+
+### Changed
+- **`qd --help`, the reference card, is regrouped by goal**: Run, Read it
+  back, Over time, Judge and report, Larger jobs, Stores and output, Help,
+  in that order, every verb `build_parser()` registers on one line under
+  one of them (`hosts` under Run, `demo` under Help). It is 49 lines of at
+  most 80 columns (it was 78, some over 80), and its 18 example lines are
+  five, the core loop: run, freq, outliers, compare, web. The RUN
+  paragraph, the store paragraph and the exit status are shortened to a
+  few lines each; `qd demo`, the walkthrough and the "Full manual" link
+  stay (`quarterdeck/cli.py`: the module docstring).
+- **`qd hints`** prints its questions under the card's headings, in the
+  card's order (`cli.GROUPS`; each `HINTS` entry now carries its
+  heading), and has three more: keeping one project's runs apart (`qd
+  store new`, `qd store use`), into a spreadsheet (`qd export --format
+  csv`) and whether this machine can drive the toolchain (`qd doctor`).
+- **The README** shows the card's headings and their commands under the
+  install lines; **docs/getting-started.md**'s map of every command uses
+  the same headings.
+
+### Tests
+- **`tests/test_help.sh`**: the card check reads the commands under the
+  headings, and fails on a verb on no line, a verb on two lines, headings
+  that are not `cli.GROUPS` in order, and a core-loop example that no
+  longer parses, each shown on a broken copy; new `qd --help fits a
+  screen` (at most 50 lines, none over 80 columns, one to six examples);
+  `qd hints prints every hint` checks its headings are the card's, in
+  order; the hints check also fails a hint whose heading is not one of
+  the card's (`tests/help_unit.py`: `card_parts()`, `groups`).
 
 ## 0.26.0 — 2026-11-18
 

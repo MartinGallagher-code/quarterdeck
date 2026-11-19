@@ -62,9 +62,24 @@ pip install provost binnacle             # the store, and the instruments
 pip install ./quarterdeck                # or put qd (and quarterdeck) on PATH
 ```
 
-`qd --help` is the reference card, `qd help VERB` one verb's flags
-(`qd help run`, as `qd run --help` prints them), and this README the
-manual.
+Bare `qd` prints a short start card, the few commands to begin with
+(`qd start` and `qd help basics` print it too); `qd --help` is the
+reference card: every command, one screen, under what it is for, everyday
+ones first.
+
+| Heading | Commands |
+|---|---|
+| Run | `run`, `probe`, `do`, `import`, `hosts` |
+| Read it back | `log`, `show`, `stats`, `freq`, `hist`, `outliers`, `pivot`, `trend`, `view`, `web` |
+| Over time | `diff`, `again`, `compare`, `changes` |
+| Judge and report | `check`, `report`, `peers`, `baseline` |
+| Larger jobs | `split`, `campaign`, `doe`, `join` |
+| Stores and output | `store`, `rm`, `export`, `floor` |
+| Help | `hints`, `doctor`, `start`, `demo`, `help` |
+
+`qd hints` maps questions to commands under the same headings, `qd help
+VERB` gives one verb's flags (`qd help run`, as `qd run --help` prints
+them), and this README is the manual.
 
 qd itself is Python 3.6+, standard library only. It needs provost to keep
 anything (`--no-store` runs without it); binnacle gives it its probes'
@@ -1943,9 +1958,9 @@ when a host did not answer or the diff found a change (the summary's
 That is a `qd do` run or a `qd import`, a campaign's part (`qd campaign
 retry`), a design point (`qd doe run`), a probe (`qd probe NAME` asks it
 again), a run that pushed files (`--push`, `--script`: the store does not
-keep them), and a run filed before qd 0.32.0, whose record keeps no
+keep them), and a run filed before qd 0.40.0, whose record keeps no
 `--timeout`. Each says why and what to run instead. `qd.runs` keeps what
-`qd again` reads, from 0.32.0 on: `timeout_s`, `pushed` and `host_list`
+`qd again` reads, from 0.40.0 on: `timeout_s`, `pushed` and `host_list`
 (the host files, as absolute paths).
 
 ---
