@@ -40,6 +40,36 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
   2, 3, 4, 100; not measured; units refused; zmax against `qd outliers`;
   a file's old rows unchanged beside new ones; JUnit, waivers, severity,
   `--keep`; `--baseline`).
+
+## 0.33.1 — 2026-11-19
+
+How long a small run takes to file, measured and recorded, and the provost
+that files it quickly named (QD-056).
+
+### Changed
+- **The README names provost 2.28.0 as the version that files a small run
+  quickly.** A one-host `qd run -- ls` spent almost all of its time in
+  provost's filing; 2.28.0 reads its strategies' confidence ceilings in one
+  scan rather than one process per strategy file, and reads a capture of a
+  dataset the store already has (`qd.runs`, `qd.hosts`, a command run
+  before) with that dataset's strategy first. qd is unchanged: any provost
+  still works, an older one is only slower. Measured on a shared 4-core
+  Linux machine, a one-host run into a store that has its datasets went
+  from 747 processes to 275, and its `provost batch` took 41% of the time
+  (33% with `-j 1`).
+
+### Docs
+- **`docs/scale.md` has a "Small runs" section:** a one-host run's time and
+  process count before and after, and what changed.
+
+### Tests
+- **`tests/small_run.sh`** (new) prints a one-host `qd run -- ls`'s median
+  time over 5 runs, with `--no-store`, into a new store and into a store
+  that has the run's datasets, and the processes (and `awk` processes) one
+  run starts, counted with strace where it is installed. It never fails on
+  a time or a count. CI runs it as a report (the **small run** job, which
+  cannot fail the run), with PyPI's provost and with provost's `main`.
+
 ## 0.33.0 — 2026-11-18
 
 Bare `qd` prints a short start card for newcomers in place of the full
@@ -1050,7 +1080,6 @@ onto it.
   report shares; and a run's table can be read by its listing
   (`Run.load_info`), which two of a `qd do`'s same-named tables need.
   Neither changes any output.
-
 
 ## 0.9.1 — 2026-11-10
 
