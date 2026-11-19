@@ -334,4 +334,4 @@ the README is the manual.
 | Judge and report | `qd check` (pass or fail by requirement), `qd report` (an evidence package), `qd peers` (hosts that should agree, named), `qd baseline` (blessed runs to compare with) |
 | Larger jobs | `qd split` (a host list into several), `qd campaign` (part by part, progress kept), `qd doe` (designed experiments), `qd join` (telemetry by host and time) |
 | Stores and output | `qd store` (named stores: new, use, export, import ...), `qd rm` (delete runs), `qd export` (CSV, JSON, Splunk, OpenMetrics ...), `qd floor` (on the floor plan) |
-| Help | `qd hints`, `qd doctor`, `qd demo`, `qd help` |
+| Help | `qd hints`, `qd doctor`, `qd start`, `qd demo`, `qd help` |
