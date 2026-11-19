@@ -48,7 +48,7 @@ Stored by provost: --store, QD_STORE, else its own choice. See docs/concepts.md
 Exit status: 0 done, every host answered; 1 a finding (a host that did
 not answer, a difference, a failed check); 2 usage error, or I/O failed.
 
-New to qd? qd demo, then docs/getting-started.md: ten minutes, no fleet.
+New to qd? qd demo, then docs/getting-started.md; your own fleet: qd setup.
 Full manual: https://github.com/MartinGallagher-code/quarterdeck#readme
 """
 

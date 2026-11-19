@@ -71,12 +71,12 @@ ones first.
 
 | Heading | Commands |
 |---|---|
-| Run | `run`, `ask`, `survey`, `probe`, `do`, `import`, `hosts` |
+| Run | `run`, `ask`, `survey`, `probe`, `do`, `setup`, `hosts` |
 | Read it back | `log`, `show`, `coverage`, `stats`, `freq`, `hist`, `outliers`, `odd`, `pivot`, `trend`, `view`, `web` |
 | Over time | `again`, `diff`, `compare`, `changes` |
 | Judge and report | `check`, `report`, `peers`, `baseline` |
 | Larger jobs | `split`, `campaign`, `doe`, `join` |
-| Stores and output | `store`, `rm`, `export`, `floor` |
+| Stores and output | `store`, `rm`, `import`, `export`, `floor` |
 | Help | `hints`, `doctor`, `start`, `demo`, `help` |
 
 `qd hints` maps questions to commands under the same headings, `qd help
