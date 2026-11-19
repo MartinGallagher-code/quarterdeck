@@ -110,6 +110,7 @@ qd freq latest A                         # who runs which kernel
 qd probe facts                           # why-slow's readings, a column each
 qd stats facts cpu.busy_pct --by rack    # centre and spread, per rack
 qd outliers facts mem.available_pct      # who is far from everybody else
+qd odd facts                             # who is unlike the rest, in any column
 qd compare facts -c cpu.busy_pct --last 5    # the last five runs, host by host
 qd web                                   # all of it, in a browser
 ```
@@ -2134,6 +2135,7 @@ qd hist latest rtt_p99 --bins 20
 qd outliers latest mbps                       # far from the median, by MAD
 qd outliers latest mbps --peers sku           # far from its own peer group's
 qd outliers firmware --categorical            # differs from its rack-mates, by value
+qd odd latest                                 # every column at once: who is unlike the rest
 qd stats latest mbps --peers sku              # per peer group (qd peers)
 qd pivot latest --rows host --cols peer --values pps
 qd trend latest load1 --by host --over ts
@@ -2192,6 +2194,54 @@ reduced to its median first, so a hundred rows count as one opinion.
 than `--k` (1.5) interquartile ranges, scored in IQRs past the nearer
 quartile. `--peers NAME` holds each host against its own peer group
 (`qd peers`), each group with its own median and spread.
+
+### Who is odd: `qd odd`
+
+`qd outliers` asks about one column, and on a run of fifty columns a
+newcomer does not know which to ask about. `qd odd [RUN]` (default:
+latest) asks about every one, and lists the hosts unlike the rest, ranked,
+with the column, the host's value and the typical one beside it:
+
+```bash
+qd odd                          # the latest run: who stands out, and in what
+qd odd facts --peers sku        # each host against its own peer group
+qd odd latest --top 5 --format csv
+```
+
+It is the two checks above, run column by column, and computes nothing of
+its own:
+
+- **Numbers** go through `qd outliers`' median and MAD, against the whole
+  run (or, with `--peers NAME`, each host's own peer group), a host's
+  repeated rows reduced to their median first. They are ranked by how far
+  out, in robust z; where most of the run agrees exactly (MAD 0) every
+  value that differs is infinitely far, and the column fewer hosts differ
+  in comes first.
+- **Words** go through `qd outliers --categorical`, within each rack (or
+  peer group). They are ranked by **rarity**: the share of the host's group
+  that says something else, so one host in twelve on another kernel (92%)
+  comes before four in twelve on another SKU (67%).
+
+The two are **two lists**, each ranked on its own scale: a robust z has no
+ceiling and a rarity is a share, and putting them on one scale would rank
+by the choice of scale, not by how odd a host is. `--top N` (20) limits
+each list. `--format` gives one table of both, `list, group, host, column,
+value, typical, score, agree`, in rank order.
+
+What it reads: in a `qd run`, what the hosts said (the columns after
+`capture`), not the host list's attributes or qd's own bookkeeping; in a
+file or another table, every column. Either way it leaves out what is
+meant to differ (serials, UUIDs, addresses, host names, uptime, times) and
+says so. A column every host agrees in is not checked, and neither is one
+**fewer than half the rows measured**: blank is not measured, never zero,
+and a host that measured nothing is neither odd nor a vote for the
+majority. A host that did not answer the run is named apart. A column
+split with no majority has no odd one, and is named too.
+
+The exit status is 1 when any host stands out, 0 when none does, and 2 on
+a usage error, so a CI job can gate on it. WHAT TO DO NEXT gives the `qd
+outliers` command for the top column of each list, which shows the same
+finding in full, and `qd show` for the first host named.
 
 ### `diff`: what changed
 
@@ -2634,7 +2684,7 @@ The numbers, and how they were measured, are in
 | | |
 |---|---|
 | 0 | done, and every host answered |
-| 1 | a finding: a host that did not answer, a diff or compare that differs, a change or a slide `qd changes` found, a check that failed or was not measured, nothing to bin, a join that found no telemetry in any window, a host that still owes a test `qd coverage` names, a report that records any of these |
+| 1 | a finding: a host that did not answer, a host `qd odd` finds unlike the rest, a diff or compare that differs, a change or a slide `qd changes` found, a check that failed or was not measured, nothing to bin, a join that found no telemetry in any window, a host that still owes a test `qd coverage` names, a report that records any of these |
 | 2 | a usage error, or something could not be read or written |
 | other | `qd do` passes on the tool's own |
 

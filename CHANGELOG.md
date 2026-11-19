@@ -5,6 +5,66 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.38.0 — 2026-11-19
+
+`qd odd [RUN]`: the hosts unlike the rest, in any column, ranked -- every
+column's outliers at once, for when you do not know which column to ask
+about (QD-062, from the beginner design QD-057).
+
+### Added
+- **`qd odd [RUN]`** (default: latest) runs the outlier checks `qd
+  outliers` already has over every column of RUN: numbers by the median
+  and MAD (`stats.outliers`, or `stats.peer_outliers` with `--peers`),
+  words by the value most of the rack or peer group has
+  (`differs.find`, as `--categorical` groups them). Nothing is
+  recomputed: it calls that code a column at a time. Each host that
+  stands out is listed with the column, its value and the typical one.
+- **Two ranked lists**, not one: numbers by robust z (MAD 0: the column
+  fewer hosts differ in first), words by rarity, the share of the
+  host's group that says something else. A robust z has no ceiling and a
+  rarity is a share, so one scale for both would mislead. `--top N` (20)
+  limits each list; `--format` gives one table of both (`list, group,
+  host, column, value, typical, score, agree`).
+- What it reads: in a `qd run`, the columns after `capture` (what the
+  hosts said, not the host list's attributes or qd's bookkeeping); in a
+  file, every column. Per-host identities, uptime and times are left out
+  and named. A column every host agrees in, and one fewer than half the
+  rows measured, is not checked: blank is not measured, never zero. A
+  host that did not answer the run is named apart, not called odd; a
+  column split with no majority is named, with no odd one.
+- `--peers NAME` holds each host against its own peer group, as `qd
+  outliers --peers` does; `--z` (`QD_Z`, 3.5) and `--where` as there.
+- WHAT TO DO NEXT gives the `qd outliers` command for the top column of
+  each list (two at most), with the same `--peers`, `--z`, `--where` and
+  `--store`, and `qd show RUN --where host=H --vertical` for the first
+  host named; `qd stats RUN` when nothing stands out.
+- Exit status: 0 when nothing stands out, 1 when a host does, 2 on a
+  usage error. Read-only: it files nothing.
+- On the `qd --help` card's usage lines, in `qd hints` ("Who is odd, and
+  in what?"), in the README ("Who is odd: `qd odd`", under Reading
+  it back; a line in Thirty seconds and the exit status table), and in
+  the map of docs/getting-started.md (its test wants every verb there).
+
+### Changed
+- `quarterdeck/cli.py`: `report_categorical`'s grouping (peer group, else
+  rack, else the whole fleet) is now `categorical_groups()`, shared with
+  `qd odd`; `qd outliers --categorical` is unchanged.
+
+### Tests
+- **`tests/test_odd.sh`** (new, in `TIMES`): the demo's planted slow host
+  (`demo-iperf`, robust z −225.8) and odd kernel (`demo-kernel`, 92%)
+  each ranked first, from the demo's own answers through its stand-in
+  launcher; a run where every host agrees exits 0; a blank is neither a
+  zero nor a word of its own, and a mostly blank column is not checked;
+  `--top` per list and `--format json`; `--peers`, beside the plain `qd
+  outliers --peers`; a filed `qd run` on fake hosts, where qd's own
+  columns are not read and the host that did not answer is named apart;
+  usage errors exit 2; the card, `qd hints` and `qd help odd`. Every
+  WHAT TO DO NEXT command is parsed by `build_parser()` and then run.
+- Merged after QD-040's regrouped `qd --help` card: `odd` leads the
+  Read it back line with `pivot` and `trend`, and on the start card under
+  Getting started, as QD-058's note above `START` asks.
+
 ## 0.37.0 — 2026-11-19
 
 `qd coverage`: which hosts each named test has run on, how it went, and
