@@ -58,7 +58,7 @@ usage() { sed -n '5,25p' run_tests.sh | sed 's/^# \{0,1\}//'; }
 # (QD-043, QD-045, QD-046) about a second here, rounded up for CI.  A
 # run's last line, `seconds:`, gives every suite's, to measure them again
 # from.
-TIMES="demo:310 doe:236 doe_fio:220 doe_next:330 peers:231 web:225 via:224 run:205 xstore:146 local:140 compare:132 probe:112 operator:98 report:87 campaign:86 rm:81 do:78 remote:105 preamble:76 view:74 changes:60 pacing:54 store:41 stop:40 policy:37 read:35 join:30 ssh:25 export:24 runner:18 split:15 diff:17 check:12 analyze:6 cleanup:3 help:5"
+TIMES="demo:310 doe:236 doe_fio:220 doe_next:380 peers:231 web:225 via:224 run:205 xstore:146 local:140 compare:132 probe:112 operator:98 report:87 campaign:86 rm:81 do:78 remote:105 preamble:76 view:74 changes:60 pacing:54 store:41 stop:40 policy:37 read:35 join:30 ssh:25 export:24 runner:18 split:15 diff:17 check:12 analyze:6 cleanup:3 help:5"
 UNLISTED=30
 
 # With --shard K/N, a suite listed here is split into that many parts (or
