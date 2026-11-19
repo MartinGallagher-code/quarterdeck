@@ -1470,6 +1470,7 @@ qd compare facts -c cpu.busy_pct --last 5        # the last five runs of facts
 qd compare monday tuesday latest -c mbps         # these three
 qd compare --group burnin -c temp_c              # a campaign's parts, a design's points
 qd compare --campaigns burnin-oct burnin-nov     # two whole campaigns, host by host
+qd compare --study fio-screen -c read_iops        # every run of a study's designs (qd doe)
 qd compare kernel --last 10                      # no column: every numeric median
 ```
 
@@ -2454,6 +2455,61 @@ gone?`), and the run exits 1: its points there are not measured, never
 skipped in silence. `qd doe status` shows the study a follow-up belongs
 to.
 
+### A study, every run of it: `qd compare --study` and `qd web`
+
+The screen, its follow-up and every later round are one **study** (QD-070,
+step 5 of a tuning study). Their designs have different factors and
+different points, so `qd compare --group` (one design's points) and
+`--campaigns A B` (two designs, key by key) do not line them up; a study
+does:
+
+```bash
+qd doe status fio-screen                       # the screen's points, then every design of its study
+qd compare --study fio-screen                  # every run of every design, a row per run and host
+qd compare --study fio-screen -c read_iops --sort -read_iops
+qd compare --study fio-screen --where 'iodepth>=16' --format csv
+qd web                                         # Studies: the same table, sortable and filterable, and a chart
+```
+
+- **Which designs.** A design is in the study its config names
+  (`metadata.qd_study`, which `qd doe next` writes and `qd doe run --like`
+  fills in), and a design that names none starts a study of its own name,
+  so a screen's study is called what the screen is called. Nothing new is
+  filed for it: a store written before studies existed reads as one study
+  per design. `qd doe status SCREEN` lists the study's designs under the
+  screen's own points once there are two; `qd doe status STUDY` for a
+  study named for no design lists its designs alone.
+- **The rows.** One per run and host: the design, the point, the host,
+  then each response (`-c COL,COL`, a column or a config's response by
+  name; by default every response the configs name a column for), then
+  every factor, then the host's status and the run. A response is one
+  number from that host's rows that are ok (the median, or `--agg`), on
+  its family's base scale as `qd doe analyze` reads it. Every run is
+  there once, a point measured again (`--redo`) as a second row.
+- **The factors.** A factor is a column when any design varied it, or
+  the designs held it at different levels. On a design's row it is the
+  point's level where the design varied it and the level the design held
+  where it did not (the follow-up's `rw=rw`, which the screen varied). A
+  factor every design held at one level (the file, the size) is said
+  once above the table, not repeated. A factor a design neither varied
+  nor held is blank on its rows, and said.
+- **Blank is not measured.** A host that failed a point has no response
+  on its row, never 0, and its status says why.
+- `--where` and `--sort` work as in `qd show`; `--format csv` gives every
+  column for a spreadsheet. `--group`, `--last`, `--baseline`, `--peers`,
+  `--key` and `--table` do not go with `--study`.
+
+In `qd web` a study of two designs or more is listed above the campaigns
+and designs. Its page lists the designs (what each varies and holds, how
+far it got, what it follows), then every run in one table, sorted by a
+click on a column's heading and filtered by the bar above it, a held
+factor's level in grey italics; a row opens its run. Above the table, a
+chart of a response against a factor (by default the factor the latest
+design varied first), each design a colour: a dot per run and host, and
+a line through the design's median at each level. The server works out
+the rows, their order, the filter, the points and the medians
+(`/api/study`), with the same code as `qd compare --study`.
+
 ---
 
 ## Driving the toolchain: `qd do`
@@ -2889,6 +2945,10 @@ engine's, as everywhere.
 
 - **The runs in the store** on the left; the run's command, how many hosts
   answered, and its tables at the top.
+- **Studies** (a screen and the designs that follow it, QD-070), above
+  the campaigns and designs: every run of the study in one sortable,
+  filterable table, and a response charted against a factor across the
+  designs (see "A study, every run of it").
 - **Campaigns and designs** above the runs, with how far each has got
   (muster's count of parts done, or points measured). One opens its parts
   or points, each with its last run, and **Compare its parts** lines them

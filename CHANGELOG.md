@@ -5,6 +5,54 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.48.0 — 2026-11-19
+
+Every run of a study -- a screen, its follow-up and every later round --
+side by side, in `qd compare --study` and in `qd web` (QD-070, step 5 of
+QD-066's fio tuning study).
+
+### Added
+- **`qd compare --study STUDY`** lines up every run of every design of a
+  study: a row per run and host, with the design, the point, each
+  response (`-c COL,COL`, a column or a config's response by name; by
+  default every response the configs name a column for, each one number
+  from the host's ok rows: the median, or `--agg`), every factor as a
+  column, the host's status and the run. Where a design varied a factor
+  the cell is the point's level; where it held it, the level it held (a
+  follow-up's `rw=rw`, which the screen varied). A factor every design
+  held at one level is said once above the table; one a design neither
+  varied nor held is blank on its rows, and said. A host that failed a
+  point has a blank response, never 0. `--where`, `--sort` (new, for
+  `--study` only) and `--format` as elsewhere; `--group`, `--last`,
+  `--baseline`, `--peers`, `--key` and `--table` are refused beside it
+  (`quarterdeck/study.py`, new: `studies`, `members`, `build`,
+  `run_cells`, `chart`; `quarterdeck/cli.py`: `compare_study`).
+- **`qd doe status`** lists a study's designs (type, points measured,
+  runs, what each follows and varies) under the screen's own points once
+  the study has two, and `qd doe status STUDY` for a study named for no
+  design lists them alone; a follow-up's status points at its study
+  (`study_lines`, `doe_study_status`).
+- **qd web's study view**: a study of two designs or more is listed above
+  the campaigns and designs (`/api/groups`' `studies`). Its page lists the
+  designs, then every run in one table, sorted by a column's heading and
+  filtered by the filter bar, a held factor's level in grey italics, a row
+  opening its run; and a chart of a response against a chosen factor,
+  each design a colour, a dot per run and host and a line through the
+  design's median at each level. `/api/study` (new) gives the rows, the
+  filter and sort, the points and the medians, from the same engine as
+  `qd compare --study`: the page computes nothing.
+- `tests/test_study.sh` (new suite, in `TIMES` and `PARTS`): a study of
+  two designs with different factors, every run once with the right
+  varied and held levels, blank staying blank, the refusals, `qd doe
+  status`, and the web API's rows, filter, sort and chart.
+
+### Changed
+- Nothing is filed for a study: a design's study is its config's
+  `metadata.qd_study` (QD-069), else its own name, so `qd.designs` keeps
+  its columns and a store written before reads as one study per design.
+- `qd --help`'s compare line names `--study`; qd web's sidebar heading
+  is "Studies, campaigns and designs".
+
 ## 0.46.0 — 2026-11-19
 
 A central composite or Box-Behnken follow-up from a screen's big

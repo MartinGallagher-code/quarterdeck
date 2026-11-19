@@ -362,6 +362,8 @@ table.grid { border-collapse: separate; border-spacing: 0; width: max-content;
 .grid tbody tr { cursor: pointer; }
 .grid tbody tr:hover td { background: var(--wash); }
 .grid td.blank::before { content: "\00b7"; color: var(--muted); }
+/* a study's factor a design held rather than varied (QD-070) */
+.grid td.held { color: var(--muted); font-style: italic; }
 .grid .more-lines { color: var(--muted); margin-left: 6px; font-size: 12px; }
 .grid td.bar-cell { position: relative; }
 .grid td.bar-cell .bar {

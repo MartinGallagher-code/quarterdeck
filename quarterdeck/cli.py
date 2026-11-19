@@ -15,7 +15,7 @@ Read it back
   qd view [RUN] | web                  full-screen; in a browser
 Over time
   qd diff [OLD] NEW | again [RUN]      what changed; a run once more
-  qd compare RUN --last N -c COL       N runs side by side
+  qd compare RUN --last N -c COL       N runs side by side; a study: --study S
   qd changes RUN -c COL [--last N]     where each host's level moved
 Judge and report
   qd check RUN --against F [--rule R]  pass/fail by requirement, one verdict
@@ -3289,6 +3289,10 @@ def cmd_compare(args):
     from . import compare as comparemod
     if args.campaigns:
         return compare_campaigns(args)
+    if args.study:
+        return compare_study(args)
+    if args.sort:
+        die("--sort orders a study's runs: it goes with --study")
     refs, last, st = list(args.refs), args.last, None
     if last is not None:
         m = re.match(r"^([0-9]+)(?:@(.+))?$", last)
@@ -3319,6 +3323,84 @@ def cmd_compare(args):
          else comparemod.wide_table(res), lines)
     return 1 if any(flags for _, _, flags in res.keys) or \
         any(flags for _, _, flags in res.peer_rows) else 0
+
+
+def compare_study(args):
+    """compare --study STUDY: every run of every design of a study, a row
+    per run and host, with every factor's level as a column (QD-070)."""
+    from . import study as studymod
+    for flag, v in (("--baseline", args.baseline), ("--group", args.group),
+                    ("--last", args.last), ("--peers", args.peers),
+                    ("--key", args.key), ("--campaigns", args.campaigns),
+                    ("--table", args.table)):
+        if v:
+            die("--study lines up every run of a study's designs: leave %s "
+                "out" % flag)
+    if args.refs:
+        die("--study STUDY names what is compared: no RUN as well")
+    st = home_store(args)
+    cols = [c.strip() for c in (args.column or "").split(",") if c.strip()]
+    s = studymod.build(st, args.study, cols, args.agg)
+    t = s.table
+    rows = query.where(t, args.where or [])
+    if args.sort:
+        rows = query.sort_rows(t, rows, args.sort)
+    shown = t.derive(rows=rows)
+    w = width_of(args)
+    lines = ["%s compare --study %s -- %s, %s (a run on one host each)%s; "
+             "each response the %s of the host's rows, blank where not "
+             "measured" % (
+                 PROG, s.name, plural(len(s.designs), "design"),
+                 plural(len(t.rows), "row"),
+                 (", %d shown" % len(rows)) if len(rows) != len(t.rows)
+                 else "", s.agg)]
+    import textwrap
+    wrap = max(40, (w or 80) - 2)
+
+    def said(text):
+        lines.extend(textwrap.wrap(text, wrap, initial_indent="  ",
+                                   subsequent_indent="      ",
+                                   break_on_hyphens=False))
+    for d in s.designs:
+        how = d.operation.replace("_", " ") or "a design"
+        if d.follows.get("design"):
+            how += ", following %s for %s" % (d.follows["design"],
+                                             d.follows.get("response", ""))
+        holds = " ".join("%s=%s" % kv for kv in d.held
+                         if kv[0] in s.factors)
+        said("%s: %s, %d of %s measured; varies %s%s" % (
+            d.name, how, d.measured, plural(len(d.points), "point"),
+            " ".join(d.varied) or "nothing",
+            ("; holds " + holds) if holds else ""))
+    if s.constant:
+        said("held by every design: " + " ".join("%s=%s" % kv
+                                                 for kv in s.constant))
+    named = ", ".join("%s=%s" % (n, c) for n, c in s.responses if n != c)
+    if named:
+        said("the responses: %s" % named)
+    for n in s.notes:
+        said("note: %s" % n)
+    lines.append("")
+    nr = len(s.responses)
+    nums = [1] + list(range(3, 3 + nr)) + [
+        i for i, c in enumerate(t.columns)
+        if c in s.factors and all(tablemod.to_num(v) is not None
+                                  for v in t.values(c) if v.strip())]
+    tl = render.render_rows(t.columns, rows, numeric=nums, width=w,
+                            indent="  ")
+    if tl[-1].endswith("-- use --cols or --width)"):
+        # compare has no --cols: say what does narrow it
+        tl[-1] = tl[-1][:-len("-- use --cols or --width)")] + \
+            "-- -c fewer responses, --width, or --format csv)"
+    lines.extend(tl)
+    tips = [("%s compare --study %s --sort -%s" % (
+        PROG, s.name, s.responses[0][0]), "the best runs first"),
+        ("%s compare --study %s --format csv" % (PROG, s.name),
+         "every run, every factor, for a spreadsheet"),
+        ("%s web" % PROG, "the study in a browser: sort, filter, chart")]
+    lines.extend(next_steps(tips))
+    emit(args, shown, lines)
+    return 0
 
 
 def compare_campaigns(args):
@@ -5282,6 +5364,10 @@ def cmd_doe(args):
     if what == "run":
         return doe_run(args, st, doemod)
     if what == "status":
+        from . import study as studymod
+        names = studymod.members(st, args.target)
+        if names and not doemod.exists(st, args.target):
+            return doe_study_status(args, st, studymod, names)
         row, rows, done = doemod.status_rows(st, args.target)
         lines = ["%s doe -- %s: %d of %s measured" % (
             PROG, args.target, done, plural(len(rows), "point")),
@@ -5302,6 +5388,19 @@ def cmd_doe(args):
             doemod.STATUS_COLUMNS, rows,
             numeric=[0, 1, 3], width=width_of(args), indent="  "))
         tips = []
+        if len(names) > 1:
+            # the screen's name is its study's: the study's designs too
+            tl, sm, stot = study_lines(args, st, studymod, names)
+            lines.append("")
+            lines.append("  the study %s: %s, %d of %s measured" % (
+                args.target, plural(len(names), "design"), sm,
+                plural(stot, "point")))
+            lines.extend(tl)
+            tips.extend(study_tips(args.target))
+        elif isinstance(meta, dict) and meta.get("qd_study") and \
+                meta["qd_study"] != args.target:
+            tips.append(("%s doe status %s" % (PROG, meta["qd_study"]),
+                         "every design of its study"))
         if done < len(rows):
             tips.append(("%s doe run CONFIG ... --name %s" % (
                 PROG, args.target), "measure the rest (measured points "
@@ -5368,6 +5467,49 @@ def cmd_doe(args):
         return doe_next(args, st, doemod)
     die("unknown doe action %r (init, plan, run, status, analyze, next)"
         % what)
+
+
+def study_lines(args, st, studymod, names, indent="  "):
+    """The designs of a study (QD-070) -- the screen, its follow-ups,
+    every later round -- and how far each has got: (lines, measured,
+    points)."""
+    rows, total, measured = [], 0, 0
+    for n in names:
+        d = studymod.Design(st, n)
+        total += len(d.points)
+        measured += d.measured
+        rows.append([n, d.operation.replace("_", "-"),
+                     "%d/%d" % (d.measured, len(d.points)),
+                     str(sum(len(rs) for rs in d.runs.values())),
+                     d.follows.get("design", "") +
+                     (" (%s)" % d.follows["response"]
+                      if d.follows.get("design") and
+                      d.follows.get("response") else ""),
+                     " ".join(d.varied)])
+    return render.render_rows(
+        ["design", "type", "measured", "runs", "follows", "varies"],
+        rows, numeric=[3], width=width_of(args), indent=indent), \
+        measured, total
+
+
+def study_tips(study):
+    return [("%s compare --study %s" % (PROG, study),
+             "every run of every design, each factor a column"),
+            ("%s web" % PROG, "the study in a browser: sort, filter, chart")]
+
+
+def doe_study_status(args, st, studymod, names):
+    """qd doe status STUDY, when STUDY is no design's own name."""
+    tl, measured, total = study_lines(args, st, studymod, names)
+    lines = ["%s doe -- the study %s: %s, %d of %s measured" % (
+        PROG, args.target, plural(len(names), "design"), measured,
+        plural(total, "point"))]
+    lines.extend(tl)
+    lines.extend(next_steps([("%s doe status %s" % (PROG, names[-1]),
+                              "one design's points")] +
+                            study_tips(args.target)))
+    sys.stdout.write(render.page(lines))
+    return 0
 
 
 def doe_next(args, st, doemod):
@@ -6739,6 +6881,12 @@ def build_parser():
                     help="two whole campaigns (or designs) side by side: "
                     "every part of each, host by host, each column's value "
                     "in A and in B and the change")
+    sp.add_argument("--study", metavar="STUDY",
+                    help="every run of every design of a study (a screen "
+                    "and its follow-ups), each factor's level a column; "
+                    "-c the responses (default the configs')")
+    sp.add_argument("--sort", metavar="COLS",
+                    help="--study: order the runs (-COL descending)")
     sp.add_argument("--baseline", metavar="RUN|NAME",
                     help="what the others are measured against: a run (the "
                     "first), or a qualified baseline's NAME (qd baseline "
@@ -6989,7 +7137,8 @@ def build_parser():
                              "next"])
     sp.add_argument("target", metavar="CONFIG|NAME",
                     help="init: a starting config (fio); plan/run: a doe "
-                    "config; status/analyze/next: the design's name")
+                    "config; status: a design's or a study's name; "
+                    "analyze/next: the design's name")
     add_fleet(sp, preview=0)
     sp.add_argument("--name", help="the design's name (default the "
                     "config's)")

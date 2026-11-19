@@ -8,7 +8,8 @@ page does no arithmetic of its own -- every figure, filter, group, diff,
 comparison and outlier comes back from the same functions `qd stats`,
 `qd diff`, `qd compare` and the rest print, so the browser and the terminal
 cannot disagree about a number.  Campaigns and designs are listed as
-`qd campaign status` and `qd doe status` list them.
+`qd campaign status` and `qd doe status` list them, and a study's runs
+(a screen and its follow-ups) as `qd compare --study` lines them up.
 
 When datacenter_visualization is installed its viewer is served beside it at
 /floor/, with qd's overlays at /floor/files/, so "Floor plan" on any dataset
@@ -44,7 +45,7 @@ from urllib.parse import parse_qs, parse_qsl, quote, unquote, \
 from . import VERSION
 from . import baseline as blmod, campaign as camp, compare as comparemod, \
     diff as diffmod, doe as doemod, peers as peersmod, query, stats, \
-    table as tablemod, tools
+    study as studymod, table as tablemod, tools
 from .common import PROG, QdError, die, env_float, write_text
 from . import store as storemod
 from .store import cache_root, describe_entry, operator_shown, \
@@ -610,7 +611,45 @@ class Api(object):
                         % (done, len(rows)),
                         "done": str(done), "total": str(len(rows)),
                         "columns": doemod.STATUS_COLUMNS, "rows": rows})
-        return {"groups": out}
+        # a study of two designs or more (QD-070): its runs side by side
+        studies = []
+        for name, names in studymod.studies(self.book):
+            if len(names) < 2:
+                continue
+            ds = [studymod.Design(self.book, n) for n in names]
+            studies.append({
+                "name": name, "designs": names,
+                "progress": "%d designs, %d of %d points measured" % (
+                    len(ds), sum(d.measured for d in ds),
+                    sum(len(d.points) for d in ds))})
+        return {"groups": out, "studies": studies}
+
+    def study(self, q):
+        """Every run of every design of a study, as `qd compare --study`
+        lines them up -- filtered (where) and sorted (sort) here -- and a
+        response against a factor across the designs (factor, response),
+        each design a series with its median at each level."""
+        cols = [c.strip() for c in (one(q, "c") or "").split(",")
+                if c.strip()]
+        # configs that name no response's column: the runs still, and the
+        # page asks which column
+        s = studymod.build(self.book, one(q, "study") or "", cols,
+                           one(q, "agg") or "median", required=False)
+        t, sub = self.subset(q, s.table)
+        out = s.json()
+        out.update({"columns": t.columns,
+                    "kinds": dict((c, t.kind(c)) for c in t.columns),
+                    "total": len(t.rows), "matched": len(sub.rows),
+                    "rows": sub.rows})
+        # by default the factor the latest design varied first: what the
+        # study narrowed down to
+        last = [f for f in s.designs[-1].varied if f in s.factors]
+        factor = one(q, "factor") or (last or s.factors or [None])[0]
+        response = one(q, "response") or \
+            (s.responses[0][0] if s.responses else None)
+        out["chart"] = studymod.chart(s, sub, factor, response) \
+            if factor and response else None
+        return out
 
     def raw(self, q):
         t = self.table(one(q, "e"), one(q, "t"))
@@ -789,7 +828,8 @@ ROUTES = {"/api/entries": "entries", "/api/entry": "entry_info",
           "/api/group": "group", "/api/pivot": "pivot",
           "/api/trend": "trend", "/api/diff": "diff", "/api/raw": "raw",
           "/api/overlay": "overlay", "/api/compare": "compare",
-          "/api/groups": "groups", "/api/join": "join"}
+          "/api/groups": "groups", "/api/join": "join",
+          "/api/study": "study"}
 
 
 LOOPBACK = ("127.0.0.1", "localhost", "::1")

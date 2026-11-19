@@ -48,6 +48,8 @@ and writes a follow-up config: the big numeric factors varied, the rest
 held at their better level, the design doe suggest's response-surface
 choice, the study the screen's (metadata.qd_study).  `qd doe run --like`
 runs it on the hosts the screen ran on, holding what the screen held.
+The screen and its follow-ups are a study; quarterdeck/study.py lines up
+every run of it (`qd compare --study`, qd web's study view, QD-070).
 """
 
 import hashlib

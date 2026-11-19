@@ -97,7 +97,7 @@
   // -------------------------------------------------------------------------
 
   const S = {
-    entries: [], groups: [], g: null, root: "", floor: false, layout: null,
+    entries: [], groups: [], studies: [], g: null, s: null, root: "", floor: false, layout: null,
     e: null, t: null, tab: "table", where: [], sort: "", col: null,
     p: {}, info: null, rows: null, busy: 0,
     stores: [], here: null, elsewhere: {},
@@ -114,6 +114,7 @@
     S.store = q.get("store") || null;
     S.e = q.get("e") || null;
     S.g = q.get("g") || null;
+    S.s = q.get("study") || null;
     S.t = q.get("t") || null;
     S.tab = q.get("tab") || "table";
     S.where = q.getAll("w");
@@ -128,6 +129,7 @@
     if (S.store) q.set("store", S.store);
     if (S.e) q.set("e", S.e);
     else if (S.g) q.set("g", S.g);
+    else if (S.s) q.set("study", S.s);
     if (S.t) q.set("t", S.t);
     if (S.tab !== "table") q.set("tab", S.tab);
     for (const w of S.where) q.append("w", w);
@@ -245,7 +247,7 @@
   async function switchStore(name) {
     S.store = name || null;
     S.elsewhere = {};
-    S.e = S.g = S.t = null;
+    S.e = S.g = S.s = S.t = null;
     S.tab = "table"; S.where = []; S.sort = ""; S.col = null; S.p = {};
     closePanel();
     writeHash();
@@ -263,9 +265,12 @@
     S.layout = d.layout;
     $("root").textContent = d.root;
     try {
-      S.groups = (await api("/api/groups")).groups;
+      const g = await api("/api/groups");
+      S.groups = g.groups;
+      S.studies = g.studies || [];
     } catch (err) {
       S.groups = [];   // the runs are still worth showing
+      S.studies = [];
     }
     renderEntries();
   }
@@ -278,10 +283,18 @@
 
   function renderGroups() {
     const ol = clear($("groups"));
-    $("groups-box").hidden = !S.groups.length;
+    $("groups-box").hidden = !S.groups.length && !S.studies.length;
+    for (const st of S.studies) {
+      ol.append(h("li", null, h("button", {
+        type: "button", "aria-current": !S.e && st.name === S.s ? "true" : "false",
+        onclick: () => openStudy(st.name),
+      }, h("span", { class: "e-title", text: st.name }),
+      h("span", { class: "e-sub" }, h("span", { class: "kind", text: "study" }),
+        h("span", { text: st.progress })))));
+    }
     for (const g of S.groups) {
       ol.append(h("li", null, h("button", {
-        type: "button", "aria-current": !S.e && g.name === S.g ? "true" : "false",
+        type: "button", "aria-current": !S.e && !S.s && g.name === S.g ? "true" : "false",
         onclick: () => openGroup(g.name),
       }, h("span", { class: "e-title", text: g.name }),
       h("span", { class: "e-sub" }, h("span", { class: "kind", text: g.kind }),
@@ -316,7 +329,7 @@
 
   async function openEntry(id, keep) {
     S.e = id;
-    S.g = null;
+    S.g = S.s = null;
     if (!keep) {
       S.t = null; S.where = []; S.sort = ""; S.col = null; S.p = {};
       if (!RUN_TABS.includes(S.tab)) S.tab = "table";
@@ -490,6 +503,7 @@
   }
 
   async function refresh() {
+    if (S.s) { await renderView(); return; }
     renderHead();
     renderTabs();
     await renderView();
@@ -502,6 +516,7 @@
     view.style.opacity = "0.55";
     showError(null);
     try {
+      if (S.s) { await viewStudy(view); return; }
       if (!S.e) {
         renderFilterbar(); renderCli("");
         clear(view).append(h("p", { class: "empty", text: "Pick an entry on the left." }));
@@ -1449,7 +1464,7 @@
   function openGroup(name) {
     const g = groupByName(name);
     if (!g) return;
-    S.e = null; S.g = name; S.t = null; S.where = []; S.sort = ""; S.p = {};
+    S.e = S.s = null; S.g = name; S.t = null; S.where = []; S.sort = ""; S.p = {};
     closePanel(true);
     renderEntries();
     writeHash();
@@ -1472,6 +1487,162 @@
     clear($("view")).append(h("div", { class: "card" },
       h("h3", { text: g.rows.length + " " + (g.kind === "design" ? "points" : "parts") }),
       plainTable(g.columns, rows, { numeric: g.columns.map((c, j) => ["hosts", "runs", "point", "block"].includes(c) ? j : -1) })));
+  }
+
+  // -------------------------------------------------------------------------
+  // A study: every run of every design of it, as `qd compare --study` lines
+  // them up, and a response against a factor across the designs.  The rows,
+  // their order, the filter and every figure on the chart come from the
+  // server; the page places them.
+  // -------------------------------------------------------------------------
+
+  async function openStudy(name, keep) {
+    S.s = name; S.e = S.g = S.t = null; S.tab = "table";
+    if (!keep) { S.where = []; S.sort = ""; S.p = {}; }
+    closePanel(true);
+    renderEntries();
+    clear($("tabs"));
+    await renderView();
+  }
+
+  function studyCli(d) {
+    return ["qd compare --study", shq(S.s), S.p.c ? "-c " + shq(S.p.c) : "",
+      S.sort ? "--sort " + shq(S.sort) : "", whereArgs()].filter(Boolean).join(" ");
+  }
+
+  async function viewStudy(view) {
+    const d = await api("/api/study", { study: S.s, c: S.p.c || null, where: S.where,
+      sort: S.sort || null, factor: S.p.factor || null, response: S.p.response || null });
+    const head = clear($("head"));
+    head.append(h("h1", { text: d.study }));
+    head.append(h("div", { class: "meta" }, h("span", { class: "kind", text: "study" }),
+      h("span", { text: d.designs.length + " designs" }),
+      h("span", { text: "each response the " + d.agg + " of a host's rows; blank: not measured" })));
+    renderFilterbar(d.matched === d.total ? d.total + " rows" : d.matched + " of " + d.total + " rows");
+    renderCli(studyCli(d));
+    clear(view);
+    const held = {};
+    const lines = d.designs.map((g) => {
+      held[g.name] = new Set(g.held.map((kv) => kv[0]));
+      const holds = g.held.filter((kv) => d.factors.includes(kv[0])).map((kv) => kv[0] + "=" + kv[1]).join(" ");
+      return [h("button", { type: "button", class: "link mono", text: g.name, onclick: () => openGroup(g.name) }),
+        g.operation.replace(/_/g, " "), g.measured + "/" + g.points,
+        g.follows ? g.follows + (g.for ? " (" + g.for + ")" : "") : "",
+        g.varied.join(" "), holds];
+    });
+    const card = h("div", { class: "card" }, h("h3", { text: "Designs" }),
+      plainTable(["design", "type", "measured", "follows", "varies", "holds"], lines, {}));
+    if (d.constant.length) {
+      card.append(h("p", { class: "count", text: "Held by every design: " + d.constant.map((kv) => kv[0] + "=" + kv[1]).join(" ") }));
+    }
+    for (const n of d.notes) card.append(h("p", { class: "count", text: n }));
+    view.append(card);
+    const cIn = h("input", { type: "text", value: S.p.c || "", placeholder: "the configs' responses",
+      "aria-label": "Responses" });
+    const ch = d.chart;
+    view.append(h("div", { class: "controls" },
+      h("label", { title: "columns, or the configs' response names, comma-separated" }, "Responses", cIn,
+        h("button", { type: "button", text: "Apply", onclick: () => {
+          S.p.c = cIn.value.trim(); S.p.response = ""; S.sort = ""; renderView(); } })),
+      ch ? select("Factor", ch.factor, d.factors.map((f) => [f, f]), (v) => { S.p.factor = v; renderView(); }) : null,
+      ch ? select("Response", ch.response, d.responses.map((r) => [r[0], r[0]]), (v) => { S.p.response = v; renderView(); }) : null));
+    if (!d.responses.length) {
+      view.append(h("p", { class: "count", text: "The designs' configs name no response's column: " +
+        "give one or more under Responses to compare and chart them." }));
+    }
+    if (ch) {
+      const cc = h("div", { class: "card" });
+      view.append(cc);
+      cc.append(h("h3", { text: ch.response + " against " + ch.factor + ", every design" }));
+      cc.append(studyChart(ch, Math.max(320, view.clientWidth - 34)));
+      cc.append(h("div", { class: "legend" }, ch.series.map((sr, i) =>
+        h("span", null, h("span", { class: "key", style: { background: seriesColor(i) } }), sr.group))));
+      cc.append(h("p", { class: "count", text: "A dot is a run on a host; the line joins each design's median at each level." +
+        (ch.unmeasured ? " " + ch.unmeasured + " not measured, not drawn." : "") }));
+    }
+    const thead = h("tr", null, d.columns.map((c) => {
+      const st = sortState(c);
+      return h("th", { class: d.kinds[c] === "num" ? "num" : null,
+        "aria-sort": st === "asc" ? "ascending" : st === "desc" ? "descending" : null },
+      h("div", { class: "th" }, h("span", { style: { padding: "6px 10px" }, text: c }),
+        h("button", { type: "button", class: "sorter", "aria-label": "Sort by " + c,
+          onclick: () => { S.sort = st === "" ? c : st === "asc" ? "-" + c : ""; renderView(); },
+          text: st === "asc" ? "▲" : st === "desc" ? "▼" : "⇅" })));
+    }));
+    const di = d.columns.indexOf("design"), ri = d.columns.indexOf("run");
+    const tbody = h("tbody");
+    for (const r of d.rows) {
+      const tr = h("tr", { tabindex: "0", title: "open the run " + r[ri],
+        onclick: () => openEntry(r[ri]),
+        onkeydown: (ev) => { if (ev.key === "Enter") openEntry(r[ri]); } });
+      r.forEach((v, j) => {
+        const td = cellNode(v, d.kinds[d.columns[j]]);
+        // a factor this design held, not varied: its level, marked
+        if (v !== "" && d.factors.includes(d.columns[j]) && held[r[di]] && held[r[di]].has(d.columns[j])) {
+          td.classList.add("held");
+          td.title = "held by " + r[di];
+        }
+        tr.append(td);
+      });
+      tbody.append(tr);
+    }
+    view.append(h("div", { class: "grid-wrap" },
+      h("table", { class: "grid" }, h("thead", null, thead), tbody)));
+  }
+
+  // The engine's points and medians, placed: a dot per run and host, a
+  // line through each design's median at each level
+  function studyChart(ch, width) {
+    const W = Math.max(320, width), H = 300, L = 64, R = 16, T = 12, B = 30;
+    const pts = ch.series.flatMap((sr) => sr.points.filter((p) => p[2] !== null));
+    if (!pts.length) return h("p", { class: "empty", text: "Nothing measured to draw." });
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[2]);
+    let x0 = Math.min(...xs), x1 = Math.max(...xs);
+    let y0 = Math.min(...ys), y1 = Math.max(...ys);
+    const pad = (x1 - x0) * 0.04 || 1;
+    x0 -= pad; x1 += pad;
+    const yt = niceTicks(y0, y1, 5);
+    y0 = Math.min(y0, yt[0]); y1 = Math.max(y1, yt[yt.length - 1]);
+    if (y0 === y1) { y0 -= 1; y1 += 1; }
+    const X = (v) => L + (W - L - R) * (v - x0) / (x1 - x0);
+    const Y = (v) => T + (H - T - B) * (1 - (v - y0) / (y1 - y0));
+    const svg = h("svg", { class: "chart", viewBox: "0 0 " + W + " " + H, role: "img",
+      "aria-label": ch.response + " against " + ch.factor, style: { height: H + "px" } });
+    for (const t of yt) {
+      if (t < y0 || t > y1) continue;
+      svg.append(h("line", { class: "gridline", x1: L, x2: W - R, y1: Y(t), y2: Y(t) }));
+      svg.append(h("text", { x: L - 6, y: Y(t) + 4, "text-anchor": "end", text: compact(t) }));
+    }
+    svg.append(h("line", { class: "axis", x1: L, x2: W - R, y1: H - B, y2: H - B }));
+    // the levels the designs ran at, labelled as written
+    const at = new Map();
+    for (const p of pts) if (!at.has(p[0])) at.set(p[0], p[1]);
+    let last = -Infinity;
+    for (const x of Array.from(at.keys()).sort((a, b) => a - b)) {
+      if (X(x) - last < 28) continue;
+      last = X(x);
+      svg.append(h("text", { x: X(x), y: H - 10, "text-anchor": "middle", text: at.get(x) }));
+    }
+    ch.series.forEach((sr, i) => {
+      let dpath = "", gap = true;
+      for (const m of sr.levels) {
+        if (m[2] === null) { gap = true; continue; }
+        dpath += (gap ? "M" : "L") + X(m[0]).toFixed(1) + "," + Y(m[2]).toFixed(1);
+        gap = false;
+      }
+      svg.append(h("path", { class: "series", d: dpath, stroke: seriesColor(i) }));
+      for (const p of sr.points) {
+        if (p[2] === null) continue;
+        const dot = h("circle", { class: "dot", cx: X(p[0]), cy: Y(p[2]), r: 4, fill: seriesColor(i) });
+        dot.addEventListener("pointermove", (ev) => showTip(ev, sr.group + ", point " + p[4] + " on " + p[5], [
+          { value: fmtNum(p[2]), name: ch.response, color: seriesColor(i) },
+          { value: p[1], name: ch.factor }, { value: p[3], name: "run" }]));
+        dot.addEventListener("pointerleave", hideTip);
+        dot.addEventListener("click", () => openEntry(p[3]));
+        svg.append(dot);
+      }
+    });
+    return svg;
   }
 
   // -------------------------------------------------------------------------
@@ -1580,6 +1751,7 @@
         await loadEntries();
         if (S.e) await openEntry(S.e, true);
         else if (S.g) openGroup(S.g);
+        else if (S.s) await renderView();
       } catch (err) { showError(err); }
     });
     window.addEventListener("keydown", (ev) => {
@@ -1613,6 +1785,7 @@
     }
     if (S.e) await openEntry(S.e, true);
     else if (S.g && groupByName(S.g)) openGroup(S.g);
+    else if (S.s) await openStudy(S.s, true);
     else if (S.entries.length) await openEntry(S.entries[0].id);
     else renderView();
   }
