@@ -151,7 +151,7 @@ t_links_check_fails_where_one_does_not_land() {
     assert_contains "$OUT" "docs/nowhere.md: no such file"
     # the walkthrough no longer pointing at it
     copy_tree
-    edit tree/docs/getting-started.md 's/\[Concepts\](concepts.md)/Concepts/'
+    edit tree/docs/getting-started.md 's/\[Concepts\](concepts.md[^)]*)/Concepts/g'
     unit tree links
     assert_status "$RC" 1
     assert_eq "$OUT" "docs/getting-started.md: no link to docs/concepts.md"

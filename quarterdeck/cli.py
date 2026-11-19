@@ -36,7 +36,7 @@ Help
 
 The core loop:
   qd run -s hosts.txt -- uname -r      every host, every answer, kept
-  qd freq latest A                     who said which
+  qd freq latest A                     who said which (A: an unnamed column)
   qd outliers latest COL               who is far from the rest
   qd compare NAME -c COL --last 5      the last five runs, host by host
   qd web                               all of it, in a browser
@@ -5948,7 +5948,8 @@ HINTS = [
     ("Run", "Is my host list even real?",
      "qd run --servers hosts.txt -- true            (then: reachable hosts.txt -i)"),
     ("Run", "What does every host say about X?",
-     "qd ask --servers hosts.txt -- uname -r   (qd run, then qd freq latest A)"),
+     "qd ask --servers hosts.txt -- uname -r   (qd run, then qd freq latest A;"
+     " A: the answer's unnamed column)"),
     ("Run", "A command I run often, by name (fio, say)",
      "qd probe add NAME -- COMMAND; qd probe NAME -s hosts.txt"),
     ("Run", "Settings as columns",
@@ -6372,7 +6373,8 @@ def build_parser():
     sp.set_defaults(fn=cmd_run)
 
     sp = verb("ask", "run a command on every host and show who agrees and "
-              "who differs: qd run, then qd freq latest A")
+              "who differs: qd run, then qd freq latest A (A: the answer's "
+              "unnamed column)")
     add_hosts(sp)
     g = add_ssh(sp)
     g.add_argument("--push", action="append", metavar="FILE",

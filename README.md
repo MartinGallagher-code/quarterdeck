@@ -118,7 +118,9 @@ qd web                                   # all of it, in a browser
 
 `A` is the column `uname -r` fills: provost names a field it found no
 name for `A`, `B`, ... as a spreadsheet does (see
-[Concepts](docs/concepts.md#the-objects)).
+[Concepts](docs/concepts.md#the-objects)); `qd show latest` shows them.
+The run's first line ends with what was filed: `[provost: uname: A]` is
+the dataset, `uname`, and its columns, here `A` alone.
 
 ```text
 qd run -- uname -r: 48 hosts, 46 ok, 2 unreachable   [provost: uname: A]
@@ -148,7 +150,7 @@ this machine alone, without ssh (see *No hosts named: this machine*).
 ```bash
 qd demo                    # file the store demo: a made-up fleet's week
 qd store use demo          # read it from here on (or --store demo on each command)
-qd freq demo-kernel A      # ... and on through docs/getting-started.md
+qd freq demo-kernel A      # A: uname -r's answer; on in docs/getting-started.md
 ```
 
 `qd demo` files a store named `demo`: 24 made-up hosts (`demo-r1n01` to
@@ -717,7 +719,7 @@ before.
 
 ```bash
 qd run --every 10 --count 30 -- 'cut -d" " -f1 /proc/loadavg'
-qd trend latest A                        # a sparkline per host
+qd trend latest A                        # a sparkline per host (A: 1-min load)
 ```
 
 `--every S --count N` runs N passes, one starting every S seconds, into a
@@ -1013,10 +1015,12 @@ Exit status is 0 when every host answered, 1 when one didn't (or
 ## Who agrees, who differs: `qd ask`
 
 "What does every host say about X?" in one step: `qd ask` is `qd run`
-followed by `qd freq latest A`. It runs the command, files the run
-exactly as `qd run` would, and prints the consensus instead of the whole
-table: each answer, how many hosts gave it and who they are, the most
-common first; then the hosts that did not answer, and why.
+followed by `qd freq latest A`, `A` being the answer's column (provost
+names a column nothing names `A`, `B`, ...; see
+[Concepts](docs/concepts.md#the-objects)). It runs the command, files
+the run exactly as `qd run` would, and prints the consensus instead of
+the whole table: each answer, how many hosts gave it and who they are,
+the most common first; then the hosts that did not answer, and why.
 
 ```bash
 qd ask -s hosts.txt -- uname -r            # who runs which kernel
@@ -2545,7 +2549,7 @@ qd show latest --sort -mbps --limit 10 --cols host,mbps
 qd stats latest                               # every column described
 qd stats latest mbps                          # one column in depth, with a histogram
 qd stats latest mbps loss_pct --by rack       # per group (--agg mean,p95,...)
-qd freq latest A                              # who said what
+qd freq latest A                              # who said what (A: an unnamed column)
 qd hist latest rtt_p99 --bins 20
 qd outliers latest mbps                       # far from the median, by MAD
 qd outliers latest mbps --peers sku           # far from its own peer group's

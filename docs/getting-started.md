@@ -59,7 +59,7 @@ qd demo -- filed the store demo: a made-up fleet's week, 7 runs of 24 hosts
   WHAT TO DO NEXT
     * qd store use demo      read the demo from here on (qd store ls: the others)
     * qd log                 the runs it holds, oldest first
-    * qd freq demo-kernel A  who runs which kernel
+    * qd freq demo-kernel A  who runs which kernel (A: uname -r's answer)
     * the walkthrough, ten minutes, a question a step: docs/getting-started.md,
       https://github.com/MartinGallagher-code/quarterdeck/blob/main/docs/getting-started.md
 ```
@@ -148,7 +148,9 @@ qd freq -- A in 20261113-083000-demo_kernel:data (24 rows): 3 distinct values
 ```
 
 `uname -r` prints one word, and provost files a one-word answer as a
-single column, `A`. 22 hosts agree. demo-r2n05 runs an older kernel, and
+single column. Nothing names it, so provost names it as a spreadsheet
+would, `A` (then `B`, `C`, ... for more; see
+[Concepts](concepts.md#the-objects)). 22 hosts agree. demo-r2n05 runs an older kernel, and
 demo-r1n09 is blank: it did not answer. Blank is never zero in qd; it
 means nothing was measured.
 
@@ -314,7 +316,7 @@ qd store use fleet
 
 # 4. the same loop, on the fleet
 qd run -- uname -r        # every host in hosts.txt, one run, kept
-qd freq latest A          # who runs which kernel
+qd freq latest A          # who runs which kernel (A: uname -r's answer)
 qd probe facts            # why-slow's readings, a column each (binnacle here, python3 there)
 qd compare facts -c mem.available_pct --last 5    # after a few days of probes
 ```
