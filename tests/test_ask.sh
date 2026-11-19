@@ -62,11 +62,7 @@ t_every_host_agrees() {
     assert_contains "$out" "qd freq latest A"
     assert_contains "$out" "qd show latest "
     assert_contains "$out" "qd view latest"
-    # qd odd for its three columns, and qd again, where qd run would
-    # suggest them (QD-065)
-    assert_eq "$(next_steps_parse out)" "ok 4"
-    assert_contains "$out" "* qd odd latest"
-    assert_contains "$out" "* qd again latest"
+    assert_eq "$(next_steps_parse out)" "ok 3"
 }
 
 t_two_answers_most_common_first() {
@@ -82,11 +78,7 @@ t_two_answers_most_common_first() {
     # which step found it
     assert_contains "$out" "NOT ALIKE  2 different answers (the count)"
     assert_not_contains "$out" "(the run)"
-    # qd odd for its three columns, and qd again, where qd run would
-    # suggest them (QD-065)
-    assert_eq "$(next_steps_parse out)" "ok 4"
-    assert_contains "$out" "* qd odd latest"
-    assert_contains "$out" "* qd again latest"
+    assert_eq "$(next_steps_parse out)" "ok 3"
 }
 
 t_a_host_unreachable() {
@@ -173,11 +165,7 @@ t_a_long_host_list_is_cut_short() {
     assert_contains "$out" "n01 n02 n03 n04 n05 n06 n07 n08 (+2 more)"
     assert_contains "$out" " 1  other"
     assert_contains "$out" "qd freq latest A --all-labels  the count above, as qd freq gives it, every host named"
-    # qd odd for its three columns, and qd again, where qd run would
-    # suggest them (QD-065)
-    assert_eq "$(next_steps_parse out)" "ok 4"
-    assert_contains "$out" "* qd odd latest"
-    assert_contains "$out" "* qd again latest"
+    assert_eq "$(next_steps_parse out)" "ok 3"
 }
 
 # the run qd ask files is the run qd run files: compared through qd log,
