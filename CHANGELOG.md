@@ -5,6 +5,52 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.37.0 — 2026-11-19
+
+`qd coverage`: which hosts each named test has run on, how it went, and
+a host list of the ones that still owe it (QD-053).
+
+### Added
+- **`qd coverage [NAME...] [HOSTS]`** (`quarterdeck/coverage.py`, new,
+  and `cmd_coverage` in `quarterdeck/cli.py`). A row per host of the list
+  (`-s`, `-S`, `--layout`, `QD_SERVERS`, a `hosts.txt`; none is an error,
+  not this machine), a column per name (a run's `--name`, a probe's, a
+  campaign's), each cell the host's latest status in a run of that name
+  and the run it came from: `ok`, `failed`/`timeout`/`push-failed`
+  (counted as failed), `unreachable`, or `never`. Latest is by when the
+  run started, then the order filed, never by id; a host's last pass and
+  try count; a `not-run` row is not an answer. The head counts each name's
+  ok, failed, unreachable and never. Read from `qd.runs` and `qd.hosts`
+  alone.
+- **A host the runs saw that the list does not hold** is listed under the
+  grid, and not counted.
+- **With no NAME**, the eight names run most recently, newest first, and
+  how many more there are; `--all` for every one.
+- **`--since DATE|RUN`**: a run that started before a date
+  (`YYYY-MM-DD`, UTC) or a run (`latest~3`, an id, a name) is not read,
+  so an old ok is never.
+- **`--owed DIR`** writes `DIR/NAME.txt` per name: the hosts that owe it
+  (never, or not ok), with the list's attributes, a host list `qd run -s`
+  reads back. A name nothing is owed for gets a file with no hosts in it.
+- **`--format csv|tsv|json|ndjson|md`**: `host, name, status, counted,
+  owed, run, when, listed`, a row per host and name.
+- **Exit status** 1 when a listed host owes a name shown, 0 when none
+  does, 2 for usage. A name the store has no run of is every host never,
+  said on stderr; a name with no runs on the fleet (`qd do`, `qd
+  import`), and an empty store with no NAME, are exit 2.
+- The `qd --help` card has its line, `qd hints` a hint, and README a
+  section, "Which hosts have had it: `qd coverage`"; the exit-status
+  table and card name it.
+
+### Tests
+- **`tests/test_coverage.sh`** (new, in `TIMES`): three named runs over
+  overlapping hosts, some failed and one unreachable, with a host off the
+  list: the grid, the counts, the CSV and JSON and the exit status; a list
+  owing nothing is exit 0; no NAME is every name, newest first; the owed
+  list written, run with `qd run -s` on the stand-in ssh, and nothing
+  owed after; `--since` a run and a date; a name the store lacks, an empty
+  store, no host list, a name not on the fleet.
+
 ## 0.36.1 — 2026-11-19
 
 A Concepts page: the words and run references every qd command assumes,

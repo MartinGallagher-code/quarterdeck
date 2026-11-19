@@ -1066,6 +1066,68 @@ reads. `--format csv` gives `group,host,...` instead.
 
 ---
 
+## Which hosts have had it: `qd coverage`
+
+```bash
+qd coverage facts iperf burnin -s hosts.txt               # a host a row, a test a column
+qd coverage facts iperf burnin -s hosts.txt --owed owed/  # and owed/NAME.txt: the hosts that owe it
+qd run -s owed/burnin.txt --name burnin -- ./burnin.sh    # close the gap
+qd coverage -s hosts.txt --since 2026-11-01               # covered this month?
+```
+
+A campaign keeps its own progress (`qd campaign status`). Ordinary runs
+have none, so `qd coverage` answers "has every host had its facts, iperf
+and burn-in, and which haven't?" across them. A test is a run's name
+(`--name`, a probe's name, a campaign's). The hosts are the list `qd run`
+would read (`-s`, `-S`, `--layout`, `QD_SERVERS` or a `hosts.txt`; naming
+none is an error, not this machine). For each host and each name it shows
+the host's latest answer in any run of that name, and the run it came
+from:
+
+| Shown | Counted as | Owed |
+|---|---|---|
+| `ok` | ok | no |
+| `failed`, `timeout`, `push-failed` | failed | yes |
+| `unreachable` | unreachable | yes |
+| `never`: no run of that name reached the host | never | yes |
+
+The head gives the counts per name: ok, failed, unreachable, never, and
+how many hosts owe it.
+
+- **Latest is by when the run started** (`created` in `qd.runs`, then
+  the order the store filed them), never by id. Within a run, a host's
+  last pass and last try count, as `--rerun` reads them.
+- **A `not-run` row is not an answer.** A run stopped before it reached
+  a host leaves the host as it was: its earlier answer, or never.
+- **A host the runs saw that the list does not hold** is listed apart,
+  under the grid, and is not counted.
+- **With no NAME,** the eight names run most recently are shown, newest
+  first, and the head says how many more there are. `--all` shows every
+  one.
+- **`--since DATE|RUN`** reads no run that started before it, so an old
+  ok is never. A date is `YYYY-MM-DD` (UTC midnight) or
+  `YYYY-MM-DDTHH:MM`, UTC. A run (`latest~3`, an id, a name) counts
+  itself and what came after.
+- **`--owed DIR`** writes `DIR/NAME.txt` for each name shown. It holds
+  the hosts that owe the test (never, or not ok) with the attributes the
+  list gave them, in the list's order: a host list `qd run -s`, `qd
+  probe -s` and the rest of the suite read. A name nothing is owed for
+  gets a file with no hosts, so an older list is never left standing.
+- **A name the store has no run of** is shown with every host never, and
+  qd says so on stderr. A name whose runs are not on the fleet (`qd do`,
+  `qd import`) has no host rows and is refused. An empty store with no
+  NAME has nothing to show (exit 2).
+- `--format csv|tsv|json|ndjson|md` gives the table behind it, a row per
+  host and name: `host, name, status, counted, owed, run, when, listed`.
+  `when` is when the host's answer started, in UTC. The hosts outside the
+  list come last, `listed` no and `owed` blank.
+
+The exit status is 1 when any host in the list owes any name shown (a
+finding), 0 when none does, and 2 for a usage error. It reads only
+`qd.runs` and `qd.hosts`, never the answers.
+
+---
+
 ## A system in parts: `qd campaign`
 
 ```bash
@@ -2572,7 +2634,7 @@ The numbers, and how they were measured, are in
 | | |
 |---|---|
 | 0 | done, and every host answered |
-| 1 | a finding: a host that did not answer, a diff or compare that differs, a change or a slide `qd changes` found, a check that failed or was not measured, nothing to bin, a join that found no telemetry in any window, a report that records any of these |
+| 1 | a finding: a host that did not answer, a diff or compare that differs, a change or a slide `qd changes` found, a check that failed or was not measured, nothing to bin, a join that found no telemetry in any window, a host that still owes a test `qd coverage` names, a report that records any of these |
 | 2 | a usage error, or something could not be read or written |
 | other | `qd do` passes on the tool's own |
 
