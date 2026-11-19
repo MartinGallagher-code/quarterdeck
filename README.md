@@ -62,12 +62,29 @@ pip install provost binnacle             # the store, and the instruments
 pip install ./quarterdeck                # or put qd (and quarterdeck) on PATH
 ```
 
-`qd --help` is the reference card, `qd help VERB` one verb's flags
-(`qd help run`, as `qd run --help` prints them), and this README the
-manual.
+Bare `qd` prints a short start card, the few commands to begin with
+(`qd start` and `qd help basics` print it too); `qd --help` is the
+reference card: every command, one screen, under what it is for, everyday
+ones first.
+
+| Heading | Commands |
+|---|---|
+| Run | `run`, `probe`, `do`, `import`, `hosts` |
+| Read it back | `log`, `show`, `stats`, `freq`, `hist`, `outliers`, `pivot`, `trend`, `view`, `web` |
+| Over time | `diff`, `compare`, `changes` |
+| Judge and report | `check`, `report`, `peers`, `baseline` |
+| Larger jobs | `split`, `campaign`, `doe`, `join` |
+| Stores and output | `store`, `rm`, `export`, `floor` |
+| Help | `hints`, `doctor`, `start`, `demo`, `help` |
+
+`qd hints` maps questions to commands under the same headings, `qd help
+VERB` gives one verb's flags (`qd help run`, as `qd run --help` prints
+them), and this README is the manual.
 
 qd itself is Python 3.6+, standard library only. It needs provost to keep
-anything (`--no-store` runs without it); binnacle gives it its probes'
+anything (`--no-store` runs without it): any version files a run, and
+provost 2.28.0 or later files a small one quickly, in well under half the
+time 2.27.0 took (`docs/scale.md`, "Small runs"); binnacle gives it its probes'
 instruments and campaigns' muster, and `doe` its designs, each found on
 `PATH` or where `QD_<TOOL>` points. Nothing is installed on the fleet, and
 a command qd gives up on (past `--timeout` or `--max-output`) is stopped
