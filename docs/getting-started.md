@@ -3,9 +3,10 @@ SPDX-License-Identifier: GPL-3.0-or-later
 SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 -->
 
-# Getting started: ten minutes, and no fleet
+# Getting started: a first day, and no fleet
 
 <!-- walkthrough: width 120 -->
+<!-- walkthrough: this machine is myhost -->
 <!--
 tests/test_demo.sh runs every ```console block on this page, in order,
 and fails when a command prints anything but what is shown under it, or
@@ -13,20 +14,59 @@ exits with a status the page does not show (`$ echo $?`). After a change
 that alters what a command prints on purpose:
   QD_WALKTHROUGH_UPDATE=1 QD_TEST_ONLY=walkthrough bash tests/test_demo.sh
 writes what the commands print back into this page; read the diff before
-committing it. ```bash blocks are not run: they need a fleet.
+committing it. A block after a `walkthrough: loose` line asks this
+machine, so `[...]` stands for what is the reader's own there (see
+tests/walkthrough.py); --update leaves those blocks to be put right by
+hand. ```bash blocks are not run: they need a fleet.
 -->
 
 qd sends a command to every host of a fleet, keeps every answer as a row
 of a table, and reads the tables back: who agrees, who is far from the
-rest, what changed since last week, what fails the spec. This page
-teaches that loop on a fleet that is not there. `qd demo` files a made-up
-week of 24 hosts into a store of its own, and every command below reads
-it. Nothing contacts a host, and nothing needs ssh or a network.
+rest, what changed since last time. This page is a newcomer's first day
+with it, five questions in order, each with the one command that answers
+it and the plain qd commands that command stands for. None of it needs a
+fleet: `qd demo` makes a practice one, a made-up week of 24 hosts, and
+the commands that must ask a real host ask this machine.
 
-Each step is a question, the command that answers it, and what it prints:
-qd's real output, which the test suite checks against this page on every
-change, as a terminal 120 columns wide shows it. A narrower terminal cuts
-wide tables and names what it cut; `--width 120` puts it back.
+What each command prints below is qd's real output, which the test suite
+checks against this page on every change, as a terminal 120 columns wide
+shows it. A narrower terminal cuts wide tables and names what it cut;
+`--width 120` puts it back.
+
+## The start card
+
+`qd` on its own prints the start card: the few commands a first day
+needs, and where everything else is.
+
+```console
+$ qd
+qd -- run a command on many machines, keep every answer, and read it back.
+
+Getting started
+  qd demo                      a practice fleet to learn on, no machines needed
+  qd setup                     check this machine, make a store, test your hosts
+  qd ask -- uname -r           ask every host; see who agrees and who differs
+  qd survey                    everything about every host, and who stands out
+  qd again                     run the last thing again; show what changed
+  qd odd                       which hosts are unlike the rest, and in what
+
+Looking at what you have
+  qd log                       what is kept
+  qd show latest               the last answers, as a table
+  qd web                       all of it in a browser
+
+Everything else: qd --help    One command: qd help VERB    Ideas: qd hints
+A first day with these, a question a step: docs/getting-started.md
+```
+
+The five under `qd demo` answer a newcomer's first questions, and this
+page takes them in that order:
+
+1. Can I reach my hosts? `qd setup`
+2. Who agrees, and who differs? `qd ask`
+3. What is every host like? `qd survey`
+4. What changed? `qd again`
+5. Who is odd? `qd odd`
 
 ## Before you start
 
@@ -37,7 +77,7 @@ pip install quarterdeck provost     # qd, and provost, which keeps everything qd
 qd is Python 3.6 or later, standard library only; provost needs 3.8. From
 a clone, `./qd` works with nothing installed but provost.
 
-## The demo
+## The practice fleet
 
 ```console
 $ qd demo
@@ -70,35 +110,13 @@ That is the fleet's week: why-slow's readings every morning
 Each was filed through provost exactly as a real run is. That takes a
 minute or so (several, with a provost too old to have `batch`), and once
 is enough: run again, `qd demo` leaves the store as it is and says so
-(`--rebuild` files it afresh).
-
-`qd demo` leaves the store you use alone, whichever it is:
-
-```console
-$ qd store ls
-qd store -- 1 named store
-
-    store  runs  path
-    demo      7  ~/.local/share/quarterdeck/stores/demo
-
-  in use here: ~/.provost  (provost's default: no store is active)
-
-  WHAT TO DO NEXT
-    * qd store new NAME          a store of its own, in ~/.local/share/quarterdeck/stores
-    * qd store use NAME          the store commands use from now on
-    * qd store export NAME FILE  one archive: its history, its answers, a manifest
-```
-
-Make the demo's the one qd reads from here on:
+(`--rebuild` files it afresh). It leaves the store you use alone too;
+make the demo's the one qd reads:
 
 ```console
 $ qd store use demo
 qd store: demo is the active store (~/.local/share/quarterdeck/stores/demo)
 ```
-
-`qd store ls` lists your stores, and `qd store use NAME` goes back to
-another. (Or leave the active store as it is, and add `--store demo` to
-every command below.)
 
 ```console
 $ qd log
@@ -131,12 +149,121 @@ it, or `ds:NAME` for every run of a dataset at once; `demo-kernel:hosts`
 is that run's other table. [Concepts](concepts.md) has these words and
 the rest qd uses, and every way to name a run, an example each.
 
-## 1. Is the fleet consistent?
+## 1. Can I reach my hosts? `qd setup`
 
-### Who runs which kernel?
+The demo's hosts are made up, so the three commands that have to ask a
+host (`qd setup`, `qd ask`, `qd survey`) and `qd again`, which asks it
+again, practise here on this machine: the one host every reader has,
+reached without ssh. What it says is your own (its name, its kernel, the
+time), so where this page shows `myhost` yours shows this machine's
+name, and `[...]` stands for lines or words that are yours alone: the
+test suite checks everything else.
 
 ```console
-$ qd freq demo-kernel A
+$ qd store ls
+qd store -- 1 named store
+
+     store  runs  path
+  *  demo      7  ~/.local/share/quarterdeck/stores/demo
+
+  in use here: demo = ~/.local/share/quarterdeck/stores/demo  (the active store)
+
+  WHAT TO DO NEXT
+    * qd store new NAME          a store of its own, in ~/.local/share/quarterdeck/stores
+    * qd store use NAME          the store commands use from now on
+    * qd store export NAME FILE  one archive: its history, its answers, a manifest
+```
+
+<!-- walkthrough: loose -->
+```console
+$ qd setup --yes --via local
+qd setup -- check this machine, make a store, test the hosts
+(stdin is not a terminal: nothing is asked, and nothing that needs an answer is changed)
+
+1. What this machine can drive (qd doctor)
+[...]
+  store     ~/.local/share/quarterdeck/stores/demo (7 runs, 5 datasets)
+[...]
+  launcher  local: this machine only, without ssh (sh -c here, cp for pushed files)
+  hosts     none named here, so a command runs on this machine, myhost, without ssh (--via local)
+
+2. A store to keep the answers in (qd store)
+  the active store is the demo's, ~/.local/share/quarterdeck/stores/demo: a fleet's own runs and the demo's are better kept apart
+  done: made the store main (~/.local/share/quarterdeck/stores/main), and made it the active store in place of the demo
+        (qd store new main; qd store use main)
+
+3. The host list (qd hosts)
+  none here: no -s, -S or --layout, no QD_SERVERS, and no hosts.txt or
+  servers.txt in [...]
+  nothing written: stdin is not a terminal, so nothing was asked
+
+4. Who answers (qd run -- true, nothing kept)
+  nothing to test: no host list
+
+  SUMMARY
+    machine   ready
+    store     main, active (made now)
+    hosts     none: nothing to test
+    answered  not tested: no host list
+    status 0: this machine is ready, and every host answered
+
+  WHAT TO DO NEXT
+    * qd hosts -S node01,node02 > hosts.txt  a host list here, a host a line; then qd setup again
+    * qd ask -- uname -r                     ask every host; see who agrees and who differs
+    * qd survey                              everything about every host, and who stands out
+    * qd demo                                a made-up fleet's week to learn on (docs/getting-started.md)
+```
+
+Setup takes four steps and says what it did at each. Step 1 is `qd
+doctor`'s table of what this machine can drive (ssh, provost, binnacle
+and the rest), yours to read. Step 2 found the demo's store in use and
+made `main`, a store of this fleet's own, so its runs and the demo's
+never mix. With no host list (step 3) there is nothing to test (step 4):
+every command below then runs on this machine alone.
+
+At a terminal setup asks before it changes anything, and offers to write
+a `hosts.txt` from the names you type; this page's run is not at one, so
+it asks nothing, and `--yes` answers the one question it would ask, the
+store. `--via local` says this machine is reached without ssh, as every
+command is when no host is named. On your own fleet it is `qd setup` in
+the directory that holds the `hosts.txt` (see [Your own fleet](#your-own-fleet)),
+and a second run finds every step done and changes nothing.
+
+It stands for: `qd doctor`, `qd store new main`, `qd store use main`,
+`qd hosts`, and `qd run -- true` on every host, keeping nothing.
+
+## 2. Who agrees, and who differs? `qd ask`
+
+<!-- walkthrough: loose -->
+```console
+$ qd ask -- uname -r
+qd: no hosts named, so the fleet is this machine, myhost, reached without ssh (--via local); name hosts with -s FILE, -S a,b,c, QD_SERVERS or a hosts.txt here
+qd ask -- uname -r: 1 host, 1 ok   [provost: uname: A]
+  stored   20261119-160338-uname in ~/.local/share/quarterdeck/stores/main  (1 row, capture c0001)
+
+  ANSWERS  one answer from 1 host (column A)
+    1  [...]
+       myhost
+
+  ALIKE  the one host answered
+
+  WHAT TO DO NEXT
+    * qd freq latest A  the count above, as qd freq gives it
+    * qd show latest    every host's answer, as a table
+    * qd view latest    explore it full-screen
+```
+
+`qd ask` runs the command on every host, keeps the run in the store in
+use (`main`), and prints each answer with the hosts that gave it, most
+hosts first. `uname -r` prints one word, and provost files a one-word
+answer as a single column. Nothing names it, so provost names it as a
+spreadsheet would, `A` (then `B`, `C`, ... for more; see
+[Concepts](concepts.md#the-objects)). One host always agrees with itself. The
+demo's Friday run, `demo-kernel`, asked its 24 hosts the same, and what
+`qd ask` prints after its run is `qd freq` of it:
+
+```console
+$ qd freq demo-kernel A --store demo
 qd freq -- A in 20261113-083000-demo_kernel:data (24 rows): 3 distinct values
   22 agree on the most common; 2 do not
 
@@ -147,15 +274,13 @@ qd freq -- A in 20261113-083000-demo_kernel:data (24 rows): 3 distinct values
                                          demo-r2n05
 ```
 
-`uname -r` prints one word, and provost files a one-word answer as a
-single column, `A`. 22 hosts agree. demo-r2n05 runs an older kernel, and
-demo-r1n09 is blank: it did not answer. Blank is never zero in qd; it
-means nothing was measured.
-
-### Who did not answer, and why?
+22 hosts agree. demo-r2n05 runs an older kernel, and demo-r1n09 is blank:
+it did not answer. Blank is never zero in qd; it means nothing was
+measured. Why it did not answer is in the run's rows (`--store demo`
+reads the demo while `main` is the store in use):
 
 ```console
-$ qd show demo-kernel --where status!=ok --cols host,status,error --full
+$ qd show demo-kernel --where status!=ok --cols host,status,error --full --store demo
 host        status       error
 demo-r1n09  unreachable  ssh: connect to host demo-r1n09 port 22: Connection timed out
 ```
@@ -163,10 +288,50 @@ demo-r1n09  unreachable  ssh: connect to host demo-r1n09 port 22: Connection tim
 `--where` keeps the rows that match (`mbps<9000`, `host~^demo-r2`,
 `status!=ok`), `--cols` the columns, and `--full` cuts no cell short.
 
-### Who is far from the rest?
+It stands for: `qd run -- uname -r`, then `qd freq latest A`.
+
+## 3. What is every host like? `qd survey`
+
+<!-- walkthrough: loose -->
+```console
+$ qd survey
+qd: no hosts named, so the fleet is this machine, myhost, reached without ssh (--via local); name hosts with -s FILE, -S a,b,c, QD_SERVERS or a hosts.txt here
+qd survey -- 1 host asked [...]: every host answered every probe
+  stored   [...] in ~/.local/share/quarterdeck/stores/main
+[...]
+  WHAT MOST HOSTS SAY
+[...]
+    kernel           [...]1 of 1
+[...]
+  ONE HOST  nothing to compare it against: who differs and who is far from
+            the median need two or more.  `qd demo` makes a practice fleet.
+
+  FOUND  nothing: every host answered, and none stands out
+
+  WHAT TO DO NEXT
+[...]
+```
+
+`qd survey` asks every host the standard questions, qd's probes: the OS
+and kernel, firmware, disks, mounts, NUMA, GPUs and packages, and
+binnacle's why-slow readings (`facts`) where binnacle is installed. It
+files a run for each, then gives one screen: what most hosts say, who
+differs from the rest, and who is far from the median. On one host the
+last two have nothing to compare it with. On the demo's 24, why-slow's
+readings are `demo-facts`, and the screen's parts are these:
 
 ```console
-$ qd outliers demo-iperf mbps
+$ qd freq demo-facts sys.kernel --store demo
+qd freq -- sys.kernel in 20261113-080000-demo_facts:data (24 rows): 2 distinct values
+  23 agree on the most common; 1 do not
+
+      23   95.8%  ████████████████████   6.8.0-48-generic
+       1    4.2%  ▉                      6.8.0-31-generic
+                                         demo-r2n05
+```
+
+```console
+$ qd outliers demo-iperf mbps --store demo
 qd outliers -- mbps in 20261113-090000-demo_iperf:data (24 rows): 24 hosts, median 9402, MAD 13.5, robust z beyond 3.5
 
   host        value  of_median  robust_z  side
@@ -181,7 +346,7 @@ Before blaming a host, check it is compared with its own kind: the
 compute and storage hosts are different machines.
 
 ```console
-$ qd stats demo-facts cpu.busy_pct --by sku
+$ qd stats demo-facts cpu.busy_pct --by sku --store demo
 qd stats -- 20261113-080000-demo_facts:data by sku (24 rows): 2 groups
 
 sku      n   cpu.busy_pct_mean  cpu.busy_pct_median  cpu.busy_pct_min  cpu.busy_pct_max
@@ -189,9 +354,63 @@ compute  16              44.55                 45.5              37.8           
 storage   8               11.5                 11.3               9.5              14.2
 ```
 
-## 2. Did it get worse?
+It stands for: `qd probe facts inventory`, then `qd freq` of the values
+most hosts share (`qd freq os kernel`), `qd outliers os os,kernel
+--categorical` for who differs, and `qd outliers facts COLUMN` for who is
+far from the median. Its WHAT TO DO NEXT names the ones it ran.
 
-### Five mornings side by side
+## 4. What changed? `qd again`
+
+<!-- walkthrough: loose -->
+```console
+$ qd again uname
+qd again -- 20261119-160338-uname: uname -r
+  hosts    1 host, the ones 20261119-160338-uname ran on
+  as       via local, no sudo, timeout 60s
+  name     uname
+  runs     qd run -S myhost=127.0.0.1 --via local --timeout 60 -- 'uname -r'
+
+qd run -- uname -r: 1 host, 1 ok   [provost: uname: A]
+  stored   20261119-160402-uname in ~/.local/share/quarterdeck/stores/main  (1 row, capture c[...])
+
+qd diff -- A 20261119-160338-uname:data (1 row) -> B 20261119-160402-uname:data (1 row), matched on host
+  compared  addr, status, rc, error, A
+  ignored   duration_s, capture (they differ on every run by construction; --cols compares them)
+
+  1 key in both: 0 changed, 1 the same; 0 only in A (gone), 0 only in B (new)
+
+  column  pairs  mean A  mean B  change  median delta  rose  fell  same
+  rc          1       0       0                     0     0     0     1
+
+  no differences
+
+qd again -- 20261119-160338-uname -> 20261119-160402-uname
+  same     every host answered, and nothing changed
+
+  WHAT TO DO NEXT
+    * qd diff 20261119-160338-uname 20261119-160402-uname                what changed, again (--format csv for the table)
+    * qd run -S myhost=127.0.0.1 --via local --timeout 60 -- 'uname -r'  the run on its own, as qd again ran it
+    * qd log 20261119-160402-uname                                       the new run: what ran, where, how it went
+    * qd again 20261119-160402-uname                                     once more, later
+```
+
+`qd again RUN` runs RUN once more as it ran (its command, its hosts, how
+they were reached), then shows what changed. Plain `qd again` repeats the
+latest run, which after `qd survey` is its last probe; `uname` names the
+`qd ask` run, by its name. Its first lines say what it will run, and the
+rest is the two plain commands it stands for: that `qd run`, then `qd
+diff` of the old run and the new. Nothing changed here, so it exits 0; a
+changed answer or a host that stopped answering is exit 1, qd's word for
+a finding.
+
+A week has more to show. Back to the demo for the rest of the page:
+
+```console
+$ qd store use demo
+qd store: demo is the active store (~/.local/share/quarterdeck/stores/demo)
+```
+
+Five mornings of the demo, side by side:
 
 ```console
 $ qd compare demo-facts -c mem.available_pct --last 5
@@ -222,11 +441,8 @@ $ echo $?
 ```
 
 The fleet's median barely moved; one host lost three quarters of its free
-memory in four days. Exit status 1 is qd's word for a finding: a host
-that did not answer, a diff that differs, a check that fails. A script
-can stop on it.
-
-### When did it start?
+memory in four days. Exit status 1 is the finding, and a script can stop
+on it. When did it start?
 
 ```console
 $ qd changes demo-facts -c mem.available_pct
@@ -250,9 +466,63 @@ $ echo $?
 `changes` looks for the point where each host's level stepped, not only
 whether the first and last runs differ: here, between Wednesday's run and
 Thursday's. Its WHAT TO DO NEXT is the next question, what else changed
-between those two.
+between those two: `qd diff`, the command `qd again` ends with.
 
-## 3. Does it meet spec?
+It stands for: the run again (`qd run`, with the command and hosts the
+run kept), then `qd diff OLD NEW`.
+
+## 5. Who is odd? `qd odd`
+
+```console
+$ qd odd
+qd odd -- 20261113-090000-demo_iperf:data (24 rows): 1 host stands out, in 1 of 1 column checked
+
+  Numbers far from the rest: robust z beyond 3.5, against the whole run's median
+  host        column  value  typical  robust_z
+  demo-r2n03  mbps     4882     9402    -225.8
+
+  checked: 1 column of numbers (mbps)
+           0 columns of words
+
+  WHAT TO DO NEXT
+    * qd outliers latest mbps                            every host's mbps against the rest, in full
+    * qd show latest --where host=demo-r2n03 --vertical  everything demo-r2n03 said
+$ echo $?
+1
+```
+
+`qd odd` reads a run (the latest, with none named) and holds every
+column against the rest at once: numbers against the run's median, as
+`qd outliers` does, and words against the rest of each host's rack. The
+latest run here is the demo's iperf, and its slow host is the one that
+stands out. Name a run to read another:
+
+```console
+$ qd odd demo-kernel
+qd odd -- 20261113-083000-demo_kernel:data (24 rows): 1 host stands out, in 1 of 1 column checked
+
+  Values unlike the rest of their rack: rarity is the share of it that says otherwise
+  rack  host        column  value             typical           rarity  agree
+  r2    demo-r2n05  A       6.8.0-31-generic  6.8.0-48-generic     92%  11 of 12
+
+  checked: 0 columns of numbers
+           1 column of words (A), within each rack
+  did not answer in this run, so not measured: demo-r1n09 (unreachable)
+
+  WHAT TO DO NEXT
+    * qd outliers demo-kernel A --categorical                 every host's A against the rest, in full
+    * qd show demo-kernel --where host=demo-r2n05 --vertical  everything demo-r2n05 said
+$ echo $?
+1
+```
+
+The odd kernel, and the host that did not answer, which is not measured
+rather than odd.
+
+It stands for: `qd outliers RUN COLUMN` for every column of numbers, and
+`qd outliers RUN COLUMN --categorical` for every column of words.
+
+## One more: does it meet spec?
 
 A requirement is a line of a small table: which column, which test, which
 limit, over each host or the fleet as a whole (`agg`). The demo comes
@@ -295,39 +565,42 @@ qd web             # the same store in a browser, with charts
 
 ## Your own fleet
 
-`qd setup` does the first three of these four, asking at each step (it
-asks nothing when stdin is not a terminal, and says what to run instead).
-By hand, four things, once:
+The same five, on real hosts. A `hosts.txt` or `servers.txt` in the
+directory is the fleet when no `-s` is given, and `qd setup` asks for
+one at a terminal; by hand:
 
 ```bash
-# 1. a host list: a host a line, attributes after it (they become columns)
+# a host list: a host a line, attributes after it (they become columns)
 printf '%s\n' 'node[01-12] rack=r1' 'node[13-24] rack=r2' > hosts.txt
+qd hosts                  # what it expands to
 
-# 2. key-based ssh to every host: qd never types a password
+# key-based ssh to every host: qd never types a password
 ssh-copy-id node01        # and the rest
-qd doctor                 # what this machine can drive: ssh, provost, binnacle
-qd doctor node01          # what ssh will do for that host, contacting nothing
+qd setup                  # this machine, a store of the fleet's own, who answers
+qd doctor node01          # what ssh will do for a host that did not, contacting nothing
 
-# 3. a store of the fleet's own, so its runs and the demo's never mix
-qd store new fleet
-qd store use fleet
-
-# 4. the same loop, on the fleet
-qd run -- uname -r        # every host in hosts.txt, one run, kept
-qd freq latest A          # who runs which kernel
-qd probe facts            # why-slow's readings, a column each (binnacle here, python3 there)
-qd compare facts -c mem.available_pct --last 5    # after a few days of probes
+# the first day, on the fleet
+qd ask -- uname -r        # who runs which kernel
+qd survey                 # everything about every host, and who stands out
+qd again                  # tomorrow: the last run once more, and what changed
+qd odd                    # who is unlike the rest, in the latest run
 ```
 
-A `hosts.txt` or `servers.txt` in the directory is the fleet when no `-s`
-is given; `qd hosts` prints what it expands to. When the demo has taught
-what it can, `qd store rm demo --delete` removes it.
+When the demo has taught what it can, `qd store rm demo --delete`
+removes it, and `qd store use main` goes back to the store setup made.
 
-## Every command, by what it is for
+## Where to go next
 
-`qd COMMAND --help` gives any one's options, `qd help` all of them, and
-`qd hints` maps questions to commands. The headings are `qd --help`'s;
-the README is the manual.
+- `qd --help`: the full reference card, every command by what it is for.
+- `qd help VERB` (or `qd VERB --help`): one command's options.
+- `qd hints`: questions, and the command that answers each.
+- [Concepts](concepts.md): runs, tables, captures, datasets, stores, and
+  every way to name a run.
+- The [README](../README.md): the manual, command by command.
+
+### Every command, by what it is for
+
+The headings are `qd --help`'s.
 
 | What for | Commands |
 |---|---|

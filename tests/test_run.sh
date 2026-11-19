@@ -107,6 +107,10 @@ t_run_keeps_every_answer_and_says_who_failed() {
     assert_contains "$out" "node09"
     assert_contains "$out" "qd freq latest A"
     assert_contains "$out" "captures c0001..c0003"
+    # the docs' claim (QD-047): provost names a one-word answer's column A,
+    # on whichever provost path this suite runs on
+    assert_contains "$out" ": A]"
+    assert_eq "$(qd show latest --cols host,A --format csv | head -n 1)" "host,A"
     # what came back is provost's: a capture per host, the answer verbatim
     cap="$(qd show latest --where host=node03 --cols capture --format csv | tail -1)"
     assert_contains "$(cat "$QD_STORE/captures/$cap/output.txt")" "6.1.0-13"

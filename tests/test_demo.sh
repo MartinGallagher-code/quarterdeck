@@ -49,18 +49,44 @@ active_store() {
 # -- the walkthrough -----------------------------------------------------------
 
 # Every ```console block of the page, run in order on a fresh machine, the
-# page's own `qd demo` first; then the findings the demo was built for,
-# asked again here so a page rewritten by --update cannot lose them.  The
-# shell's fleet settings are set, wrongly for a demo, to show the demo
-# ignores them: none of them is anything to it.
+# page's own `qd demo` first, and its beginner commands (QD-064) on this
+# machine; then the findings the demo was built for, asked again here so a
+# page rewritten by --update cannot lose them.  (That qd demo ignores the
+# shell's fleet settings is t_again_and_rebuild's: the page's setup, ask,
+# survey and again are fleet commands, and honour them.)
 t_walkthrough() {
     fresh_machine
-    export QD_VIA=pdsh QD_MAX_FAIL=0 QD_RETRIES=2 QD_RATE=1/s QD_READ_ONLY=1 \
-        QD_JOBS=1 QD_SERVERS="$TEST_TMPDIR/nowhere.txt"
     local update=()
     [ -n "${QD_WALKTHROUGH_UPDATE:-}" ] && update=(--update)
     "$PY" "$QD_DIR/tests/walkthrough.py" "$GUIDE" "$PWD" "${update[@]}"
-    unset QD_VIA QD_MAX_FAIL QD_RETRIES QD_RATE QD_READ_ONLY QD_JOBS QD_SERVERS
+
+    # the beginner commands' runs went to setup's store, main, and none
+    # to the demo's; ask and again's are the same command, twice
+    assert_eq "$(qd log --store main | grep -c ' uname -r$')" "2"
+    assert_contains "$(qd log --store main)" "-os "
+
+    # the check can fail: one line of a block the page shows exactly,
+    # changed, is a failure (a mutation of the page, on the demo it read)
+    "$PY" - "$GUIDE" page.md <<'EOF2'
+import sys
+lines = open(sys.argv[1], encoding="utf-8").read().split("\n")
+i = lines.index("$ qd odd demo-kernel")
+j = lines.index("```", i)
+block = lines[i:j]
+k = block.index("  checked: 0 columns of numbers")
+block[k] = "  checked: 9 columns of numbers"
+open(sys.argv[2], "w", encoding="utf-8").write(
+    "\n".join(["<!-- walkthrough: width 120 -->", "```console"] + block
+              + ["```", ""]))
+EOF2
+    set +e
+    out="$("$PY" "$QD_DIR/tests/walkthrough.py" page.md "$PWD")"
+    rc=$?
+    set -e
+    assert_status "$rc" 1
+    assert_contains "$out" "-  checked: 9 columns of numbers"
+    assert_contains "$out" "+  checked: 0 columns of numbers"
+    assert_contains "$out" "walkthrough: 2 commands, 1 not as the page shows"
 
     # every example of docs/concepts.md's "Naming a run", against the demo
     # the page says they read, each exiting 0 as it says (QD-042)
@@ -125,7 +151,10 @@ t_again_and_rebuild() {
     qd_rc demo 2> err
     assert_status "$QD_RC" 2
     assert_contains "$(cat err)" "registered, but holds no demo"
-    out="$(qd demo --rebuild)"
+    # the shell's fleet settings, set wrongly for a demo: none of them is
+    # anything to it
+    out="$(QD_VIA=pdsh QD_MAX_FAIL=0 QD_RETRIES=2 QD_RATE=1/s QD_READ_ONLY=1 \
+        QD_JOBS=1 QD_SERVERS="$TEST_TMPDIR/nowhere.txt" qd demo --rebuild)"
     assert_contains "$out" "qd demo -- filed the store demo: a made-up fleet's week, 7 runs of 24 hosts"
     assert_eq "$(runs_in demo)" "7"
     assert_eq "$(active_store)" "mine"
@@ -259,7 +288,7 @@ t_the_page_the_map_and_the_readme() {
     verbs="$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1])
 from quarterdeck.cli import build_parser
 print("\n".join(build_parser()[1].choices))' "$QD_DIR")"
-    map="$(sed -n '/^## Every command, by what it is for/,$p' "$GUIDE")"
+    map="$(sed -n '/^#* *Every command, by what it is for/,$p' "$GUIDE")"
     [ -n "$map" ] || fail "the page has no map"
     for v in $verbs; do
         assert_contains "$map" "\`qd $v\`"
@@ -294,6 +323,122 @@ EOF
     assert_contains "$(cat "$QD_DIR/MANIFEST.in")" "quarterdeck/demo"
 }
 
+# The checker itself, on a page of its own: a loose block's `[...]`, its
+# machine name, time stamps and widened columns match, and nothing else
+# does; --update rewrites an exact block and leaves a loose one alone.
+t_the_checker_loose_and_exact() {
+    fresh_machine
+    cat > page.md <<'EOF2'
+<!-- walkthrough: this machine is myhost -->
+```console
+$ printf 'one\ntwo\n'
+one
+two
+```
+
+<!-- walkthrough: loose -->
+```console
+$ "$WT_PY" -c "import socket; print('on', socket.gethostname().split('.')[0], 'now')"
+on myhost now
+$ printf 'run 20261119-160338-x  ok\nmine: 1\nmine: 2\nend\n'
+run 20261101-000000-x    ok
+[...]
+end
+$ printf 'kernel 6.1.0 here\n'
+kernel [...] here
+```
+EOF2
+    set +e
+    out="$("$PY" "$QD_DIR/tests/walkthrough.py" page.md "$PWD")"
+    rc=$?
+    set -e
+    assert_status "$rc" 0
+    assert_contains "$out" "walkthrough: 4 commands, 0 not as the page shows"
+    # each rule broken in turn: an exact line, a loose line around [...],
+    # the line after a [...] line, the machine named as something else
+    for edit in 's/^two$/three/' 's/^kernel \[\.\.\.\] here$/kernel [...] there/' \
+        's/^end$/fin/' 's/^on myhost now$/on yourhost now/' 's/-x    ok$/-y    ok/'; do
+        sed "$edit" page.md > bad.md
+        cmp -s page.md bad.md && fail "the edit $edit changed nothing"
+        set +e
+        out="$("$PY" "$QD_DIR/tests/walkthrough.py" bad.md "$PWD")"
+        rc=$?
+        set -e
+        assert_status "$rc" 1
+        assert_contains "$out" "1 not as the page shows"
+    done
+    # --update: the exact block rewritten, the loose one reported, as is
+    sed -e 's/^two$/three/' -e 's/^end$/fin/' page.md > bad.md
+    set +e
+    out="$("$PY" "$QD_DIR/tests/walkthrough.py" bad.md "$PWD" --update)"
+    rc=$?
+    set -e
+    assert_status "$rc" 1
+    assert_contains "$out" "1 outputs rewritten"
+    assert_contains "$out" "a loose block: put it right by hand"
+    assert_contains "$(cat bad.md)" "two"
+    assert_contains "$(cat bad.md)" "fin"
+    assert_contains "$(cat bad.md)" "[...]"
+}
+
+# The page is the start card and the five questions, in order, each with
+# its command run and the plain commands it stands for, and it ends with
+# where to go next; every qd command on it, run or not, parses.
+t_the_page_is_the_five_questions() {
+    "$PY" - "$QD_DIR" "$GUIDE" <<'EOF2'
+import re, shlex, sys
+sys.path.insert(0, sys.argv[1])
+from quarterdeck.cli import build_parser, START
+text = open(sys.argv[2], encoding="utf-8").read()
+lines = text.split("\n")
+heads = [ln for ln in lines if ln.startswith("## ")]
+cmds = [ln[2:] for ln in lines if ln.startswith("$ qd")]
+# the start card first, as bare qd prints it
+assert cmds[0] == "qd", cmds[:3]
+i = lines.index("$ qd")
+assert "\n".join(lines[i + 1:i + 1 + START.count("\n")]) == START.rstrip("\n")
+# the five, in order, each run in its own section, each saying what it
+# stands for
+want = ["setup", "ask", "survey", "again", "odd"]
+five = [h for h in heads if re.match(r"^## [1-5]\. ", h)]
+assert [h.split("`qd ")[-1].rstrip("`") for h in five] == want, five
+for n, (h, verb) in enumerate(zip(five, want)):
+    body = text.split(h + "\n", 1)[1].split("\n## ", 1)[0]
+    assert re.search(r"^\$ qd %s( |$)" % verb, body, re.M), (verb, "not run")
+    assert "It stands for: " in body, (verb, "no plain commands")
+# where to go next, last
+assert heads[-1] == "## Where to go next", heads[-1]
+last = text.split(heads[-1], 1)[1]
+for w in ("`qd --help`", "`qd hints`", "(concepts.md)", "(../README.md)"):
+    assert w in last, w
+# every qd command on the page parses: the ones run, and the ones in
+# ```bash blocks, up to a redirection or a comment
+parser = build_parser()[0]
+fence, n = None, 0
+for ln in lines:
+    if ln.startswith("```"):
+        fence = None if fence else ln[3:].strip()
+        continue
+    if fence == "console" and ln.startswith("$ qd"):
+        cmd = ln[2:]
+    elif fence == "bash" and ln.startswith("qd "):
+        cmd = ln
+    else:
+        continue
+    cmd = re.split(r"\s+(?:#|>|\|)", cmd)[0]
+    words = shlex.split(cmd)[1:]
+    if not words:
+        continue
+    try:
+        parser.parse_args(words)
+    except SystemExit:
+        raise SystemExit("does not parse: %s" % cmd)
+    n += 1
+assert n >= 25, n
+print("ok %d" % n)
+EOF2
+}
+
 # the two that file the demo first: different runners under --shard
 run_test "the walkthrough: every command prints what the page shows" t_walkthrough
 run_test "again: left alone; --rebuild files it afresh; store rm" t_again_and_rebuild
@@ -303,4 +448,6 @@ run_test "the stand-in launcher is out of a run's reach"           t_the_stand_i
 run_test "--limits, --help, hints and doctor name the demo"        t_limits_help_hints_and_doctor
 run_test "the page's map, its width, and the README's links"       t_the_page_the_map_and_the_readme
 run_test "the answers are package data, one for every host"        t_the_answers_are_package_data
+run_test "the checker: loose blocks, exact blocks, --update"        t_the_checker_loose_and_exact
+run_test "the page: the start card, the five questions, what next"  t_the_page_is_the_five_questions
 finish
