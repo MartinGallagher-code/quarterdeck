@@ -248,7 +248,7 @@ t_usage_errors_exit_2() {
 }
 
 t_on_the_card_in_hints_and_help() {
-    assert_contains "$(qd --help)" "qd odd [RUN]"
+    assert_contains "$(qd --help)" "qd stats|freq|hist|outliers|odd RUN"
     assert_contains "$(qd hints)" "qd odd latest"
     out="$(qd help odd)"
     assert_contains "$out" "--top N"
