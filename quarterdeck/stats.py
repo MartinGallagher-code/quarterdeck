@@ -436,7 +436,7 @@ def outliers(table, col, per=None, z=3.5, method="mad", k=1.5):
         if method == "iqr":
             score, hit = _iqr_score(v, q1, q3, k)
         elif mad:
-            score = 0.6745 * (v - med) / mad
+            score = robust_z(v, med, mad)
             hit = abs(score) > z
         else:
             score = float("inf") if v > med else float("-inf") if v < med \
@@ -448,6 +448,62 @@ def outliers(table, col, per=None, z=3.5, method="mad", k=1.5):
         rows.append((key, v, med, rel, score, "high" if v > med else "low"))
     rows.sort(key=lambda r: (-abs(r[4]), str(r[0])))
     return rows, info
+
+
+def robust_z(v, med, mad):
+    """Iglewicz and Hoaglin's modified z-score: 0.6745 (x - median) / MAD.
+    outliers() and qd check's zmax both score by it."""
+    return 0.6745 * (v - med) / mad
+
+
+# ---------------------------------------------------------------------------
+# Spread and shape: unitless figures qd check can hold a limit to (QD-050)
+# ---------------------------------------------------------------------------
+
+# the fewest values each is worked out from: below it, not measured
+SHAPE_MIN = (("cv", 2), ("skew", 3), ("kurtosis", 4), ("zmax", 3))
+
+
+def shape(name, xs):
+    """(figure, why not) of cv, skew, kurtosis or zmax over the numbers
+    xs: the figure and "", or None and the reason it cannot be had.
+
+    cv        the sample stdev (n - 1) over the mean's size, |mean|
+    skew      the adjusted Fisher-Pearson sample skewness, G1 =
+              g1 sqrt(n(n-1)) / (n-2), g1 = m3 / m2^1.5 (Excel's SKEW)
+    kurtosis  the sample excess kurtosis, G2 = ((n+1) g2 + 6) (n-1) /
+              ((n-2)(n-3)), g2 = m4 / m2^2 - 3 (Excel's KURT; 0 for a
+              normal distribution)
+    zmax      the largest |robust z| (robust_z), by the median and MAD
+    """
+    xs = sorted(xs)
+    n = len(xs)
+    need = dict(SHAPE_MIN)[name]
+    if n < need:
+        return None, "%s wants %d values or more, and has %d" % (
+            name, need, n)
+    if name == "zmax":
+        med = quantile(xs, .5)
+        mad = quantile(sorted(abs(x - med) for x in xs), .5)
+        if not mad:
+            return None, "the MAD is 0 (most values are the same), so " \
+                "there is no robust z"
+        return max(abs(robust_z(x, med, mad)) for x in xs), ""
+    m = mean(xs)
+    if name == "cv":
+        if m == 0:
+            return None, "the mean is 0, so cv (stdev / mean) is not " \
+                "defined"
+        return stdev(xs) / abs(m), ""
+    if xs[0] == xs[-1]:
+        return None, "every value is the same, so %s is not defined" % name
+    m2 = sum((x - m) ** 2 for x in xs) / n
+    if name == "skew":
+        m3 = sum((x - m) ** 3 for x in xs) / n
+        return m3 / m2 ** 1.5 * math.sqrt(n * (n - 1.0)) / (n - 2), ""
+    m4 = sum((x - m) ** 4 for x in xs) / n
+    g2 = m4 / (m2 * m2) - 3
+    return ((n + 1) * g2 + 6) * (n - 1.0) / ((n - 2) * (n - 3)), ""
 
 
 def _iqr_score(v, q1, q3, k):

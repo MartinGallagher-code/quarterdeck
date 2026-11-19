@@ -790,6 +790,682 @@ t_baseline_qualified() {
     assert_contains "$(cat v.csv)" "decided on medians (the rank test wants 3 values"
 }
 
+# QD-050: cv, skew, kurtosis and zmax -- spread and shape over the rows
+
+shape_data() {
+    printf 'host,v,rtt,zero,same,two\na,1,1ms,0,5,1\nb,2,2ms,0,5,2\nc,3,3ms,1,5,\nd,4,4000us,-1,5,\ne,100,0.1s,0,6,\n' > d.csv
+}
+
+t_shape_known_values() {
+    shape_data
+    # 1, 2, 3, 4, 100 worked by hand: mean 22, deviations -21 -20 -19 -18
+    # 78, their squares sum to 7610.
+    #   cv: the sample stdev sqrt(7610/4) = 43.618, over 22 = 1.983
+    #   skew (adjusted Fisher-Pearson, Excel's SKEW): m2 = 7610/5 = 1522,
+    #     m3 = 444600/5 = 88920; g1 = 88920 / 1522^1.5 = 1.4975, and
+    #     G1 = g1 sqrt(5*4)/3 = 2.232
+    #   kurtosis (sample excess, Excel's KURT): m4 = 37604834/5, g2 =
+    #     m4/m2^2 - 3 = 0.24671; G2 = (6 g2 + 6) * 4 / (3*2) = 4.987
+    #   zmax: median 3, |x - 3| = 2 1 0 1 97, MAD 1; e's 0.6745*97 = 65.43
+    limits t.tsv 'C|v|<=|0.05|||cv|' 'S|v|<|3|||skew|' 'K|v|>=|5|||kurtosis|' \
+        'Z|v|<=|3.5|||zmax|' 'Z2|v|between|60|70||zmax|' 'C2|v|within|2|+-1%||cv|' \
+        'S2|v|>|2.2|||skew|' 'K2|v|<=|4.99|||kurtosis|'
+    qd_rc check d.csv --against t.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(verdict C)" "fail|1.983|5/5"
+    assert_eq "$(verdict S)" "pass|2.232|5/5"
+    assert_eq "$(verdict K)" "fail|4.987|5/5"
+    assert_eq "$(verdict Z)" "fail|65.43|5/5"
+    assert_eq "$(verdict Z2)" "pass|65.43|5/5"
+    assert_eq "$(verdict C2)" "pass|1.983|5/5"
+    assert_eq "$(verdict S2)" "pass|2.232|5/5"
+    assert_eq "$(verdict K2)" "pass|4.987|5/5"
+    # the note names the worst host; the figures carry no unit
+    assert_eq "$(field Z note)" "worst |z|: e (robust z +65.4; median 3, MAD 1)"
+    assert_eq "$(field C unit)" ""
+    # a column in units is read on one scale, and the unit does not scale
+    # the figure: 1ms..0.1s is 1..100 in ms, so the same four figures
+    limits u.tsv 'C|rtt|<=|0.05|||cv|' 'S|rtt|<|3|||skew|' 'K|rtt|>=|5|||kurtosis|' \
+        'Z|rtt|<=|3.5|||zmax|'
+    qd_rc check d.csv --against u.tsv --format csv -o v.csv
+    assert_eq "$(verdict C)" "fail|1.983|5/5"
+    assert_eq "$(verdict S)" "pass|2.232|5/5"
+    assert_eq "$(verdict K)" "fail|4.987|5/5"
+    assert_eq "$(verdict Z)" "fail|65.43|5/5"
+    assert_eq "$(field Z unit)" ""
+    # --each: a zmax row is its host's own robust z, held to the limit by
+    # its size; a cv row carries the fleet's verdict
+    qd_rc check d.csv --against t.tsv --each --format csv -o e.csv
+    assert_contains "$(cat e.csv)" "Z,a,v,-1.349,<= 3.5,,pass"
+    assert_contains "$(cat e.csv)" "Z,e,v,65.43,<= 3.5,,fail"
+    assert_contains "$(cat e.csv)" "C,a,v,1,<= 0.05,,fail"
+}
+
+t_shape_not_measured() {
+    shape_data
+    limits t.tsv 'C1|v|<=|1||host=a|cv|' 'S2|two|<=|1|||skew|' 'K3|v|<=|1||v<10 and host!=d|kurtosis|' \
+        'Z2|two|<=|3.5|||zmax|' 'C0|zero|<=|1|||cv|' 'Z0|same|<=|3.5|||zmax|' \
+        'S0|same|<=|1||host!=e|skew|' 'K0|same|<=|1||host!=e|kurtosis|' 'ZB|two|<=|3.5||host=a|zmax|'
+    qd_rc check d.csv --against t.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    # blank is never a pass: each says why, and none shows a figure
+    assert_eq "$(verdict C1)" "not measured||1/1"
+    assert_eq "$(field C1 note)" "cv wants 2 values or more, and has 1"
+    assert_eq "$(verdict S2)" "not measured||2/5"
+    assert_contains "$(field S2 note)" "skew wants 3 values or more, and has 2"
+    assert_contains "$(field S2 note)" "not measured: c, d, e"
+    assert_eq "$(field K3 note)" "kurtosis wants 4 values or more, and has 3"
+    assert_contains "$(field Z2 note)" "zmax wants 3 values or more, and has 2"
+    assert_eq "$(verdict C0)" "not measured||5/5"
+    assert_eq "$(field C0 note)" "the mean is 0, so cv (stdev / mean) is not defined"
+    assert_eq "$(verdict Z0)" "not measured||5/5"
+    assert_contains "$(field Z0 note)" "the MAD is 0"
+    assert_eq "$(field S0 note)" "every value is the same, so skew is not defined"
+    assert_eq "$(field K0 note)" "every value is the same, so kurtosis is not defined"
+    # a figure over some rows but not all is shown, and not passed
+    limits b.tsv 'C|two|<=|1|||cv|'
+    qd_rc check d.csv --against b.tsv --format csv -o v.csv
+    assert_eq "$(verdict C)" "not measured|0.4714|2/5"
+    assert_contains "$(field C note)" "cv over 2 of 5 (cv would pass); not measured: c, d, e"
+    qd_rc check d.csv --against t.tsv --format junit -o v.xml
+    assert_contains "$(junit v.xml)" "Z0|zmax of same <= 3.5|error|not measured: the MAD is 0"
+}
+
+t_shape_units_refused() {
+    shape_data
+    for row in 'C|v|<=|5%|||cv|' 'S|v|<=|1ms|||skew|' 'K|v|between|1|2s||kurtosis|' \
+        'Z|v|<=|3.5|||zmax|us' 'Z|v|<=|baseline+2ms|||zmax|' 'S|v|within|1|+-2us||skew|' \
+        'Z|v|within|baseline|+-1ms||zmax|'; do
+        limits t.tsv 'OK|v|<=|1000||||' "$row"
+        qd_rc check d.csv --against t.tsv > out 2>&1
+        assert_status "$QD_RC" 2
+        assert_contains "$(cat out)" "t.tsv, check 2 ("
+    done
+    limits t.tsv 'Z|v|<=|3.5|||zmax|us'
+    qd_rc check d.csv --against t.tsv > out 2>&1
+    assert_contains "$(cat out)" "check 1 (Z): zmax is unitless, so its limit takes no unit (unit us)"
+    # a percentage tolerance, or of the baseline, is a share, not a unit
+    limits t.tsv 'C|v|within|2|+-10%||cv|' 'Z|v|<=|baseline+10%|||zmax|'
+    qd_rc check d.csv --against t.tsv --baseline d.csv --format csv -o v.csv
+    assert_eq "$(verdict C | cut -d'|' -f1)" "pass"
+    assert_eq "$(verdict Z | cut -d'|' -f1)" "pass"
+}
+
+t_shape_zmax_is_qd_outliers() {
+    printf 'host,mbps\nn1,940\nn2,951\nn3,948\nn4,612\nn5,955\nn6,944\nn7,990\n' > d.csv
+    limits t.tsv 'Z|mbps|<=|3.5|||zmax|'
+    qd_rc check d.csv --against t.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    out="$(qd outliers d.csv mbps --format csv)"
+    worst="$(printf '%s\n' "$out" | sed -n 2p)"
+    # the same host, and the same score: outliers' robust_z to one place
+    assert_eq "$(printf '%s' "$worst" | cut -d, -f1)" "n4"
+    assert_contains "$(field Z note)" "worst |z|: n4 (robust z $(printf '%s' "$worst" | cut -d, -f4);"
+    assert_eq "$("$PY" -c 'import sys; print("%.1f" % -float(sys.argv[1]))' "$(field Z observed)")" \
+        "$(printf '%s' "$worst" | cut -d, -f4)"
+    # hosts that repeat: each host's median, as outliers takes them
+    printf 'host,v\na,1\na,2\nb,2\nb,3\nc,3\nc,3\nd,50\nd,60\n' > r.csv
+    limits t.tsv 'Z|v|<=|3.5|||zmax|'
+    qd_rc check r.csv --against t.tsv --format csv -o v.csv
+    out="$(qd outliers r.csv v --format csv | sed -n 2p)"
+    assert_eq "$(printf '%s' "$out" | cut -d, -f1,4)" "d,+47.0"
+    assert_eq "$(verdict Z)" "fail|46.99|8/8"
+    assert_contains "$(field Z note)" "worst |z|: d (robust z +47.0; median 2.75, MAD 0.75, per host)"
+}
+
+t_shape_old_files_unchanged() {
+    # a thresholds file gives the same rows with the new aggregates beside
+    # it as without (and t_unchanged_without_the_new_columns pins the
+    # bytes of one without)
+    data
+    limits old.tsv 'R1|mbps|>=|900||status=ok||' 'R2|temp|between|20|45|rack=r1|max|' \
+        'R3|rtt|<=|250||||us' 'R4|mem|<=|1.5G||status=ok|p99|' 'R5|temp|<=|45|||stdev|'
+    qd_rc check d.csv --against old.tsv --format csv -o before.csv
+    cp old.tsv new.tsv
+    printf 'N1\ttemp\t<=\t1\t\t\tcv\t\nN2\ttemp\t<=\t3.5\t\t\tzmax\t\n' >> new.tsv
+    qd_rc check d.csv --against new.tsv --format csv -o after.csv
+    assert_eq "$(grep -v '^N' after.csv)" "$(cat before.csv)"
+    qd_rc check d.csv --against old.tsv --each --format csv -o before.csv
+    qd_rc check d.csv --against new.tsv --each --format csv -o after.csv
+    assert_eq "$(grep -v '^N' after.csv)" "$(cat before.csv)"
+}
+
+t_shape_junit_waivers_severity_keep() {
+    shape_data
+    printf 'req\tcolumn\top\tlimit\tagg\tseverity\nZ\tv\t<=\t3.5\tzmax\tlow\nC\tv\t<=\t3\tcv\t\n' > t.tsv
+    qd_rc check d.csv --against t.tsv --format junit -o v.xml
+    assert_status "$QD_RC" 1
+    got="$(junit v.xml)"
+    assert_contains "$got" "testsuite tests=2 failures=1 errors=0 skipped=0"
+    assert_contains "$got" "Z|zmax of v <= 3.5|failure|observed 65.43; want <= 3.5"
+    qd_rc check d.csv --against t.tsv --each --format junit -o e.xml
+    assert_contains "$(junit e.xml)" "|failure|observed 65.43; want <= 3.5"
+    # a low failure under --fail-level high is let off, as any other
+    qd_rc check d.csv --against t.tsv --fail-level high > out
+    assert_status "$QD_RC" 0
+    # a waiver over every row excuses the figure
+    waivers w.tsv 'Z|e is a known slow host||||QA'
+    qd_rc check d.csv --against t.tsv --waivers w.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 0
+    assert_eq "$(verdict Z | cut -d'|' -f1)" "waived"
+    qd_rc check d.csv --against t.tsv --keep > out
+    assert_contains "$(cat out)" "filed as"
+    assert_contains "$(qd show latest --format csv)" "Z,v,zmax,,65.43,<= 3.5,,5/5,fail"
+}
+
+t_shape_baseline() {
+    printf 'host,v\na,100\nb,101\nc,99\nd,100\ne,102\n' > before.csv
+    printf 'host,v\na,100\nb,101\nc,99\nd,100\ne,130\n' > after.csv
+    # the baseline's figure over the same hosts: cv 0.01136, zmax 1.349
+    limits t.tsv 'C|v|<=|baseline+0.05|||cv|' 'Z|v|<=|baseline+2|||zmax|' \
+        'P|v|<=|baseline+50%|||cv|' 'W|v|within|baseline|+-1||skew|'
+    qd_rc check after.csv --against t.tsv --baseline before.csv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(verdict C)" "fail|0.1267|5/5"
+    assert_eq "$(field C limit)" "<= baseline+0.05 (<= 0.06136)"
+    assert_eq "$(field C baseline)" "0.01136"
+    assert_eq "$(verdict Z)" "fail|20.23|5/5"
+    assert_eq "$(field Z limit)" "<= baseline+2 (<= 3.349)"
+    assert_eq "$(field P limit)" "<= baseline+50% (<= 0.01703)"
+    # against itself, nothing moved
+    qd_rc check before.csv --against t.tsv --baseline before.csv > out
+    assert_status "$QD_RC" 0
+    assert_contains "$(cat out)" "4 pass, 0 fail, 0 not measured"
+    # a host the baseline lacks: a figure over other hosts is not measured
+    printf 'host,v\na,100\nb,101\nc,99\nd,100\nnew,500\n' > n.csv
+    qd_rc check n.csv --against t.tsv --baseline before.csv --format csv -o v.csv
+    assert_eq "$(verdict Z)" "not measured||5/5"
+    assert_contains "$(field Z note)" "1 not in run before.csv, so the zmax would be over other hosts: new"
+    # a baseline whose own figure cannot be had is not measured either
+    printf 'host,v\na,5\nb,5\nc,5\nd,5\ne,5\n' > flat.csv
+    qd_rc check after.csv --against t.tsv --baseline flat.csv --format csv -o v.csv
+    assert_eq "$(verdict Z | cut -d'|' -f1)" "not measured"
+    assert_contains "$(field Z note)" "in run flat.csv: the MAD is 0"
+}
+
+# --rule (QD-051): a fixed verdict table.  S1, S2 pass; F1, F2 fail; U1 is
+# not measured (b has no u).  The weights: S2 2, the rest 1.
+rule_data() {
+    printf 'host,s,f,u\na,1,9,1\nb,1,9,\n' > r.csv
+    printf 'req\tcolumn\top\tlimit\tseverity\tweight\n' > r.tsv
+    printf '%s\n' 'S1|s|<=|5||' 'S2|s|<|5||2' 'F1|f|<=|5|low|' \
+        'F2|f|<|5||1' 'U1|u|<=|5||' | tr '|' '\t' >> r.tsv
+}
+
+# rule_is RULE VERDICT RC [ARGS...]: the head's overall verdict and the
+# exit status
+rule_is() {
+    qd_rc check r.csv --against r.tsv --rule "$1" "${@:4}" > out 2> err
+    assert_status "$QD_RC" "$3"
+    assert_contains "$(head -1 out)" "; rule $2: "
+}
+
+t_rule_each_kind_nested() {
+    rule_data
+    rule_is 'all(S*, any(F1, S1))'                  pass 0
+    rule_is 'all(S*, not(any(F*)))'                 pass 0
+    rule_is 'any(F1, all(F2, S1))'                  fail 1
+    rule_is 'atleast(2, S1, F1, all(S2, not(F2)))'  pass 0
+    rule_is 'not(atleast(3, S*, F*))'               pass 0
+    rule_is 'any(not(all(S1, atleast(1, S2, F2))), F1)' fail 1
+    # S1 1 + S2 2 + F1 1: 3 of 4 is 0.75
+    rule_is 'all(weighted(0.75, S*, F1), not(F2))'  pass 0
+    assert_contains "$(cat out)" "weighted score 0.75 of 3 (3 of 4), need 0.75"
+    rule_is 'all(weighted(0.8, S*, F1), not(F2))'   fail 1
+    assert_contains "$(cat out)" "rule fail         all(weighted(0.8, S*, F1), not(F2))"
+    assert_contains "$(cat out)" "weighted score 0.75 of 3 (3 of 4), need 0.8"
+    rule_is 'weighted(0.5, S1, F*)'                 fail 1
+    # the head says why: 2 of 4, need 3; by the glob when one gave them all
+    rule_is 'atleast(3, S*, F*)' fail 1
+    assert_contains "$(head -1 out)" "; rule fail: 2 of 4 passed, need 3"
+    rule_is 'atleast(2, S*)' pass 0
+    assert_contains "$(head -1 out)" "; rule pass: 2 of 2 S* passed, need 2"
+    # one req alone is a rule too; what the rule leaves out counts for nothing
+    rule_is 'S1' pass 0
+    assert_contains "$(cat out)" "not in the rule, so not counted: S2, F1, F2, U1"
+    rule_is 'F1' fail 1
+    # QD_RULE, and case in the calls' names
+    QD_RULE='ALL(S1, Not(F2))' qd_rc check r.csv --against r.tsv > out
+    assert_status "$QD_RC" 0
+    assert_contains "$(head -1 out)" "; rule pass: all 2 passed"
+    # the verdicts of the checks themselves are not changed
+    qd_rc check r.csv --against r.tsv --rule 'S1' --format csv -o v.csv
+    assert_eq "$(field F1 verdict)" "fail"
+    assert_eq "$(field U1 verdict)" "not measured"
+}
+
+t_rule_unmeasured_waived_unexpected() {
+    rule_data
+    # not measured is not a pass, and not() of it is not measured either
+    rule_is 'all(S1, U1)'               "not measured" 1
+    assert_contains "$(head -1 out)" "1 of 2 passed, need all 2; 1 not measured: U1"
+    rule_is 'not(U1)'                   "not measured" 1
+    rule_is 'any(S1, U1)'               pass 0
+    rule_is 'any(F1, U1)'               "not measured" 1
+    rule_is 'atleast(2, S1, U1, F1)'    "not measured" 1
+    rule_is 'atleast(2, S1, U1, S2)'    pass 0
+    rule_is 'atleast(3, S1, U1, F1, F2)' fail 1
+    # U1 weighs 1 of 5: S is 3 of 5, 0.6; with U1 it could be 0.8
+    rule_is 'weighted(0.8, S*, U1, F2)' "not measured" 1
+    rule_is 'weighted(0.6, S*, U1, F2)' pass 0
+    # a waived failure counts as a pass
+    waivers w.tsv 'F2|agreed deviation, FSE-9||||'
+    rule_is 'all(S1, F2)' pass 0 --waivers w.tsv
+    assert_contains "$(cat out)" "F2 passed (waived)"
+    # an unexpected pass as a fail
+    waivers w.tsv 'S1|thought broken|||fail|'
+    rule_is 'all(S1, S2)' fail 1 --waivers w.tsv
+    rule_is 'S1' fail 1 --waivers w.tsv
+    assert_contains "$(head -1 out)" "S1 failed (unexpected pass)"
+    # --fail-level lets F1 (low) off inside the rule; F2 has no severity
+    rule_is 'all(S1, F1)' pass 0 --fail-level medium
+    assert_contains "$(cat out)" "F1 passed (below --fail-level)"
+    rule_is 'all(S1, F1)' fail 1
+    rule_is 'all(S1, F2)' fail 1 --fail-level critical
+    # a req's checks are taken together: one failing check fails it
+    printf 'S1\tf\t<=\t5\t\t\n' >> r.tsv
+    rule_is 'S1' fail 1
+}
+
+t_rule_refused() {
+    rule_data
+    refused() {   # refused RULE MESSAGE
+        qd_rc check r.csv --against r.tsv --rule "$1" > out 2> err
+        assert_status "$QD_RC" 2
+        assert_contains "$(cat err)" "$2"
+        assert_eq "$(cat out)" ""
+    }
+    refused 'all(S1, X9)'            "--rule 'all(S1, X9)': unknown req X9 (the thresholds file has S1, S2, F1, F2, U1)"
+    refused 'any(Z*)'                "Z* matches no req of the thresholds file"
+    refused 'atleast(3, S*)'         "atleast(3, ...) of 2 items: N is 1 to 2"
+    refused 'atleast(0, S*)'         "N is 1 to 2"
+    refused 'atleast(2.5, S*)'       "atleast wants a whole number first, not '2.5'"
+    refused 'weighted(1.2, S*)'      "weighted wants a threshold from 0 to 1 first, not '1.2'"
+    refused 'weighted(-0.1, S*)'     "weighted wants a threshold from 0 to 1 first"
+    refused 'weighted(x, S*)'        "weighted wants a threshold from 0 to 1 first, not 'x'"
+    refused 'all(S1'                 "it ends too soon: want )"
+    refused 'all(S1,)'               "want a req or a call, not ')'"
+    refused 'all()'                  "all() is empty"
+    refused 'both(S1)'               "unknown call both()"
+    refused 'S*'                     "S* matches 2 reqs where one belongs"
+    refused 'not(F*)'                "F* matches 2 reqs where one belongs"
+    refused 'not(S1, S2)'            "want ), not ','"
+    refused 'S1 S2'                  "'S2' after the end of the rule"
+    refused 'all(S1, S*)'            "S1 is named twice in one list"
+    refused 'weighted(0.5, all(S1))' "weighted takes reqs and globs, not all()"
+    refused '   ,'                   "want a req or a call, not ','"
+    # weights: a number 0 or more, one per requirement, and not all 0
+    printf 'S1\tf\t>\t1\t\tx\n' >> r.tsv
+    refused 'S1' "check 6 (S1): weight 'x' is not a number 0 or more"
+    rule_data
+    printf 'S2\tf\t>\t1\t\t3\n' >> r.tsv
+    refused 'S2' "weight 3, but check 2 gives S2 weight 2; a requirement has one weight"
+    rule_data
+    printf 'Z1\tf\t>\t1\t\t0\n' >> r.tsv
+    refused 'weighted(0.5, Z1)' "the weights of weighted(0.5, ...) add up to 0"
+}
+
+t_rule_none_unchanged() {
+    rule_data
+    # no rule, a blank QD_RULE, and the weight column taken away: the same
+    qd_rc check r.csv --against r.tsv > a.txt 2> /dev/null
+    assert_status "$QD_RC" 1
+    QD_RULE='' qd_rc check r.csv --against r.tsv > b.txt 2> /dev/null
+    assert_status "$QD_RC" 1
+    cut -f1-5 r.tsv > n.tsv
+    qd_rc check r.csv --against n.tsv > c.txt 2> /dev/null
+    assert_status "$QD_RC" 1
+    assert_eq "$(cat b.txt)" "$(cat a.txt)"
+    assert_eq "$(sed 1d c.txt)" "$(sed 1d a.txt)"
+    assert_not_contains "$(cat a.txt)" "rule"
+    for f in csv json junit; do
+        qd_rc check r.csv --against r.tsv --format "$f" > a.out 2> /dev/null
+        qd_rc check r.csv --against n.tsv --format "$f" > c.out 2> /dev/null
+        assert_not_contains "$(cat a.out)" "(rule)"
+        [ "$f" = junit ] || assert_eq "$(cat c.out)" "$(cat a.out)"
+    done
+    # --fail-level alone exits as it always did: F2 has no severity
+    qd_rc check r.csv --against n.tsv --fail-level critical > /dev/null 2>&1
+    assert_status "$QD_RC" 1
+}
+
+rule_props() {   # the rule's properties of JUnit file $1, name=value
+    "$PY" - "$1" <<'PYEOF'
+import sys
+import xml.etree.ElementTree as ET
+s = ET.parse(sys.argv[1]).getroot().find("testsuite")
+for p in s.find("properties"):
+    if p.get("name").startswith("rule"):
+        print("%s=%s" % (p.get("name"), p.get("value")))
+PYEOF
+}
+
+t_rule_formats_junit_keep() {
+    rule_data
+    qd_rc check r.csv --against r.tsv --rule 'all(S*, atleast(1, F*))' \
+        --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(tail -1 v.csv)" '(rule),,,,"2 of 3 passed, need all 3; failed: atleast(1, F*)","all(S*, atleast(1, F*))",,,fail,,'
+    qd_rc check r.csv --against r.tsv --rule 'atleast(1, F*)' --format json -o v.json
+    assert_status "$QD_RC" 1
+    "$PY" - v.json > got <<'PYEOF'
+import json, sys
+rows = json.load(open(sys.argv[1]))
+rows = rows["rows"] if isinstance(rows, dict) else rows
+r = [x for x in rows if x["req"] == "(rule)"][0]
+print("%s|%s|%s" % (r["limit"], r["verdict"], r["observed"]))
+PYEOF
+    assert_eq "$(cat got)" "atleast(1, F*)|fail|0 of 2 F* passed, need 1"
+    qd_rc check r.csv --against r.tsv --rule 'all(S1, S2)' --each --format csv -o e.csv
+    assert_status "$QD_RC" 0
+    assert_eq "$(tail -1 e.csv)" '(rule),,,all 2 passed,"all(S1, S2)",,pass,'
+    # JUnit: one more testcase, and the suite's properties
+    qd_rc check r.csv --against r.tsv --rule 'all(S*, not(U1))' --format junit -o j.xml
+    assert_status "$QD_RC" 1
+    got="$(junit j.xml)"
+    assert_contains "$got" "testsuite tests=6 failures=2 errors=2 skipped=0"
+    assert_contains "$got" "rule|all(S*, not(U1))|error|rule not measured: 2 of 3 passed, need all 3; 1 not measured: not(U1)"
+    props="$(rule_props j.xml)"
+    assert_contains "$props" "rule=all(S*, not(U1))"
+    assert_contains "$props" "rule.verdict=not measured"
+    qd_rc check r.csv --against r.tsv --rule 'any(S1, F1)' --format junit -o j.xml
+    assert_status "$QD_RC" 0
+    assert_contains "$(junit j.xml)" "rule|any(S1, F1)|pass|"
+    assert_contains "$(rule_props j.xml)" "rule.verdict=pass"
+    qd_rc check r.csv --against r.tsv --rule 'F1' --format junit -o j.xml
+    assert_contains "$(junit j.xml)" "rule|F1|failure|rule failed: F1 failed"
+    # --keep files it, and the command it came from
+    qd_rc check r.csv --against r.tsv --rule 'all(S*, atleast(1, F*))' --keep > out
+    assert_status "$QD_RC" 1
+    csv="$(qd show latest --format csv)"
+    assert_contains "$csv" '(rule),,,,"2 of 3 passed, need all 3; failed: atleast(1, F*)","all(S*, atleast(1, F*))",,,fail,,'
+    assert_contains "$(qd log latest)" "--rule 'all(S*, atleast(1, F*))'"
+}
+
+# ---------------------------------------------------------------------------
+# A person's results for requirements nothing measures (QD-052)
+# ---------------------------------------------------------------------------
+
+# the thresholds of the manual cases: a measured check, a manual one
+# over every row, and one over rack r1 with no column
+manual_data() {
+    data
+    printf 'req\tcolumn\top\tlimit\twhere\tnote\n' > t.tsv
+    printf '%s\n' 'R1|status|in|ok,unreachable||' \
+        'M1|cabling|manual|||as built' 'M2||manual||rack=r1|' \
+        | tr '|' '\t' >> t.tsv
+}
+
+# results REQ|verdict|by|date|where|note ...: a manual file m.tsv
+results() {
+    printf 'req\tverdict\tby\tdate\twhere\tnote\n' > m.tsv
+    for row in "$@"; do printf '%s\n' "$row" | tr '|' '\t' >> m.tsv; done
+}
+
+# the manual cells of one row of v.csv: verdict|observed|by|date|note
+manual_row() {
+    "$PY" -c '
+import csv, sys
+for r in csv.DictReader(open(sys.argv[1])):
+    if r["req"] == sys.argv[2] and r.get("row", "") == sys.argv[3]:
+        print("|".join((r["verdict"], r["observed"], r["decided_by"],
+                        r["decided"], r["decision_note"])))
+' v.csv "$1" "${2:-}"
+}
+
+t_manual_none_is_not_measured() {
+    manual_data
+    qd_rc check d.csv --against t.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(verdict M1)" "not measured||0/4"
+    assert_eq "$(verdict M2)" "not measured||0/2"
+    assert_contains "$(cat v.csv)" "manual: no result given for it (--manual FILE)"
+    # the measured check is as it was, and no manual columns appear
+    assert_eq "$(verdict R1)" "pass|ok|4/4"
+    assert_eq "$(head -1 v.csv)" "req,column,agg,where,observed,limit,unit,measured,verdict,note"
+    # a result for one req leaves the other not measured
+    results 'M1|pass|J. Smith|2999-01-01||'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(verdict M1)" "pass|manual pass|4/4"
+    assert_eq "$(verdict M2)" "not measured||0/2"
+    # a result whose where picks some rows leaves the rest not measured
+    results 'M1|pass|J. Smith|||' 'M2|pass|QA||host=a|'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(verdict M2)" "not measured||1/2"
+    assert_contains "$(cat v.csv)" "1 of 2 not measured: b"
+    # a where no row matches decides nothing either
+    results 'M1|pass|J. Smith||host=zz|' 'M2|pass|QA|||'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --format csv -o v.csv
+    assert_eq "$(verdict M1)" "not measured||0/4"
+}
+
+t_manual_pass_and_fail() {
+    manual_data
+    # pass, without where: every row of the check; the run passes
+    results 'M1|pass|J. Smith|2026-11-17||all patched' 'M2|PASS|QA|2026-11-18 09:30||'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 0
+    assert_eq "$(manual_row M1)" "pass|manual pass|J. Smith|2026-11-17|all patched"
+    assert_eq "$(manual_row M2)" "pass|manual pass|QA|2026-11-18 09:30|"
+    assert_eq "$(manual_row R1)" "pass|ok|||"
+    assert_eq "$(head -1 v.csv)" "req,column,agg,where,observed,limit,unit,measured,verdict,note,decided_by,decided,decision_note"
+    qd_rc check d.csv --against t.tsv --manual m.tsv > out
+    assert_contains "$(head -1 out)" "3 pass, 0 fail, 0 not measured"
+    assert_contains "$(cat out)" "manual m.tsv: 2 results by J. Smith, QA"
+    # --each: a row per host, each with who decided it
+    qd_rc check d.csv --against t.tsv --manual m.tsv --each --format csv -o v.csv
+    assert_status "$QD_RC" 0
+    assert_eq "$(manual_row M1 d)" "pass|manual pass|J. Smith|2026-11-17|all patched"
+    assert_eq "$(grep -c '^M1,' v.csv)" "4"
+    assert_eq "$(grep -c '^M2,' v.csv)" "2"
+    # fail, without where: the check fails, on every host under --each
+    results 'M1|fail|J. Smith|2026-11-17||loose patch lead' 'M2|pass|QA||'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(manual_row M1)" "fail|manual fail|J. Smith|2026-11-17|loose patch lead"
+    assert_contains "$(cat v.csv)" "4 of 4 failed: a, b, c, d"
+    qd_rc check d.csv --against t.tsv --manual m.tsv --each --format csv -o v.csv
+    assert_eq "$(manual_row M1 c | cut -d'|' -f1)" "fail"
+    # with where (a bare word is a host): only the rows it picks
+    results 'M1|pass|J. Smith|||' 'M2|pass|QA||a|' 'M2|fail|QA|2026-11-18|b|label swapped'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(manual_row M2)" "fail|manual fail|QA|2026-11-18|label swapped"
+    assert_contains "$(cat v.csv)" "1 of 2 failed: b"
+    qd_rc check d.csv --against t.tsv --manual m.tsv --each --format csv -o v.csv
+    assert_eq "$(manual_row M2 a)" "pass|manual pass|QA||"
+    assert_eq "$(manual_row M2 b)" "fail|manual fail|QA|2026-11-18|label swapped"
+    # a pass for every row and a fail for one: the fail stands
+    results 'M1|pass|J. Smith|||' 'M2|pass|QA|||' 'M2|fail|Ops||host=b|'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --format csv -o v.csv
+    assert_eq "$(verdict M2 | cut -d'|' -f1)" "fail"
+    assert_contains "$(cat v.csv)" "results disagree on b: the fail stands"
+    # with where, a pass for the rows it picks under --each
+    results 'M1|pass|J. Smith||rack=r2|' 'M1|pass|Ops||rack=r1|' 'M2|pass|QA||rack=r1|'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --each --format csv -o v.csv
+    assert_status "$QD_RC" 0
+    assert_eq "$(manual_row M1 a | cut -d'|' -f3)" "Ops"
+    assert_eq "$(manual_row M1 d | cut -d'|' -f3)" "J. Smith"
+    # QD_MANUAL for the flag
+    QD_MANUAL=m.tsv qd_rc check d.csv --against t.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 0
+    # --rule takes a manual verdict as any other
+    results 'M1|pass|J. Smith|||' 'M2|fail|QA|||'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --rule 'all(R1, M1)' > out
+    assert_status "$QD_RC" 0
+    qd_rc check d.csv --against t.tsv --manual m.tsv --rule 'all(M*)' > out
+    assert_status "$QD_RC" 1
+    assert_contains "$(head -1 out)" "; rule fail: "
+}
+
+t_manual_waived() {
+    manual_data
+    results 'M1|fail|J. Smith|2026-11-17||loose patch lead' 'M2|pass|QA|||'
+    printf 'req\tjustification\twhere\tgranted_by\nM1\trecabled next week, FSE-9\t\tQA board\n' > w.tsv
+    qd_rc check d.csv --against t.tsv --manual m.tsv --waivers w.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 0
+    assert_eq "$(verdict M1 | cut -d'|' -f1)" "waived"
+    assert_contains "$(cat v.csv)" "recabled next week, FSE-9"
+    assert_eq "$(manual_row M1 | cut -d'|' -f3)" "J. Smith"
+    # a waiver whose where covers some hosts: the rest still fail
+    printf 'req\tjustification\twhere\nM1\tc is spare\thost=c\n' > w.tsv
+    qd_rc check d.csv --against t.tsv --manual m.tsv --waivers w.tsv --each --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(manual_row M1 c | cut -d'|' -f1)" "waived"
+    assert_eq "$(manual_row M1 a | cut -d'|' -f1)" "fail"
+    # expect fail on a manual pass is an unexpected pass
+    results 'M1|pass|J. Smith|||' 'M2|pass|QA|||'
+    printf 'req\tjustification\texpect\nM1\tlead still loose\tfail\n' > w.tsv
+    qd_rc check d.csv --against t.tsv --manual m.tsv --waivers w.tsv --format csv -o v.csv
+    assert_status "$QD_RC" 1
+    assert_eq "$(verdict M1 | cut -d'|' -f1)" "unexpected pass"
+    # not measured is never waived, manual or not
+    results 'M2|pass|QA|||'
+    printf 'req\tjustification\nM1\tnot inspected yet\n' > w.tsv
+    qd_rc check d.csv --against t.tsv --manual m.tsv --waivers w.tsv --format csv -o v.csv
+    assert_eq "$(verdict M1 | cut -d'|' -f1)" "not measured"
+}
+
+t_manual_refused() {
+    manual_data
+    bad_manual() {   # bad_manual TEXT: m.tsv of TEXT is exit 2 naming TEXT
+        local want="$1"
+        shift
+        printf '%s\n' "$@" > m.tsv
+        qd_rc check d.csv --against t.tsv --manual m.tsv > out 2> err
+        assert_status "$QD_RC" 2
+        assert_contains "$(cat err)" "$want"
+    }
+    bad_manual "m.tsv, result 2 (M9): no check has req M9, so it would decide nothing" \
+        $'req\tverdict\tby' $'M1\tpass\tme' $'M9\tpass\tme'
+    bad_manual "m.tsv, result 1 (R1): R1 is measured, not manual" \
+        $'req\tverdict\tby' $'R1\tpass\tme'
+    bad_manual "m.tsv, result 1 (M1): verdict 'ok': want pass or fail" \
+        $'req\tverdict\tby' $'M1\tok\tme'
+    bad_manual "m.tsv, result 1 (M1): verdict 'waived': want pass or fail" \
+        $'req\tverdict\tby' $'M1\twaived\tme'
+    bad_manual "m.tsv, result 1 (M1): by is blank" \
+        $'req\tverdict\tby' $'M1\tpass\t '
+    bad_manual "m.tsv, result 1 (M1): verdict is blank" \
+        $'req\tverdict\tby' $'M1\t\tme'
+    bad_manual "m.tsv, result 1 (M1): date '17/11/2026' is not a date" \
+        $'req\tverdict\tby\tdate' $'M1\tpass\tme\t17/11/2026'
+    bad_manual "m.tsv, result 1 (M1): date '2026-02-30' is not a date" \
+        $'req\tverdict\tby\tdate' $'M1\tpass\tme\t2026-02-30'
+    bad_manual "m.tsv, result 1 (M1): date '2026-11-17T25:00' is not a date" \
+        $'req\tverdict\tby\tdate' $'M1\tpass\tme\t2026-11-17T25:00'
+    bad_manual "m.tsv, result 1 (M1): where 'host=(': " \
+        $'req\tverdict\tby\twhere' $'M1\tpass\tme\thost=('
+    bad_manual "m.tsv: the header needs by" $'req\tverdict' $'M1\tpass'
+    bad_manual "m.tsv: unknown column who" $'req\tverdict\tby\twho' $'M1\tpass\tme\tx'
+    bad_manual "m.tsv holds no results" $'req\tverdict\tby'
+    qd_rc check d.csv --against t.tsv --manual nope.tsv 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "no such manual file: nope.tsv"
+    # and in the thresholds file: a manual check has no limit or agg
+    printf 'req\tcolumn\top\tlimit\nM1\tx\tmanual\t5\n' > b.tsv
+    qd_rc check d.csv --against b.tsv 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "b.tsv, check 1 (M1): op manual takes no limit ('5')"
+    printf 'req\tcolumn\top\tlimit\tagg\nM1\t\tmanual\t\tmax\n' > b.tsv
+    qd_rc check d.csv --against b.tsv 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "op manual takes no agg ('max')"
+    # a measured check still needs its column and limit
+    printf 'req\tcolumn\top\tlimit\nR1\tmbps\t>=\t\n' > b.tsv
+    qd_rc check d.csv --against b.tsv 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "limit is blank"
+}
+
+t_manual_junit_keep() {
+    manual_data
+    results 'M1|fail|J. Smith|2026-11-17||loose lead' 'M2|pass|QA|2026-11-18||'
+    qd_rc check d.csv --against t.tsv --manual m.tsv --format junit -o v.xml
+    assert_status "$QD_RC" 1
+    got="$(junit v.xml)"
+    assert_contains "$got" "testsuite tests=3 failures=1 errors=0 skipped=0"
+    assert_contains "$got" "M1|cabling manual|failure|failed by a person's decision: J. Smith on 2026-11-17: loose lead"
+    assert_contains "$got" "M2|manual where rack=r1|pass|"
+    "$PY" - v.xml > props <<'PYEOF'
+import sys
+import xml.etree.ElementTree as ET
+s = ET.parse(sys.argv[1]).getroot().find("testsuite")
+for p in s.find("properties"):
+    print("suite %s=%s" % (p.get("name"), p.get("value")))
+for tc in s.findall("testcase"):
+    ps = tc.find("properties")
+    for p in (ps if ps is not None else []):
+        print("%s %s=%s" % (tc.get("classname"), p.get("name"), p.get("value")))
+PYEOF
+    sum="$("$PY" -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' m.tsv)"
+    assert_contains "$(cat props)" "suite manual=m.tsv"
+    assert_contains "$(cat props)" "suite manual.sha256=$sum"
+    assert_contains "$(cat props)" "M1 by=J. Smith"
+    assert_contains "$(cat props)" "M1 date=2026-11-17"
+    assert_contains "$(cat props)" "M2 by=QA"
+    # --each: a testcase per host, each carrying who decided it
+    qd_rc check d.csv --against t.tsv --manual m.tsv --each --format junit -o e.xml
+    assert_contains "$(junit e.xml)" "M1|b|failure|failed by a person's decision: J. Smith"
+    # waived: skipped, as any waived failure
+    printf 'req\tjustification\nM1\tFSE-9\n' > w.tsv
+    qd_rc check d.csv --against t.tsv --manual m.tsv --waivers w.tsv --format junit -o w.xml
+    assert_status "$QD_RC" 0
+    assert_contains "$(junit w.xml)" "M1|cabling manual|skipped|waived: FSE-9"
+    # --keep: the verdicts with who decided, and the file by name and sha256
+    qd_rc check d.csv --against t.tsv --manual m.tsv --keep > out
+    assert_status "$QD_RC" 1
+    csv="$(qd show latest --format csv)"
+    assert_contains "$csv" "decided_by,decided,decision_note"
+    assert_contains "$csv" 'M1,cabling,each,,manual fail,manual,,4/4,fail,"4 of 4 failed: a, b, c, d; as built",J. Smith,2026-11-17,loose lead'
+    log="$(qd log latest)"
+    assert_contains "$log" "--manual $PWD/m.tsv"
+    assert_contains "$log" "manual m.tsv sha256 $sum"
+}
+
+t_manual_dated_before_the_run() {
+    runof now 900 900 900 900
+    printf 'req\tcolumn\top\tlimit\nM1\t\tmanual\t\n' > t.tsv
+    results 'M1|pass|J. Smith|2020-01-02||'
+    qd_rc check now --against t.tsv --manual m.tsv > out
+    # warned of, not refused: the verdict stands
+    assert_status "$QD_RC" 0
+    assert_contains "$(cat out)" "1 dated before the run"
+    assert_contains "$(qd check now --against t.tsv --manual m.tsv --format csv 2>/dev/null)" \
+        "decided 2020-01-02, before the run ("
+    results 'M1|pass|J. Smith|2999-01-02||'
+    qd_rc check now --against t.tsv --manual m.tsv > out
+    assert_not_contains "$(cat out)" "before the run"
+    results 'M1|pass|J. Smith|||'
+    qd_rc check now --against t.tsv --manual m.tsv > out
+    assert_contains "$(cat out)" "1 result by J. Smith, 1 undated"
+}
+
+t_manual_none_unchanged() {
+    # no manual rows and no --manual: the output 0.29.0 gave, byte for byte
+    data
+    limits t.tsv 'R1|mbps|>=|900||status=ok||' 'R2|temp|between|20|45|rack=r1|max|'
+    for f in text csv junit; do
+        qd_rc check d.csv --against t.tsv --format "$f" -o "a.$f"
+        assert_status "$QD_RC" 1
+        qd_rc check d.csv --against t.tsv --each --format "$f" -o "e.$f"
+    done
+    assert_eq "$(cat a.csv)" 'req,column,agg,where,observed,limit,unit,measured,verdict,note
+R1,mbps,each,status=ok,880,>= 900,,2/3,fail,1 of 3 failed: b; 1 not measured
+R2,temp,max,rack=r1,44,between 20 and 45,,2/2,pass,'
+    assert_eq "$(cat e.csv)" 'req,row,column,observed,limit,unit,verdict
+R1,a,mbps,950,>= 900,,pass
+R1,b,mbps,880,>= 900,,fail
+R1,c,mbps,,>= 900,,not measured
+R2,a,temp,30,between 20 and 45,,pass
+R2,b,temp,44,between 20 and 45,,pass'
+    assert_not_contains "$(cat a.junit e.junit)" "manual"
+    assert_not_contains "$(cat a.junit e.junit)" "decided"
+    assert_not_contains "$(cat a.text)" "manual"
+}
+
 run_test "pass, fail and the exit status"       t_pass_fail_and_exit_status
 run_test "blank is never a pass"                t_blank_is_never_a_pass
 run_test "every op"                             t_every_op
@@ -815,4 +1491,23 @@ run_test "baseline: where and units"           t_baseline_where_and_units
 run_test "baseline: old files, bad limits"     t_baseline_old_files_and_bad_limits
 run_test "baseline: waivers, severity, junit, keep" t_baseline_waivers_severity_junit_keep
 run_test "baseline: a qualified baseline"      t_baseline_qualified
+run_test "shape: known values"                 t_shape_known_values
+run_test "shape: not measured, and why"        t_shape_not_measured
+run_test "shape: a unit is refused"            t_shape_units_refused
+run_test "shape: zmax is qd outliers' z"       t_shape_zmax_is_qd_outliers
+run_test "shape: old files unchanged"          t_shape_old_files_unchanged
+run_test "shape: junit, waivers, severity, keep" t_shape_junit_waivers_severity_keep
+run_test "shape: against a baseline"           t_shape_baseline
+run_test "rule: each kind, nested"             t_rule_each_kind_nested
+run_test "rule: not measured, waived, unexpected" t_rule_unmeasured_waived_unexpected
+run_test "rule: refused, exit 2"               t_rule_refused
+run_test "rule: none, output unchanged"        t_rule_none_unchanged
+run_test "rule: formats, junit, keep"          t_rule_formats_junit_keep
+run_test "manual: none given is not measured" t_manual_none_is_not_measured
+run_test "manual: pass and fail, where, --each" t_manual_pass_and_fail
+run_test "manual: a waiver on a manual fail"   t_manual_waived
+run_test "manual: refused, exit 2"             t_manual_refused
+run_test "manual: junit and --keep"            t_manual_junit_keep
+run_test "manual: dated before the run"        t_manual_dated_before_the_run
+run_test "manual: none, output unchanged"      t_manual_none_unchanged
 finish

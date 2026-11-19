@@ -163,7 +163,7 @@ t_links_check_fails_where_one_does_not_land() {
 # stays short, its picture fits 60 columns, and the sdist ships it.
 t_pointers_and_the_page() {
     local para readme
-    para="$(qd --help | sed -n '/^RUN is /,/^$/p')"
+    para="$(qd --help | sed -n '/^RUN[: ]/,/^$/p')"
     [ -n "$para" ] || fail "qd --help has no RUN paragraph"
     assert_contains "$(printf '%s\n' "$para" | grep . | tail -n 1)" "docs/concepts.md"
     readme="$QD_DIR/README.md"
