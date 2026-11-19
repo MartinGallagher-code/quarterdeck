@@ -26,6 +26,8 @@ t_version_and_help() {
     assert_contains "$out" "qd 0."
     assert_contains "$out" "GPL-3.0-or-later"
     out="$(qd)"
+    assert_contains "$out" "Everything else: qd --help"
+    out="$(qd --help)"
     assert_contains "$out" "Full manual:"
     out="$(qd help)"
     assert_contains "$out" "qd web"

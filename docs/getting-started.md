@@ -128,7 +128,8 @@ repository provost looks after, one of `qd store ls`.
 A command names a run by its name (`demo-kernel`: the latest run of that
 name), `latest`, `latest~1` (the one before), its id or a unique part of
 it, or `ds:NAME` for every run of a dataset at once; `demo-kernel:hosts`
-is that run's other table.
+is that run's other table. [Concepts](concepts.md) has these words and
+the rest qd uses, and every way to name a run, an example each.
 
 ## 1. Is the fleet consistent?
 
@@ -294,7 +295,9 @@ qd web             # the same store in a browser, with charts
 
 ## Your own fleet
 
-Four things, once:
+`qd setup` does the first three of these four, asking at each step (it
+asks nothing when stdin is not a terminal, and says what to run instead).
+By hand, four things, once:
 
 ```bash
 # 1. a host list: a host a line, attributes after it (they become columns)
@@ -323,16 +326,15 @@ what it can, `qd store rm demo --delete` removes it.
 ## Every command, by what it is for
 
 `qd COMMAND --help` gives any one's options, `qd help` all of them, and
-`qd hints` maps questions to commands. The README is the manual.
+`qd hints` maps questions to commands. The headings are `qd --help`'s;
+the README is the manual.
 
 | What for | Commands |
 |---|---|
-| Starting out | `qd demo`, `qd hints`, `qd doctor`, `qd help` |
-| Asking the fleet | `qd hosts` (the host list), `qd run` (a command), `qd probe` (by name: facts, sysctl, gpu ..., and your own: `qd probe add NAME -- COMMAND`, `qd probe rm NAME`), `qd do` (a toolchain tool, run here), `qd import` (output already on disk) |
-| Seeing what came back | `qd log` (the runs), `qd show` (a table), `qd view` (full-screen), `qd web` (a browser) |
-| Is the fleet consistent? | `qd freq` (who said which), `qd stats` (centre and spread), `qd hist`, `qd outliers` (far from the rest), `qd pivot` (long to wide), `qd peers` (hosts that should agree, named) |
-| Did it get worse? | `qd diff` (two runs), `qd compare` (N runs), `qd changes` (when it stepped), `qd trend` (a sparkline a host), `qd baseline` (blessed runs to compare with) |
-| Does it meet spec? | `qd check` (pass or fail by requirement), `qd report` (an evidence package) |
-| Beside other data | `qd join` (telemetry by host and time), `qd export` (CSV, JSON, Splunk, OpenMetrics ...), `qd floor` (on the floor plan) |
-| A big system, in parts | `qd split` (a host list into several), `qd campaign` (part by part, progress kept), `qd doe` (designed experiments) |
-| Keeping the store | `qd store` (named stores: new, use, export, import ...), `qd rm` (delete runs) |
+| Run | `qd setup` (your own fleet, the first time: a store, a host list, who answers), `qd run` (a command on every host), `qd ask` (a command, then who agrees and who differs), `qd probe` (by name: facts, sysctl, gpu ..., and your own: `qd probe add NAME -- COMMAND`, `qd probe rm NAME`), `qd survey` (the standard questions; who stands out), `qd do` (a toolchain tool, run here), `qd import` (output already on disk), `qd hosts` (the host list) |
+| Read it back | `qd log` (the runs), `qd coverage` (which hosts each test has reached), `qd show` (a table), `qd stats` (centre and spread), `qd freq` (who said which), `qd hist`, `qd outliers` (far from the rest), `qd odd` (every column at once: who is unlike the rest), `qd pivot` (long to wide), `qd trend` (a sparkline a host), `qd view` (full-screen), `qd web` (a browser) |
+| Over time | `qd again` (the last run once more, and what changed), `qd diff` (two runs), `qd compare` (N runs), `qd changes` (when it stepped) |
+| Judge and report | `qd check` (pass or fail by requirement), `qd report` (an evidence package), `qd peers` (hosts that should agree, named), `qd baseline` (blessed runs to compare with) |
+| Larger jobs | `qd split` (a host list into several), `qd campaign` (part by part, progress kept), `qd doe` (designed experiments), `qd join` (telemetry by host and time) |
+| Stores and output | `qd store` (named stores: new, use, export, import ...), `qd rm` (delete runs), `qd export` (CSV, JSON, Splunk, OpenMetrics ...), `qd floor` (on the floor plan) |
+| Help | `qd hints`, `qd doctor`, `qd start`, `qd demo`, `qd help` |
