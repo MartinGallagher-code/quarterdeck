@@ -5,6 +5,57 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.44.0 — 2026-11-19
+
+A Plackett-Burman screen of fio's parameters on one drive of one host,
+and an analysis that ranks which parameters move each of several fio
+responses at once (QD-067, the first step of QD-066's fio tuning study).
+
+### Added
+- **`qd doe init fio`** writes `fio-screen.json`, a doe config for a
+  Plackett-Burman screen of seven fio parameters at two levels each (bs
+  4k/128k, iodepth 1/32, numjobs 1/8, rwmixread 30/70, rw rw/randrw,
+  ioengine libaio/io_uring, direct 0/1: 8 points), with the reason for
+  each in its `description`; size 8G, runtime 60 s, ramp 10 s and the
+  file held fixed (doe's `fixed_factors`); the fio command in
+  `metadata.qd_command`; and eight responses, each naming the column of
+  fio's JSON (as provost parses it) it is read from: read/write IOPS,
+  bandwidth, mean and p99 completion latency. The factor set is a
+  proposal for the owner to approve before the first real run
+  (`quarterdeck/doe.py`: `FIO_SCREEN`, `init`).
+- **`qd doe run CONFIG`** needs no command after `--` when the config
+  names one (`metadata.qd_command`), and puts doe's `fixed_factors` into
+  the command by `{name}` like the factors. A design run again with other
+  fixed factors is refused, as another command is: `--name` a new one.
+- **`qd doe analyze NAME`** analyses several responses in one go:
+  `-c COL,COL,...` (a column, or a response of the config by name), or by
+  default every response of the config that names its column. Each
+  point's responses go to doe as one `run_<id>.json`, with no key at all
+  for a response that point did not measure, so doe leaves it out of
+  that response (blank, never 0). After a table of the responses per
+  point, qd ranks doe's main effects per response (read from `doe
+  analyze --csv`): the big factors are those inside doe's own 80% Pareto
+  line, each with the level that maximises or minimises that response,
+  then the rest.
+- **The typo guard refuses fio writing a raw device** (`--filename=/dev/...`
+  with a writing `--rw`) without `--yes`, in `qd run`, `qd doe run` and
+  every verb that checks; reading a device, or writing a file, `/dev/null`
+  or `/dev/shm`, is not refused. binnacle's copy of the guard does not
+  have this rule yet (`quarterdeck/cli.py`: `DANGER`).
+- `tests/test_doe_fio.sh` (new suite, in `TIMES`), with a stand-in fio in
+  `tests/test_helper.bash` that prints fio 3.36's JSON, its numbers a
+  known function of its options; the stand-in doe now makes
+  Plackett-Burman designs, analyses every response and writes doe's
+  `--csv` main-effects tables.
+
+### Changed
+- **A point whose every run failed on every host is not measured**: `qd
+  doe run` runs it again (without `--redo`), and `qd doe run` and `qd doe
+  status` count only points where a host answered ok. Before, a point
+  that had failed was counted as measured and skipped.
+- README's "Designed experiments" has a worked fio screen;
+  docs/getting-started.md's map and `qd hints` name `qd doe init fio`.
+
 ## 0.33.0 — 2026-11-18
 
 Bare `qd` prints a short start card for newcomers in place of the full
