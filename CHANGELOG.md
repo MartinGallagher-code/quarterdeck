@@ -64,6 +64,11 @@ responses at once (QD-067, the first step of QD-066's fio tuning study).
   bandwidth, mean and p99 completion latency. The factor set is a
   proposal for the owner to approve before the first real run
   (`quarterdeck/doe.py`: `FIO_SCREEN`, `init`).
+- **A config can say how long one point needs** (`metadata.qd_timeout`,
+  seconds), and `qd doe run` uses at least that as its per-host
+  `--timeout`, saying so. The fio screen asks for 180 s: one point is a
+  10 s ramp and a 60 s run, past qd's 60 s default, which would have
+  stopped every point part-way (`quarterdeck/doe.py`: `timeout_of`).
 - **`qd doe run CONFIG`** needs no command after `--` when the config
   names one (`metadata.qd_command`), and puts doe's `fixed_factors` into
   the command by `{name}` like the factors. A design run again with other
