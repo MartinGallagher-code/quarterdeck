@@ -5,7 +5,7 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
-## 0.34.0 — 2026-11-18
+## 0.36.0 — 2026-11-19
 
 `qd check --manual FILE` records a person's pass or fail for a
 requirement nothing measures, with who decided, when and why, in the same
@@ -46,12 +46,12 @@ verdict table, JUnit and `--keep` record as the measured ones (QD-052).
 
 ### Unchanged
 - Without `--manual` and without a manual row, every format's output is
-  what 0.29.0 gave (checked byte for byte against 0.29.0 for text, csv,
+  what 0.35.0 gave (checked byte for byte against 0.35.0 for text, csv,
   json, junit and md, with and without `--each`, waivers and `--rule`).
 - `qd report --check` does not take `--manual`: a manual check there is
   not measured.
 
-## 0.29.0 — 2026-11-18
+## 0.35.0 — 2026-11-19
 
 `qd check --rule` gives one overall verdict built from the requirements:
 all, any, not, at least N of, and a weighted score against a threshold
@@ -94,7 +94,7 @@ all, any, not, at least N of, and a weighted score against a threshold
 ### Unchanged
 - Without `--rule`, output and exit status are what they were.
 
-## 0.27.0 — 2026-11-18
+## 0.34.0 — 2026-11-19
 
 `qd check` can pass or fail on how alike the hosts are: `agg` takes `cv`,
 `skew`, `kurtosis` and `zmax` (QD-050).
@@ -129,6 +129,103 @@ all, any, not, at least N of, and a weighted score against a threshold
   2, 3, 4, 100; not measured; units refused; zmax against `qd outliers`;
   a file's old rows unchanged beside new ones; JUnit, waivers, severity,
   `--keep`; `--baseline`).
+
+## 0.33.1 — 2026-11-19
+
+How long a small run takes to file, measured and recorded, and the provost
+that files it quickly named (QD-056).
+
+### Changed
+- **The README names provost 2.28.0 as the version that files a small run
+  quickly.** A one-host `qd run -- ls` spent almost all of its time in
+  provost's filing; 2.28.0 reads its strategies' confidence ceilings in one
+  scan rather than one process per strategy file, and reads a capture of a
+  dataset the store already has (`qd.runs`, `qd.hosts`, a command run
+  before) with that dataset's strategy first. qd is unchanged: any provost
+  still works, an older one is only slower. Measured on a shared 4-core
+  Linux machine, a one-host run into a store that has its datasets went
+  from 747 processes to 275, and its `provost batch` took 41% of the time
+  (33% with `-j 1`).
+
+### Docs
+- **`docs/scale.md` has a "Small runs" section:** a one-host run's time and
+  process count before and after, and what changed.
+
+### Tests
+- **`tests/small_run.sh`** (new) prints a one-host `qd run -- ls`'s median
+  time over 5 runs, with `--no-store`, into a new store and into a store
+  that has the run's datasets, and the processes (and `awk` processes) one
+  run starts, counted with strace where it is installed. It never fails on
+  a time or a count. CI runs it as a report (the **small run** job, which
+  cannot fail the run), with PyPI's provost and with provost's `main`.
+
+## 0.33.0 — 2026-11-18
+
+Bare `qd` prints a short start card for newcomers in place of the full
+card, which `qd --help` and `qd -h` still print (QD-058).
+
+### Changed
+- **Bare `qd`'s output changes**: it prints the start card, 12 lines of
+  at most 80 columns (`qd demo`, `qd run -- uname -r`, `qd log`, `qd show
+  latest`, `qd web`, and where to go next: `qd --help`, `qd help VERB`,
+  `qd hints`), not the 49-line reference card. A script that ran bare
+  `qd` for the full card should run `qd --help`; none was found in
+  quarterdeck or provost (`quarterdeck/cli.py`: `START`, `main()`).
+- The beginner commands QD-057 designed (`setup`, `ask`, `survey`,
+  `again`, `odd`) go on the start card as each lands; until `qd ask`
+  does, `qd run -- uname -r` stands in for it. A comment above `START`
+  says where each goes.
+
+### Added
+- **`qd start`** and **`qd help basics`** print the start card and exit 0.
+  `start` is on the full card's Help line, in the README's table and in
+  docs/getting-started.md's map.
+  `qd help stat` now names `stats, start` as the closest verbs.
+
+### Tests
+- **`tests/test_help.sh`**: bare `qd` prints the start card in at most 25
+  lines of 80 columns, and `qd start` and `qd help basics` print the same;
+  `qd --help` and `qd -h` print the full card; every command on the start
+  card names a verb `build_parser()` registers and parses
+  (`tests/help_unit.py start`), shown failing on a card that names `qd
+  ask` before it lands and on a bad flag. `tests/test_run.sh` reads
+  "Full manual:" from `qd --help`, no longer from bare `qd`.
+
+## 0.28.1 — 2026-11-18
+
+`qd --help` groups every command by what it is for, everyday ones first,
+on one screen, and `qd hints` asks its questions under the same headings
+(QD-040).
+
+### Changed
+- **`qd --help`, the reference card, is regrouped by goal**: Run, Read it
+  back, Over time, Judge and report, Larger jobs, Stores and output, Help,
+  in that order, every verb `build_parser()` registers on one line under
+  one of them (`hosts` under Run, `demo` under Help). It is 49 lines of at
+  most 80 columns (it was 78, some over 80), and its 18 example lines are
+  five, the core loop: run, freq, outliers, compare, web. The RUN
+  paragraph, the store paragraph and the exit status are shortened to a
+  few lines each; `qd demo`, the walkthrough and the "Full manual" link
+  stay (`quarterdeck/cli.py`: the module docstring).
+- **`qd hints`** prints its questions under the card's headings, in the
+  card's order (`cli.GROUPS`; each `HINTS` entry now carries its
+  heading), and has three more: keeping one project's runs apart (`qd
+  store new`, `qd store use`), into a spreadsheet (`qd export --format
+  csv`) and whether this machine can drive the toolchain (`qd doctor`).
+- **The README** shows the card's headings and their commands under the
+  install lines; **docs/getting-started.md**'s map of every command uses
+  the same headings.
+
+### Tests
+- **`tests/test_help.sh`**: the card check reads the commands under the
+  headings, and fails on a verb on no line, a verb on two lines, headings
+  that are not `cli.GROUPS` in order, and a core-loop example that no
+  longer parses, each shown on a broken copy; new `qd --help fits a
+  screen` (at most 50 lines, none over 80 columns, one to six examples);
+  `qd hints prints every hint` checks its headings are the card's, in
+  order; the hints check also fails a hint whose heading is not one of
+  the card's (`tests/help_unit.py`: `card_parts()`, `groups`).
+
 ## 0.26.0 — 2026-11-18
 
 `qd help VERB` prints that verb's help, as `qd VERB --help` does, instead
@@ -1072,7 +1169,6 @@ onto it.
   report shares; and a run's table can be read by its listing
   (`Run.load_info`), which two of a `qd do`'s same-named tables need.
   Neither changes any output.
-
 
 ## 0.9.1 — 2026-11-10
 
