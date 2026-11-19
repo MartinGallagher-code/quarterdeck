@@ -5521,14 +5521,12 @@ def doctor_ssh(args, lines):
 # the full card, the module docstring.  At most 25 lines of 80 columns,
 # and every command on it must parse (tests/test_help.sh).  The beginner
 # commands QD-057 designed are named here only once they land, each on
-# its own line:
-#   Getting started, after `qd demo`, in this order:
+# its own line, under Getting started, after `qd demo`, in this order:
 #     qd setup  (QD-063)  check this machine, make a store, test your hosts
-#     qd ask    (QD-059)  ask every host; see who agrees and who differs;
-#                         it replaces the `qd run -- uname -r` line
+#                         (before qd ask)
 #     qd survey (QD-060)  everything about every host, and who stands out
 #     qd again  (QD-061)  run the last thing again; show what changed
-#     qd odd    (QD-062)  which hosts are unlike the rest, and in what
+#     qd odd    (QD-062)  landed: on the card, last of these
 START = """\
 qd -- run a command on many machines, keep every answer, and read it back.
 
@@ -5580,9 +5578,9 @@ HINTS = [
      "qd do -- iperf-orchestrator --servers hosts.txt run"),
     ("Run", "How is every host doing right now?",
      "qd do -- dcprobe scan --servers hosts.txt -o host_status.tsv"),
+    ("Read it back", "Who is far from the rest?", "qd outliers latest COLUMN"),
     ("Read it back", "Who is odd, and in what? Every column at once",
      "qd odd latest"),
-    ("Read it back", "Who is far from the rest?", "qd outliers latest COLUMN"),
     ("Read it back", "Centre and spread, per rack",
      "qd stats latest COLUMN --by rack"),
     ("Read it back", "One host's answer, exactly",

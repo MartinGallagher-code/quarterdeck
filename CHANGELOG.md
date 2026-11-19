@@ -77,11 +77,12 @@ latest A`, in one step (QD-059, from the beginner design QD-057).
   always kept: no `--every`, `--count` or `--no-store` (`qd run` has them).
   (`quarterdeck/cli.py`: `cmd_ask`, `ask_answer_lines`, `ask_next_steps`,
   the `ask` verb in `build_parser()`.)
-- **`qd --help`** has a usage line and an example for `qd ask`, and `qd
-  hints`' "What does every host say about X?" now suggests it. README:
-  *Who agrees, who differs: `qd ask`*, a line in *Thirty seconds*, and
-  the exit-status table; `docs/getting-started.md`'s map of every command
-  names it (under "Asking the fleet").
+- **`qd --help`** lists `qd ask` under Run, and `qd hints`' "What does
+  every host say about X?" now suggests it. Bare `qd`'s start card shows
+  `qd ask -- uname -r` in place of the `qd run` stand-in (QD-058). README:
+  *Who agrees, who differs: `qd ask`*, a line in *Thirty seconds*, the
+  `qd --help` heading table and the exit-status table;
+  `docs/getting-started.md`'s map of every command names it (under Run).
 
 ### Changed
 - `report_run()`'s summary line and its DID NOT ANSWER block are now
