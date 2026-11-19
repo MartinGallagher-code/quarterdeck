@@ -5,6 +5,58 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.47.0 — 2026-11-19
+
+The advice qd already prints now points newcomers at the beginner
+commands, where they save steps (QD-065).
+
+### Added
+- **`qd hints` opens with Getting started**: `qd setup`, `qd ask`, `qd
+  survey`, `qd again` and `qd odd`, each with its question, in the start
+  card's order. Their hints moved there from Run, Read it back, Over time
+  and Help, so each command is hinted once. The heading is the start
+  card's own (bare `qd`); the full card, at its 50-line limit, keeps its
+  headings, and the rest of `qd hints` stays under them
+  (`quarterdeck/cli.py`: `HINT_GROUPS`, `HINTS`, `cmd_hints()`).
+- **WHAT TO DO NEXT after `qd run` and `qd probe`** suggests:
+  - `qd odd latest` for a run of several columns, in place of one
+    column's `qd outliers` (the block keeps its length);
+  - `qd again latest` for a run every host answered with no earlier one
+    to diff against, and only when `qd again` would accept it: not a
+    probe, a pushed run, a campaign part or a design point
+    (`quarterdeck/again.py`: `why_not()`, the refusals `the_run()` makes,
+    now shared);
+  - `qd survey` with the hosts and options typed, after `qd probe facts`,
+    for next time: facts and inventory, and one screen of who stands
+    out. Not after `--every`/`--count`, which survey refuses
+    (`quarterdeck/cli.py`: `report_run()`'s `probe`, `survey_tip()`,
+    `run_next_steps()`).
+- **An empty store says the two ways in:** `qd log` on a store with no
+  runs (and no datasets) prints WHAT TO DO NEXT with `qd setup` and `qd
+  demo`; `qd doctor` on one adds `qd setup` beside its `qd demo`; and a
+  read of `latest` in one ends its error with "new to qd: `qd setup`, or
+  `qd demo` to practise" (`quarterdeck/cli.py`: `cmd_log()`,
+  `cmd_doctor()`; `quarterdeck/store.py`: `resolve()`).
+
+### Tests
+- `tests/test_help.sh`: `qd hints` opens with Getting started and the
+  five commands in order, each hinted once; its first heading is the
+  start card's and the rest the full card's; the hints check fails on a
+  misspelt heading (`tests/help_unit.py`: `HINT_GROUPS`, and a new `next
+  FILE` case: every `qd` command under a WHAT TO DO NEXT parses).
+- `tests/test_run.sh`: `qd again` after a first run, `qd diff` and no `qd
+  again` after a second, `--rerun` and no `qd again` when a host did not
+  answer, `qd odd` in place of `qd outliers` for several columns, none
+  after `--script`, every suggestion parsing and each block six lines at
+  most; an empty store's `qd log` and `qd show latest`.
+- `tests/test_probe.sh`: `qd probe facts` suggests `qd survey` with the
+  options typed, and `qd odd`, never `qd again`; not after another probe,
+  or with `--count`.
+- `tests/test_demo.sh`: `qd doctor` on an empty store names `qd setup`
+  too.
+- `tests/test_ask.sh`: `qd ask` falling back to qd run's summary for
+  several columns suggests `qd odd` and `qd again` as qd run does.
+
 ## 0.43.0 — 2026-11-19
 
 Your own named probes: `qd probe add NAME -- COMMAND` gives a command a

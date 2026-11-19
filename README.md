@@ -79,9 +79,10 @@ ones first.
 | Stores and output | `store`, `rm`, `import`, `export`, `floor` |
 | Help | `hints`, `doctor`, `start`, `demo`, `help` |
 
-`qd hints` maps questions to commands under the same headings, `qd help
-VERB` gives one verb's flags (`qd help run`, as `qd run --help` prints
-them), and this README is the manual.
+`qd hints` maps questions to commands: first the five beginner commands,
+under the start card's Getting started, then the rest under the same
+headings. `qd help VERB` gives one verb's flags (`qd help run`, as `qd
+run --help` prints them), and this README is the manual.
 
 qd itself is Python 3.6+, standard library only. It needs provost to keep
 anything (`--no-store` runs without it): any version files a run, and

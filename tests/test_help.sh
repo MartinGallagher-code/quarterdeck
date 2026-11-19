@@ -6,8 +6,9 @@
 # line for every verb the parser registers (QD-043), under the goal
 # headings, in at most 50 lines of 80 columns with six examples at most
 # (QD-040), every command `qd hints` suggests still parses (QD-045), its
-# headings are the card's (QD-040), and every README pointer in qd's
-# code names a section the README has (QD-046,
+# headings are the card's (QD-040) after the start card's Getting
+# started, which opens it with the beginner commands (QD-065), and every
+# README pointer in qd's code names a section the README has (QD-046,
 # tests/check_readme_pointers.py, which tests/check.sh also runs), and `qd
 # help VERB` prints what `qd VERB --help` does (QD-044).  Bare `qd`, `qd
 # start` and `qd help basics` print the start card, at most 25 lines of
@@ -107,9 +108,28 @@ t_hints_prints_every_hint() {
     assert_contains "$(cat hints.txt)" "qd outliers latest COLUMN"
     unit groups
     assert_eq "$(sed -n '2,$p' hints.txt | grep -v '^  ' | grep -v '^$')" "$OUT"
-    # and those are the card's own
+    # the first the start card's (QD-065), the rest the full card's own
+    qd > start.txt
+    assert_eq "$(grep -Fx "$(head -n 1 <<< "$OUT")" start.txt)" "Getting started"
     qd --help > card.txt
-    assert_eq "$(grep -Fx -f <(printf '%s\n' "$OUT") card.txt)" "$OUT"
+    assert_eq "$(grep -Fx -f <(printf '%s\n' "$OUT" | tail -n +2) card.txt)" \
+        "$(tail -n +2 <<< "$OUT")"
+}
+
+# QD-065: the beginner commands first, under the start card's heading,
+# each with its question, in the start card's order
+t_hints_open_with_getting_started() {
+    qd hints > hints.txt
+    assert_eq "$(sed -n 3p hints.txt)" "Getting started"
+    got="$(sed -n '4,/^$/p' hints.txt | grep '^  ' |
+        awk -F'  +' '{ split($3, w, " "); print w[1], w[2] }')"
+    assert_eq "$got" "$(printf 'qd setup\nqd ask\nqd survey\nqd again\nqd odd')"
+    # a question beside each
+    assert_eq "$(sed -n '4,8p' hints.txt | awk '$1 == "qd"' | wc -l | tr -d ' ')" "0"
+    # and each only there: no second hint of the same command elsewhere
+    for v in setup ask survey again odd; do
+        assert_eq "$(grep -c "  qd $v " hints.txt)" "1"
+    done
 }
 
 t_hints_every_command_parses() {
@@ -127,6 +147,9 @@ t_hints_check_fails_on_a_bad_flag_or_verb() {
     assert_status "$RC" 1
     assert_contains "$OUT" "Who is far from the rest?: qd outlyers latest COLUMN"
     assert_contains "$OUT" "invalid choice: 'outlyers'"
+    unit hints group
+    assert_status "$RC" 1
+    assert_contains "$OUT" "'Getting startd' is not one of the card's headings"
 }
 
 # pointers [ROOT]: tests/check_readme_pointers.py, with OUT and RC kept
@@ -313,6 +336,7 @@ run_test "qd help VERB prints qd VERB --help"         t_help_verb_is_the_verbs_h
 run_test "qd help NOSUCH names the closest verbs"     t_help_unknown_verb_names_the_closest
 run_test "qd hints prints every hint"                  t_hints_prints_every_hint
 run_test "every command qd hints suggests parses"      t_hints_every_command_parses
+run_test "qd hints opens with Getting started"        t_hints_open_with_getting_started
 run_test "the hints check fails on a bad flag or verb" t_hints_check_fails_on_a_bad_flag_or_verb
 run_test "every README pointer in the code lands"      t_readme_pointers_all_land
 run_test "the pointer check fails where one does not land" \

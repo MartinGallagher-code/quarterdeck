@@ -242,10 +242,13 @@ t_limits_help_hints_and_doctor() {
     # nothing in the store: the demo is something to learn on
     out="$(qd doctor --store "$TEST_TMPDIR/empty" 2>&1 || true)"
     assert_contains "$out" "* qd demo"
+    # and qd setup the way onto your own fleet (QD-065)
+    assert_contains "$out" "* qd setup "
     printf 'host,v\na,1\n' > t.csv
     qd import t.csv --store "$TEST_TMPDIR/full" > /dev/null
     out="$(qd doctor --store "$TEST_TMPDIR/full" 2>&1 || true)"
     assert_not_contains "$out" "qd demo"
+    assert_not_contains "$out" "qd setup"
 }
 
 # The page's map names every command qd has, the README points at the page

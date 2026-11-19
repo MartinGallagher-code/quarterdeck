@@ -55,49 +55,58 @@ def the_run(cli, args):
     e = st.resolve(r)
     if not isinstance(e, storemod.Run):
         refuse(ref, "%s is a dataset, not a run" % cli.shown_id(e))
+    why = why_not(cli, e)
+    if why:
+        refuse(ref, why)
+    return e
+
+
+def why_not(cli, e):
+    """Why the run e cannot be run again, or None when it can: what qd
+    run suggests `qd again` by (QD-065) is what qd again accepts."""
     m = e.meta
     kind = m.get("kind")
     sid = cli.shown_id(e)
     if kind == "do":
-        refuse(ref, "%s is a qd do run, which ran a tool here: run it again "
-               "with `qd do -- %s`, then `qd diff %s latest`"
-               % (sid, m.get("command", "TOOL ..."), sid))
+        return ("%s is a qd do run, which ran a tool here: run it again "
+                "with `qd do -- %s`, then `qd diff %s latest`"
+                % (sid, m.get("command", "TOOL ..."), sid))
     if kind == "import":
-        refuse(ref, "%s is a qd import: nothing ran, so there is nothing to "
-               "run again" % sid)
+        return ("%s is a qd import: nothing ran, so there is nothing to "
+                "run again" % sid)
     if kind != "run":
-        refuse(ref, "%s is a qd %s, not a run on the fleet"
-               % (sid, kind or "entry"))
+        return ("%s is a qd %s, not a run on the fleet"
+                % (sid, kind or "entry"))
     if m.get("factors"):
-        refuse(ref, "%s is a design point of %s: qd doe run %s runs the "
-               "design's points" % (sid, m.get("group", "a design"),
-                                     m.get("group", "DESIGN")))
+        return ("%s is a design point of %s: qd doe run %s runs the "
+                "design's points" % (sid, m.get("group", "a design"),
+                                      m.get("group", "DESIGN")))
     if m.get("part") or m.get("group"):
-        refuse(ref, "%s is part %s of campaign %s: qd campaign retry %s %s "
-               "runs a part again" % (sid, m.get("part", "?"),
-                                      m.get("group", "?"),
-                                      m.get("group", "NAME"),
-                                      m.get("part", "PART")))
+        return ("%s is part %s of campaign %s: qd campaign retry %s %s "
+                "runs a part again" % (sid, m.get("part", "?"),
+                                       m.get("group", "?"),
+                                       m.get("group", "NAME"),
+                                       m.get("part", "PART")))
     if m.get("tool") == "probe":
-        refuse(ref, "%s is a probe: qd probe %s asks it again, and qd diff "
-               "latest then compares it with this one"
-               % (sid, m.get("name", "NAME")))
+        return ("%s is a probe: qd probe %s asks it again, and qd diff "
+                "latest then compares it with this one"
+                % (sid, m.get("name", "NAME")))
     if not m.get("timeout_s"):
-        refuse(ref, "%s's record does not keep its --timeout (it was filed "
-               "before qd 0.40.0, or not by qd run): run it again with qd "
-               "run, then qd diff %s latest" % (sid, sid))
+        return ("%s's record does not keep its --timeout (it was filed "
+                "before qd 0.40.0, or not by qd run): run it again with qd "
+                "run, then qd diff %s latest" % (sid, sid))
     if str(m.get("pushed") or "0") != "0":
-        refuse(ref, "%s pushed files (--push, --script), which the store "
-               "does not keep: qd run --push ... again, then qd diff %s "
-               "latest" % (sid, sid))
+        return ("%s pushed files (--push, --script), which the store "
+                "does not keep: qd run --push ... again, then qd diff %s "
+                "latest" % (sid, sid))
     if not (m.get("command") or "").strip():
-        refuse(ref, "%s's record keeps no command" % sid)
+        return ("%s's record keeps no command" % sid)
     try:
         float(m["timeout_s"])
     except ValueError:
-        refuse(ref, "%s's record has a timeout of %r, not a number of "
-               "seconds" % (sid, m["timeout_s"]))
-    return e
+        return ("%s's record has a timeout of %r, not a number of "
+                "seconds" % (sid, m["timeout_s"]))
+    return None
 
 
 def hosts_of(cli, e):

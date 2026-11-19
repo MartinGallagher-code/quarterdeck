@@ -62,7 +62,11 @@ t_every_host_agrees() {
     assert_contains "$out" "qd freq latest A"
     assert_contains "$out" "qd show latest "
     assert_contains "$out" "qd view latest"
-    assert_eq "$(next_steps_parse out)" "ok 3"
+    # qd odd for its three columns, and qd again, where qd run would
+    # suggest them (QD-065)
+    assert_eq "$(next_steps_parse out)" "ok 4"
+    assert_contains "$out" "* qd odd latest"
+    assert_contains "$out" "* qd again latest"
 }
 
 t_two_answers_most_common_first() {
@@ -78,7 +82,11 @@ t_two_answers_most_common_first() {
     # which step found it
     assert_contains "$out" "NOT ALIKE  2 different answers (the count)"
     assert_not_contains "$out" "(the run)"
-    assert_eq "$(next_steps_parse out)" "ok 3"
+    # qd odd for its three columns, and qd again, where qd run would
+    # suggest them (QD-065)
+    assert_eq "$(next_steps_parse out)" "ok 4"
+    assert_contains "$out" "* qd odd latest"
+    assert_contains "$out" "* qd again latest"
 }
 
 t_a_host_unreachable() {
@@ -122,7 +130,11 @@ t_several_columns_fall_back_to_the_run_summary() {
     assert_contains "$out" "qd ask -- cat wide: 2 hosts, 2 ok"
     assert_contains "$out" "node01  1  2  3"
     assert_not_contains "$out" "ANSWERS"
-    assert_eq "$(next_steps_parse out)" "ok 3"
+    # qd odd for its three columns, and qd again, where qd run would
+    # suggest them (QD-065)
+    assert_eq "$(next_steps_parse out)" "ok 4"
+    assert_contains "$out" "* qd odd latest"
+    assert_contains "$out" "* qd again latest"
     # still 1 when a host did not answer
     printf 'node01\nnode09\n' > two.txt
     ask -s two.txt -- cat wide > out
@@ -161,7 +173,11 @@ t_a_long_host_list_is_cut_short() {
     assert_contains "$out" "n01 n02 n03 n04 n05 n06 n07 n08 (+2 more)"
     assert_contains "$out" " 1  other"
     assert_contains "$out" "qd freq latest A --all-labels  the count above, as qd freq gives it, every host named"
-    assert_eq "$(next_steps_parse out)" "ok 3"
+    # qd odd for its three columns, and qd again, where qd run would
+    # suggest them (QD-065)
+    assert_eq "$(next_steps_parse out)" "ok 4"
+    assert_contains "$out" "* qd odd latest"
+    assert_contains "$out" "* qd again latest"
 }
 
 # the run qd ask files is the run qd run files: compared through qd log,
