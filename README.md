@@ -2356,6 +2356,9 @@ qd doe run iperf.json -s hosts.txt -- 'iperf3 -c peer -P {streams} -w {window}'
 qd doe status iperf                         # which points are measured
 qd doe analyze iperf -c mbps                # doe's main effects, interactions, ANOVA, power
 qd doe analyze iperf -c mbps --optimize     # and its recommended settings
+qd doe init fio                             # a starting config: a screen of fio's settings
+qd doe next fio-screen -c read_iops         # a CCD/Box-Behnken follow-up on its big factors
+qd doe run fio-screen-read-iops-ccd.json --like fio-screen   # where the screen ran
 ```
 
 The design is
@@ -2373,6 +2376,196 @@ median of the column over the hosts that answered, or `--agg`), writes it
 as doe reads results (`run_<id>.json` beside the design's
 `design_matrix.json`) and runs `doe analyze`. doe wants Python 3.10 and
 numpy; qd runs it as a command, so qd keeps its 3.6 floor.
+
+`-c` takes several columns (`-c mbps,retrans`), or a response of the
+config by its name, and with no `-c` qd analyses every response of the
+config that names its `column`. They go to doe in one go: each point's
+responses are one `run_<id>.json`, and a response a point did not
+measure (its hosts failed, or the column is not there) is no key in it
+at all, so doe leaves that point out of that response. Blank, never 0.
+After the responses per point, qd ranks doe's main effects for each
+response (doe's `--csv` tables): the **big** factors are those inside
+doe's own 80% Pareto line, each with the level that maximises (or, for a
+response the config says to minimise, minimises) it, then the rest.
+
+A config can carry the command its points run (`metadata.qd_command`),
+so `qd doe run CONFIG -s hosts.txt` needs nothing after `--`, and what
+the design holds still goes in doe's `fixed_factors`, put into the
+command by `{name}` like a factor. A design run again with another
+command or other fixed factors is refused: `--name` a new one. A point
+whose every run failed on every host has measured nothing, and `qd doe
+run` runs it again; `--redo` runs every point again.
+
+### A screen of fio's parameters: `qd doe init fio`
+
+Which of fio's settings matter for one drive (QD-067, the first step of
+a tuning study: a central composite or Box-Behnken follow-up on the few
+that matter comes after, with `qd doe next`, below):
+
+```bash
+qd doe init fio                              # writes fio-screen.json
+$EDITOR fio-screen.json                      # fixed_factors.filename: a file on the drive
+qd doe plan fio-screen.json                  # the 8 points doe lays out
+echo db07 > host.txt                         # one host
+qd doe run fio-screen.json -s host.txt       # about 10 minutes: 8 x (60 s + 10 s ramp)
+qd doe analyze fio-screen                    # what moves each response
+```
+
+A point runs past qd's 60 s default `--timeout`, so the config's
+`metadata.qd_timeout` (180) raises it for `qd doe run`, which says so. A
+longer `--timeout` given is kept.
+
+`fio-screen.json` is a Plackett-Burman design of seven fio parameters at
+two levels each, eight points. It is a **proposal, for the owner to
+approve or change before the first real run**; the reason for each
+factor is its `description` in the file:
+
+| Factor | Low / high | Why it is in the screen |
+|---|---|---|
+| `bs` | 4k / 128k | 4k is the small random I/O IOPS is quoted for, 128k the large I/O streaming work issues; it trades IOPS for bandwidth more than any other setting |
+| `iodepth` | 1 / 32 | I/Os each job keeps in flight: 1 is latency-bound, 32 fills a SATA/SAS queue and goes a long way towards an NVMe drive's |
+| `numjobs` | 1 / 8 | parallelism on the host side, which iodepth alone does not give an NVMe drive's many queues; 8 stays under a server's core count |
+| `rwmixread` | 30 / 70 | the share of reads, kept off 0 and 100 so every point does both and every response is measured at every point (fio reports 0 for a direction that did no I/O, which would read as a measurement) |
+| `rw` | `rw` / `randrw` | sequential or random, both mixed so `rwmixread` applies everywhere |
+| `ioengine` | `libaio` / `io_uring` | both asynchronous, so iodepth means the same at both (a synchronous engine such as `psync` ignores it); io_uring needs Linux 5.1+ and a fio built with it (`fio --enghelp`) |
+| `direct` | 0 / 1 | through the page cache, or around it (`O_DIRECT`): what most applications get, or what the drive does |
+
+Held fixed (`fixed_factors`): the file, `size` 8G, `runtime` 60 s with
+`time_based`, `ramp_time` 10 s; `--group_reporting` (one result for all
+of a point's jobs) and `--output-format=json`, which provost parses into
+columns. The command, `metadata.qd_command` in the file:
+
+```
+fio --name=qd-screen --filename={filename} --size={size} --time_based
+    --runtime={runtime} --ramp_time={ramp_time} --group_reporting
+    --output-format=json --rw={rw} --rwmixread={rwmixread} --bs={bs}k
+    --iodepth={iodepth} --numjobs={numjobs} --ioengine={ioengine}
+    --direct={direct}
+```
+
+The responses are read from those columns (the same with PyPI's provost
+2.1.0 as with today's):
+
+| Response | Column | |
+|---|---|---|
+| `read_iops`, `write_iops` | `jobs.0.read.iops`, `jobs.0.write.iops` | maximise |
+| `read_bw`, `write_bw` | `jobs.0.read.bw_bytes`, `jobs.0.write.bw_bytes` (B/s) | maximise |
+| `read_lat_mean`, `write_lat_mean` | `jobs.0.read.clat_ns.mean`, `jobs.0.write.clat_ns.mean` (ns) | minimise |
+| `read_lat_p99`, `write_lat_p99` | `jobs.0.read.clat_ns.percentile.99.000000`, and write's (ns) | minimise |
+
+The response to optimise is not chosen in advance: the screen ranks the
+factors for all eight, and that ranking is what the follow-up's response
+is chosen from. `qd doe analyze fio-screen -c read_iops,read_lat_p99`
+analyses only some.
+
+```
+  what moves each response: doe's main effects as shares, largest first;
+  big: inside doe's 80% Pareto line, with the level that is best for it
+  read_iops       big: iodepth 67% (max 32), bs 33% (max 4)
+                  then: numjobs 0%, rwmixread 0%, rw 0%, ioengine 0%, direct 0%
+  write_iops      big: numjobs 71% (max 8), rwmixread 29% (max 30)
+                  then: bs 0%, iodepth 0%, rw 0%, ioengine 0%, direct 0%
+  read_lat_p99    big: rw 71% (min rw), ioengine 29% (min io_uring)
+  ...
+```
+
+Read it knowing what a screen is:
+
+- **Eight points for seven factors leaves nothing over**: no estimate of
+  noise, so every point counts. A point that failed (fio exits non-zero;
+  qd files its JSON, zeros and all, beside a status that is not ok) is
+  left out of every response, never counted as 0, but one lost point of
+  eight biases every effect: run `qd doe run` again, and only the failed
+  points are measured again, before analysing.
+- **A main effect here may be an interaction**: Plackett-Burman's main
+  effects are partly aliased with two-factor interactions (doe prints the
+  alias structure). `libaio` is only asynchronous with `direct=1`, and
+  bandwidth is IOPS times block size: interactions a screen cannot pull
+  apart from the main effects. The follow-up design can.
+- **`rw`, `ioengine` and `direct` are categorical.** A central composite
+  or Box-Behnken follow-up cannot vary them; it holds each at its better
+  level.
+- **`direct=0` measures the page cache** as much as the drive, once the
+  file fits in memory; 8G is a starting size, not a rule. Make it larger
+  than the host's memory if buffered I/O should reach the drive.
+- **fio writes the file**; it writes nothing else. Setting `filename` to a
+  device (`/dev/nvme0n1`) writes the raw device and destroys what is on
+  it: the typo guard refuses any fio command with a `/dev/` filename and
+  a writing `--rw` unless `--yes` is given, in `qd doe run` as in `qd
+  run`.
+- A config made by `qd doe init` is yours: edit levels, drop a factor,
+  add one (doe sizes the Plackett-Burman design to the factor count; 8
+  to 11 factors make 12 points), then `qd doe plan` it again.
+
+### The follow-up: `qd doe next` and `qd doe run --like`
+
+Once the screen has ranked the factors, a central composite or
+Box-Behnken design on the few that matter finds the shape of the
+response between their levels (QD-069, steps 3 and 4 of a tuning study):
+
+```bash
+qd doe next fio-screen -c read_iops          # writes fio-screen-read-iops-ccd.json
+qd doe plan fio-screen-read-iops-ccd.json    # the 16 points doe lays out
+qd doe run fio-screen-read-iops-ccd.json --like fio-screen
+qd doe status fio-screen-read-iops-ccd       # its study: fio-screen
+```
+
+`qd doe next SCREEN -c RESPONSE` is for one response, chosen from what
+`qd doe analyze` showed. It analyses the screen for it (doe's main
+effects, as `analyze` ranks them) and writes the follow-up's config:
+
+- **Which factors are varied.** The big ones, inside doe's 80% Pareto
+  line, that are numbers, at most four. A surface over one factor has no
+  shape to show, so when only one big factor is numeric, the next numeric
+  factor that moved the response at all is added, and said.
+  `--factors A,B,C` chooses them instead.
+- **Categorical factors are never varied** (`rw`, `ioengine`, `direct`
+  in the fio screen): a central composite or Box-Behnken varies a number
+  between two levels. A big categorical factor, or one named in
+  `--factors`, is held at its better level, with a line saying so. When
+  nothing numeric moved the response (the fio screen's read p99, moved
+  by `rw` and `ioengine` alone), there is nothing to fit a surface over,
+  and qd says that and writes nothing.
+- **Everything not varied is held** (doe's `fixed_factors`): at the
+  level the screen found better for this response (maximised or
+  minimised, as the config says), or, where the screen saw it move
+  nothing, at its first level, and the table says which. What the screen
+  held (the file, size, run time) is held as it was.
+- **The design is doe's choice**: `doe suggest --goal response_surface`
+  for that many numeric factors and `--budget` runs (30 by default, room
+  for a central composite on two factors and a Box-Behnken on three or
+  four). What doe suggests, and why, is shown; the point count is the one
+  `doe generate` lays out (a central composite on two factors is 16
+  points, eight of them centre points; a Box-Behnken on three is 15). If
+  doe suggests something else for a small budget, qd says so and writes
+  nothing.
+- **The levels are the screen's own range**, not re-centred on the
+  screen's best corner: the follow-up measures the region the screen
+  measured, with middle levels. Moving the region is a judgement, so it
+  is yours: edit the levels in the config, and `qd doe plan` it again.
+  Box-Behnken puts a middle level at the mean of the two (1 and 32 make
+  16.5), which a count such as `iodepth` or `numjobs` cannot take; qd
+  warns, and making the two levels sum to an even number (2 and 32)
+  fixes it. (doe's central composite rounds whole-number factors; its
+  Box-Behnken does not.)
+- The config keeps the screen's command and responses, and names the
+  study it belongs to (`metadata.qd_study`, the screen's own name or its
+  study) and what it follows (`metadata.qd_follows`). `-o FILE` names
+  the file; one that is there already is not written over.
+
+`qd doe run CONFIG --like SCREEN` runs the follow-up on exactly the hosts
+the screen's points ran on, with their addresses and attributes, and
+says so. It takes no `-s`, `-S`, `--layout` or `--rerun`: `--like` is
+the host list. It holds what the screen held: a fixed factor the config
+leaves out is taken from the screen, and one the config sets otherwise
+(another `filename`, another drive) is refused. With no command after
+`--` and none in the config, the screen's is used; another command is
+run but warned about. A host the screen ran on that answers at none of
+the follow-up's points is named at the end (`b answered at none of the
+16 points run here (b unreachable) -- fio-screen ran there; has it
+gone?`), and the run exits 1: its points there are not measured, never
+skipped in silence. `qd doe status` shows the study a follow-up belongs
+to.
 
 ---
 
