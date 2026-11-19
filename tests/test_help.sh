@@ -65,7 +65,7 @@ t_card_check_names_a_verb_with_no_line() {
     assert_status "$RC" 1
     assert_eq "$OUT" "store"
     # one of the run-together verbs
-    sed 's/|outliers|/|/' card.txt > no-outliers.txt
+    sed 's/|outliers RUN/ RUN/' card.txt > no-outliers.txt
     unit card no-outliers.txt
     assert_status "$RC" 1
     assert_eq "$OUT" "outliers"
