@@ -7,6 +7,7 @@
     qd doe run CONFIG.json -s hosts.txt -- 'iperf3 -c peer -P {streams}'
     qd doe status NAME                       which points are measured
     qd doe analyze NAME -c COLUMN[,COL...]   doe's effects, ANOVA, power
+    qd doe analyze NAME -c COLUMN --report   and doe's plots and HTML report
     qd doe next NAME -c RESPONSE             a CCD/Box-Behnken follow-up
     qd doe run FOLLOWUP.json --like NAME     where NAME ran, as it held
 
@@ -49,6 +50,11 @@ and writes a follow-up config: the big numeric factors varied, the rest
 held at their better level, the design doe suggest's response-surface
 choice, the study the screen's (metadata.qd_study).  `qd doe run --like`
 runs it on the hosts the screen ran on, holding what the screen held.
+
+With --report doe's plots and HTML report are kept (in qd's cache unless a
+directory is named), where qd web links them.  qd web's charts of a design
+-- main effects, interactions, a Pareto of effect sizes -- are effects()'s
+plain means of the points measured; the statistics stay doe's.
 """
 
 import hashlib
@@ -408,11 +414,14 @@ def read_effects(path):
     return out
 
 
-def analyze(st, name, columns=None, agg="median", optimize=False, extra=()):
+def analyze(st, name, columns=None, agg="median", optimize=False, extra=(),
+            report=None):
     """Write the responses as doe reads them and run doe analyze (and
     optimize) on all of them at once.  Returns (doe's text, the responses
     [(name, column, optimize, [(run_id, value or None, n)])], doe's ranked
-    effects {name: [(factor, effect, pct)]}, the design's matrix)."""
+    effects {name: [(factor, effect, pct)]}, the design's matrix).  With
+    report (a directory, from report_dir), doe's plots and HTML report are
+    kept there, with the results and config that made them."""
     row, cfg, matrix = load(st, name)
     sp = specs(cfg, columns)
     if not sp:
@@ -428,7 +437,7 @@ def analyze(st, name, columns=None, agg="median", optimize=False, extra=()):
                 name))
     work = tempfile.mkdtemp(prefix="qd-doe-")
     try:
-        out_dir = os.path.join(work, "results")
+        out_dir = os.path.join(report or work, "results")
         csv_dir = os.path.join(work, "effects")
         os.makedirs(out_dir)
         write_text(os.path.join(out_dir, "design_matrix.json"),
@@ -450,11 +459,13 @@ def analyze(st, name, columns=None, agg="median", optimize=False, extra=()):
         settings = cfg.setdefault("settings", {})
         settings["out_directory"] = out_dir
         settings.setdefault("test_script", "true")
-        conf = os.path.join(work, "config.json")
+        if report:
+            settings["processed_directory"] = report
+        conf = os.path.join(report or work, "config.json")
         write_text(conf, json.dumps(cfg, indent=2))
-        args = ["analyze", "--config", conf, "--results-dir", out_dir,
-                "--no-plots", "--no-report", "--partial",
-                "--csv", csv_dir] + list(extra)
+        args = ["analyze", "--config", conf, "--results-dir", out_dir] + \
+            ([] if report else ["--no-plots", "--no-report"]) + \
+            ["--partial", "--csv", csv_dir] + list(extra)
         rc, text = run_doe(args, cwd=work)
         if rc != 0:
             die("doe analyze failed (exit %d):\n%s" % (rc, text[-2000:]))
@@ -723,7 +734,7 @@ def clean(text):
 # host.  The factors, levels and the reason for each are the proposal the
 # owner approves (or changes) before the first real run; the manual says
 # the same at more length,
-# README: "A screen of fio's parameters: qd doe init fio"
+# docs/larger-jobs.md: "A screen of fio's parameters: qd doe init fio"
 FIO_COMMAND = (
     "fio --name=qd-screen --filename={filename} --size={size} --time_based "
     "--runtime={runtime} --ramp_time={ramp_time} --group_reporting "
@@ -839,3 +850,205 @@ def init(kind, path=None):
         die("%s is there already: move it, or edit it" % path)
     write_text(path, json.dumps(cfg, indent=2) + "\n")
     return path, cfg
+
+
+# ---------------------------------------------------------------------------
+# doe's report kept, and the figures qd web draws (QD-068)
+# ---------------------------------------------------------------------------
+
+REPORT_MARK = ".qd-doe-report"
+
+
+def report_root():
+    """Where qd keeps doe's reports when no directory is named: its cache
+    (never the store, which provost commits whole), what qd web serves at
+    /doe/."""
+    return os.path.join(storemod.cache_root(), "doe")
+
+
+def safe_part(text):
+    return re.sub(r"[^A-Za-z0-9_.@-]+", "_", text).strip("._") or "_"
+
+
+def store_key(st):
+    return hashlib.sha1(st.root.encode("utf-8")).hexdigest()[:12]
+
+
+def report_rel(st, name, column):
+    """The report's place under report_root(): the store, the design, the
+    column -- so two stores' designs of one name never share one."""
+    return "/".join([store_key(st), safe_part(name), safe_part(column)])
+
+
+def report_path(st, name, column):
+    """The cache's place for a design's report on one column."""
+    return os.path.join(report_root(),
+                        *report_rel(st, name, column).split("/"))
+
+
+def report_key(cfg, columns=None):
+    """What a report is kept under: the one response's column, or the
+    columns joined when one analysis covers several (qd web links the
+    one-column reports from a design's page); None when -c names none."""
+    sp = specs(cfg, columns)
+    if not sp:
+        return None
+    return ",".join(c for _, c, _ in sp)
+
+
+def report_dir(st, name, column, where=None):
+    """The directory doe's report goes in, made ready: the one asked for,
+    else the cache's.  A directory qd made before is emptied first (so no
+    plot from an earlier analysis is left beside a new report); one that
+    holds anything else is refused, never emptied."""
+    path = os.path.abspath(os.path.expanduser(where)) if where else \
+        report_path(st, name, column)
+    if os.path.exists(path) and not os.path.isdir(path):
+        die("--report %s is a file, not a directory" % path)
+    if os.path.isdir(path) and os.listdir(path):
+        if not os.path.isfile(os.path.join(path, REPORT_MARK)):
+            die("--report %s holds files qd did not put there: name a new "
+                "or empty directory" % path)
+        for f in os.listdir(path):
+            p = os.path.join(path, f)
+            if os.path.isdir(p) and not os.path.islink(p):
+                shutil.rmtree(p)
+            else:
+                os.remove(p)
+    try:
+        if not os.path.isdir(path):
+            os.makedirs(path)
+        write_text(os.path.join(path, REPORT_MARK),
+                   "doe's report for design %s, column %s, made by qd doe "
+                   "analyze --report; qd empties this directory when it "
+                   "makes the report again\n" % (name, column))
+    except (IOError, OSError) as exc:
+        die("cannot make the report directory %s: %s"
+            % (path, getattr(exc, "strerror", None) or exc))
+    return path
+
+
+def report_files(path):
+    """What doe left in a report directory: (the HTML report or None, its
+    plots), names relative to path."""
+    if not os.path.isdir(path):
+        return None, []
+    names_ = sorted(os.listdir(path))
+    html = "report.html" if "report.html" in names_ else None
+    return html, [f for f in names_ if f.lower().endswith(".png")]
+
+
+def response_columns(st, name):
+    """The numeric columns of the design's runs, less its factors, the
+    hosts' attributes and qd's bookkeeping (compare's rule): what a
+    response can be, in the order first seen."""
+    from .compare import VOLATILE
+    from .stats import BOOKKEEPING
+    _, _, matrix = load(st, name)
+    factors = set(matrix.get("factor_names") or [])
+    out = []
+    for _, es in sorted(point_runs(st, name).items()):
+        for e in es:
+            t = e.load("data")
+            skip = factors | set(BOOKKEEPING) | set(VOLATILE) | \
+                set(("status", "error"))
+            if hasattr(e, "setting_columns"):
+                skip |= e.setting_columns()
+            for c in t.columns:
+                if c in out or c in skip:
+                    continue
+                if t.kind(c) == "num":
+                    out.append(c)
+    return out
+
+
+def level_order(levels, declared):
+    """A factor's levels in the order a chart's axis wants them: by value
+    when every one is a number, else as the config lists them."""
+    try:
+        return sorted(levels, key=float)
+    except ValueError:
+        pass
+    known = [str(v) for v in declared or []]
+    return sorted(levels, key=lambda v: (known.index(v) if v in known
+                                         else len(known), levels.index(v)))
+
+
+def _mean(xs):
+    return sum(xs) / float(len(xs)) if xs else None
+
+
+def effects(st, name, column, agg="median"):
+    """The figures qd web charts for one response: each point's value (as
+    `qd doe analyze` reduces it), each factor's level means (main effects),
+    each pair's cell means (interactions) and a Pareto of effect sizes.
+    Plain means of the points measured -- a point with no value is left
+    out of every mean, never counted as zero; significance, ANOVA and the
+    rest are doe's (qd doe analyze, and its report)."""
+    _, cfg, matrix = load(st, name)
+    pts = points(matrix)
+    factors = matrix.get("factor_names") or []
+    declared = dict((f.get("name"), f.get("levels"))
+                    for f in cfg.get("factors") or [] if isinstance(f, dict))
+    resp = dict((rid, (v, n)) for rid, v, n in
+                responses(st, name, column, agg))
+    levels = {}
+    for f in factors:
+        seen = []
+        for _, _, lv in pts:
+            v = dict(lv)[f]
+            if v not in seen:
+                seen.append(v)
+        levels[f] = level_order(seen, declared.get(f))
+    point_rows = []
+    for rid, blk, lv in pts:
+        v, n = resp.get(rid, (None, 0))
+        point_rows.append({"point": rid, "block": blk,
+                           "levels": dict(lv), "value": v, "samples": n})
+    measured = [p for p in point_rows if p["value"] is not None]
+
+    def cell(conds):
+        xs = [p["value"] for p in measured
+              if all(p["levels"][f] == v for f, v in conds)]
+        return {"mean": _mean(xs), "n": len(xs)}
+
+    main = []
+    for f in factors:
+        cells = [dict(cell([(f, v)]), level=v) for v in levels[f]]
+        means = [c["mean"] for c in cells if c["mean"] is not None]
+        first = cells[0]["mean"] if cells else None
+        last = cells[-1]["mean"] if cells else None
+        main.append({
+            "factor": f, "levels": cells,
+            # the last level's mean less the first's (high less low)
+            "effect": last - first if first is not None and
+            last is not None and len(cells) > 1 else None,
+            # the spread of the level means: what the Pareto ranks
+            "size": max(means) - min(means) if len(means) > 1 else None})
+    inter = []
+    for i, a in enumerate(factors):
+        for b in factors[i + 1:]:
+            grid = [[cell([(a, va), (b, vb)]) for va in levels[a]]
+                    for vb in levels[b]]
+            eff = None
+            if len(levels[a]) == 2 and len(levels[b]) == 2 and \
+                    all(c["mean"] is not None for r in grid for c in r):
+                # two-level factors: half the difference between a's
+                # effect at b's high level and at b's low one
+                eff = ((grid[1][1]["mean"] - grid[1][0]["mean"]) -
+                       (grid[0][1]["mean"] - grid[0][0]["mean"])) / 2.0
+            inter.append({"a": a, "b": b, "a_levels": levels[a],
+                          "b_levels": levels[b], "cells": grid,
+                          "effect": eff,
+                          "size": abs(eff) if eff is not None else None})
+    pareto = [{"term": m["factor"], "kind": "main", "effect": m["effect"],
+               "size": m["size"]} for m in main if m["size"] is not None]
+    pareto += [{"term": "%s x %s" % (x["a"], x["b"]), "kind": "interaction",
+                "effect": x["effect"], "size": x["size"]}
+               for x in inter if x["size"] is not None]
+    pareto.sort(key=lambda r: -r["size"])
+    return {"design": name, "column": column, "agg": agg,
+            "factors": factors, "levels": levels,
+            "points": point_rows, "measured": len(measured),
+            "total": len(point_rows), "main": main,
+            "interactions": inter, "pareto": pareto}

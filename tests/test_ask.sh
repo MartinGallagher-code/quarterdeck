@@ -122,7 +122,11 @@ t_several_columns_fall_back_to_the_run_summary() {
     assert_contains "$out" "qd ask -- cat wide: 2 hosts, 2 ok"
     assert_contains "$out" "node01  1  2  3"
     assert_not_contains "$out" "ANSWERS"
-    assert_eq "$(next_steps_parse out)" "ok 3"
+    # qd odd for its three columns, and qd again, where qd run would
+    # suggest them (QD-065)
+    assert_eq "$(next_steps_parse out)" "ok 4"
+    assert_contains "$out" "* qd odd latest"
+    assert_contains "$out" "* qd again latest"
     # still 1 when a host did not answer
     printf 'node01\nnode09\n' > two.txt
     ask -s two.txt -- cat wide > out

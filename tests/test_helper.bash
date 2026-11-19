@@ -840,6 +840,19 @@ elif a[0] == "analyze":
                         "pct_contribution", "ci_low", "ci_high"])
             for f, e in eff:
                 w.writerow([f, e, 0.0, abs(e) / total * 100, 0.0, 0.0])
+    # its plots and HTML report, unless told not to, where the real one
+    # puts them: settings.processed_directory, else the results
+    keep = cfg["settings"].get("processed_directory") or d
+    names_ = [r["name"] for r in cfg["responses"]]
+    if "--no-plots" not in a:
+        for resp in names_:
+            open(os.path.join(keep, "main_effects_%s.png" % resp),
+                 "wb").write(b"\x89PNG\r\n\x1a\n")
+    if "--no-report" not in a:
+        open(os.path.join(keep, "report.html"), "w").write(
+            "<html><body><h1>DOE report: %s</h1></body></html>\n"
+            % ", ".join(names_))
+        print("\nHTML report: %s" % os.path.join(keep, "report.html"))
 EOF
     chmod +x "$FAKE_BIN/doe"
     export QD_DOE="$FAKE_BIN/doe"

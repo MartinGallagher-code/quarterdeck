@@ -16,7 +16,7 @@ License: GPL-3.0-or-later <https://www.gnu.org/licenses/gpl-3.0.html>
 This is free software: you are free to change and redistribute it.
 There is no warranty, to the extent permitted by law.""" % (PROG, VERSION)
 
-DOCS = "https://github.com/MartinGallagher-code/quarterdeck#readme"
+DOCS = "https://github.com/MartinGallagher-code/quarterdeck/tree/main/docs"
 
 
 class QdError(Exception):

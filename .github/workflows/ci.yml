@@ -283,6 +283,23 @@ jobs:
       - name: Parse app.js
         run: node --check quarterdeck/web/app.js
 
+  manual:
+    # the README and docs/ (QD-041): every link between the pages lands,
+    # and every pointer from the code names a section of the page it names
+    name: manual links and pointers
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Every link in the README and docs/ lands
+        run: python3 tests/check_links.py
+
+      - name: Every manual pointer in the code lands
+        run: python3 tests/check_readme_pointers.py
+
   small-run:
     # How long a one-host `qd run -- ls` takes, and how many processes it
     # starts (tests/small_run.sh, QD-056), with PyPI's provost and with

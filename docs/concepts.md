@@ -6,7 +6,7 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 # Concepts: the words every qd command assumes
 
 Each word below gets a sentence or two, one example and a link to the
-part of the [manual](../README.md) that uses it. The examples read the
+part of the [manual](README.md) that uses it. The examples read the
 demo store: `qd demo`, then `qd store use demo`, as
 [Getting started](getting-started.md) does.
 `tests/test_concepts.sh` checks that every `qd` command here parses, and
@@ -33,7 +33,7 @@ store: dataset demo-kernel, every such run's rows,
   `qd log demo-kernel`.
 - **Pass:** with `--every S --count N` a run asks every host N times,
   once every S seconds; each time is a pass, and its rows carry `pass`
-  and `ts` ([Over time](../README.md#over-time)):
+  and `ts` ([Over time](running.md#over-time)):
   `qd run --every 60 --count 5 -- uptime`.
 - **Table:** a run reads back as tables: `data` (the default), a row per
   host with what it said in columns, and `hosts`, how each host's try
@@ -58,11 +58,11 @@ store: dataset demo-kernel, every such run's rows,
 - **Store:** where all of it is kept, a git repository provost looks
   after; its layout is provost's spec,
   [`docs/store-format.md`](https://github.com/MartinGallagher-code/provost/blob/main/docs/store-format.md)
-  ([What it keeps](../README.md#what-it-keeps-provosts-store)):
+  ([What it keeps](stores.md#what-it-keeps-provosts-store)):
   `qd store ls`.
 - **Active store:** the one commands use when nothing more explicit
   (`--store`, `QD_STORE`, `PROVOST_WORKSPACE`) names another
-  ([Named stores](../README.md#named-stores-qd-store)): `qd store use demo`.
+  ([Named stores](stores.md#named-stores-qd-store)): `qd store use demo`.
 - **Named store:** a store qd knows by a name, for `--store NAME` and
   `RUN@NAME`: `qd store new lab`.
 - **Remote store:** a named store on another machine, read from a copy
@@ -72,7 +72,7 @@ store: dataset demo-kernel, every such run's rows,
 
 **Blank** means not measured, never zero: a host that did not answer, or
 a column its answer did not have, stays blank through every statistic,
-pivot and diff ([Conventions](../README.md#conventions)):
+pivot and diff ([Conventions](conventions.md#conventions)):
 `qd stats demo-kernel A` counts the blank apart.
 
 ## Naming a run
@@ -96,32 +96,32 @@ example reads the demo store and exits 0; `qd log` lists the runs, and
 | `RUN@STORE` | any of the above, read in the named store STORE | `qd show latest:hosts@demo` |
 
 `@STORE` works for reading commands only, and splits on the last `@`
-([Runs from different stores side by side](../README.md#named-stores-qd-store)).
+([Runs from different stores side by side](stores.md#named-stores-qd-store)).
 
 ## The comparison words
 
 - **Peer group:** the hosts that ought to measure alike, named, so each
   is held against its own peers rather than the whole fleet
-  ([Peer groups](../README.md#peer-groups-and-qualified-baselines-qd-peers-qd-baseline)):
+  ([Peer groups](over-time.md#peer-groups-and-qualified-baselines-qd-peers-qd-baseline)):
   `qd peers define sku --by sku`.
 - **Baseline:** what a peer group measured on runs someone vouched for,
   kept by name, for later runs to be compared with:
   `qd baseline set gold demo-iperf --peers sku -c mbps`.
 - **Campaign:** a command and a host list cut into parts, worked through
   part by part, each part a run
-  ([A system in parts](../README.md#a-system-in-parts-qd-campaign)):
+  ([A system in parts](larger-jobs.md#a-system-in-parts-qd-campaign)):
   `qd campaign new burnin --by rack -- ./burnin.sh`.
 - **Requirement:** one row of a limits file (`req`, `column`, `op`,
   `limit`), which `qd check` gives a verdict
-  ([Against requirements](../README.md#against-requirements-qd-check)):
+  ([Against requirements](judging.md#against-requirements-qd-check)):
   `qd check demo-iperf --against limits.csv`.
 - **Waiver:** an agreed deviation that turns one requirement's failure
   into *waived*, with a justification and an expiry
-  ([Waivers](../README.md#waivers)):
+  ([Waivers](judging.md#waivers)):
   `qd check demo-iperf --against limits.csv --waivers waivers.tsv`.
 - **Telemetry:** samples another system kept (temperatures, power, link
   errors), matched to a run's rows by host and time window
-  ([Beside the telemetry](../README.md#beside-the-telemetry-qd-join)):
+  ([Beside the telemetry](telemetry-and-export.md#beside-the-telemetry-qd-join)):
   `qd join demo-iperf splunk-export.csv`.
 
 ## Exit status
@@ -130,5 +130,5 @@ example reads the demo store and exits 0; `qd log` lists the runs, and
 did not answer, a compare or diff that differs, a requirement that
 failed; the command did its job, and what it found needs a look. **2** is
 a usage error, or something that could not be read or written
-([Exit status](../README.md#exit-status)):
+([Exit status](conventions.md#exit-status)):
 `qd compare demo-facts -c mem.available_pct --last 5` exits 1.

@@ -7,6 +7,7 @@ unit.
     help_unit.py QD_DIR groups
     help_unit.py QD_DIR hints [flag|verb]
     help_unit.py QD_DIR hints-count
+    help_unit.py QD_DIR next FILE
     help_unit.py QD_DIR verb-help [cut]
     help_unit.py QD_DIR start FILE
 
@@ -21,12 +22,15 @@ three verbs, and so does `a | b [X] | c`, but a verb's own sub-commands
 (`campaign new|run|...`) name none: `run` there is campaign's, not qd's.
 The examples, the indented `qd` lines after "The core loop:", must parse
 too, as the hints' commands do ("example: ..." when one does not).
-groups prints cli.GROUPS, one a line.
+groups prints qd hints' headings, cli.HINT_GROUPS, one a line.
 
 hints: every qd command `qd hints` suggests is parsed by build_parser(),
 as `qd` would parse it.  Prints one line per command that does not parse
 (the question, the command and argparse's complaint) and exits 1; prints
-"ok" when every one does.  How a hint's text is read:
+"ok" when every one does.  A hint's heading must be one of qd hints'
+headings: the start card's "Getting started" (QD-065), which must be a
+heading on cli.START, then cli.GROUPS, in that order.  How a hint's text
+is read:
   - a note in parentheses after two or more spaces is not a command
     ("(then: ...)", "(needs binnacle)");
   - commands are split at " -> ", at ";" and at "  or  ";
@@ -35,8 +39,14 @@ as `qd` would parse it.  Prints one line per command that does not parse
     capitals (NAME, COLUMN, CMD), as it is;
   - campaign and doe are cut at `--`, as main() cuts them.
 flag or verb runs the same check on a copy of the hints with a flag or a
-verb misspelt, to show it fails.  hints-count prints how many hints
-there are.
+verb misspelt, to show it fails, and group with "Getting started"
+misspelt in one hint.  hints-count prints how many hints there are.
+
+next: FILE is what a qd command printed.  Every `* qd ...` line under its
+WHAT TO DO NEXT, the command being what comes before two spaces, must
+parse as `qd` would parse it (QD-065).  Prints one line per command that
+does not, and exits 1; prints "ok N", N the commands checked, when every
+one does, and exits 1 with "no WHAT TO DO NEXT" when FILE has none.
 
 verb-help: for every verb build_parser() registers, `qd help VERB` and
 `qd VERB --help`, both through cli.main(), exit 0 and print the same
@@ -161,13 +171,21 @@ def case_hints(mutation=None):
     elif mutation == "verb":
         hints = [(g, q, c.replace("qd outliers", "qd outlyers"))
                  for g, q, c in hints]
+    elif mutation == "group":
+        hints[0] = ("Getting startd",) + tuple(hints[0][1:])
     elif mutation is not None:
         sys.stderr.write("help_unit.py: no such mutation: %s\n" % mutation)
         return 2
     parser, _ = cli.build_parser()
     bad = []
+    if cli.HINT_GROUPS[0] not in cli.START.splitlines():
+        bad.append("%r is not a heading on the start card"
+                   % cli.HINT_GROUPS[0])
+    if cli.HINT_GROUPS[1:] != cli.GROUPS:
+        bad.append("headings after the first are not the card's: %s"
+                   % ", ".join(cli.HINT_GROUPS[1:]))
     for group, q, text in hints:
-        if group not in cli.GROUPS:
+        if group not in cli.HINT_GROUPS:
             bad.append("%s: %r is not one of the card's headings"
                        % (q, group))
         cmds = hint_commands(text)
@@ -181,6 +199,30 @@ def case_hints(mutation=None):
         sys.stdout.write("".join(b + "\n" for b in bad))
         return 1
     print("ok")
+    return 0
+
+
+def case_next(path):
+    with open(path) as f:
+        text = f.read()
+    if "WHAT TO DO NEXT" not in text:
+        print("no WHAT TO DO NEXT")
+        return 1
+    parser, _ = cli.build_parser()
+    bad, n = [], 0
+    for line in text.split("WHAT TO DO NEXT", 1)[1].splitlines():
+        line = line.strip()
+        if not line.startswith("* qd "):
+            continue
+        cmd = re.split(r"\s{2,}", line[2:])[0]
+        why = complaint(parser, shlex.split(cmd)[1:])
+        if why:
+            bad.append("%s: %s" % (cmd, why))
+        n += 1
+    if bad:
+        sys.stdout.write("".join(b + "\n" for b in bad))
+        return 1
+    print("ok %d" % n)
     return 0
 
 
@@ -276,8 +318,10 @@ def main():
     if case == "hints":
         return case_hints(sys.argv[3] if len(sys.argv) > 3 else None)
     if case == "groups":
-        print("\n".join(cli.GROUPS))
+        print("\n".join(cli.HINT_GROUPS))
         return 0
+    if case == "next":
+        return case_next(sys.argv[3])
     if case == "hints-count":
         print(len(cli.HINTS))
         return 0
