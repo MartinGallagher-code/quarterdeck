@@ -256,8 +256,9 @@ qd ask -- uname -r: 1 host, 1 ok   [provost: uname: A]
 `qd ask` runs the command on every host, keeps the run in the store in
 use (`main`), and prints each answer with the hosts that gave it, most
 hosts first. `uname -r` prints one word, and provost files a one-word
-answer as a single column it calls `A` (column A: the answer itself;
-[Concepts](concepts.md) has why). One host always agrees with itself. The
+answer as a single column. Nothing names it, so provost names it as a
+spreadsheet would, `A` (then `B`, `C`, ... for more; see
+[Concepts](concepts.md#the-objects)). One host always agrees with itself. The
 demo's Friday run, `demo-kernel`, asked its 24 hosts the same, and what
 `qd ask` prints after its run is `qd freq` of it:
 

@@ -526,7 +526,8 @@ def first_commands(cli, args, rep):
     else:
         rep.tip("%s run%s -- uname -r" % (PROG, flags),
                 "ask every host, and keep the answers")
-        rep.tip("%s freq latest A" % PROG, "who said which")
+        rep.tip("%s freq latest A" % PROG,
+                "who said which (A: the answer's unnamed column)")
     if "survey" in sub.choices:
         rep.tip("%s survey%s" % (PROG, flags),
                 "everything about every host, and who stands out")
