@@ -9,4 +9,4 @@ keeps their output the same way, and reads any of it back -- tables,
 statistics, diffs, outliers, a full-screen explorer, or the floor plan.
 """
 
-VERSION = "0.48.0"
+VERSION = "0.49.0"

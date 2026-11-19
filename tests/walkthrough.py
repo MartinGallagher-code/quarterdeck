@@ -20,6 +20,21 @@ terminal that wide cuts them: the width is the page's own, from its
 `<!-- walkthrough: width N -->` line (100 when there is none).  Each
 line is compared without its trailing blanks.
 
+A block whose opening fence follows a `<!-- walkthrough: loose -->` line
+runs a command that asks this machine, whose answers are the reader's own
+(its name, its kernel, the time).  In such a block, and only there:
+  - a line that is `[...]` and nothing else stands for any number of
+    lines, none included; `[...]` inside a line, for any text in it;
+  - this machine's name, as qd gives it (the hostname up to its first
+    dot), is compared as the name the page's `<!-- walkthrough: this
+    machine is NAME -->` line gives, so the page can show one name;
+  - a run's time stamp (20261119-160338) matches any other, and a run of
+    two or more blanks any other such run, since a longer name or a later
+    run widens the columns it sits in.
+Everything else in a loose block is compared as exactly as anywhere else.
+--update does not rewrite a loose block (it would lose its `[...]`): one
+that no longer matches is reported, to be put right by hand.
+
 Exit 0 when every command printed what the page shows, 1 with a diff of
 each one that did not.  --update writes what the commands printed back
 into the page instead, and exits 0: for a change to a reader that alters
@@ -29,16 +44,24 @@ what the page shows on purpose (then read the diff before committing it).
 import difflib
 import io
 import re
+import socket
 import subprocess
 import sys
 
 FENCE_RE = re.compile(r"^(```+|~~~+)\s*(\S*)\s*$")
 WIDTH_RE = re.compile(r"<!--\s*walkthrough:\s*width\s+(\d+)\s*-->")
+LOOSE_RE = re.compile(r"^\s*<!--\s*walkthrough:\s*loose\s*-->\s*$")
+MACHINE_RE = re.compile(
+    r"<!--\s*walkthrough:\s*this machine is\s+(\S+)\s*-->")
 STATUS = "echo $?"
+ANY = "[...]"
+STAMP_RE = re.compile(r"\d{8}-\d{6}")
+BLANKS_RE = re.compile(r" {2,}")
 
 
 def blocks(lines):
-    """[(first, last)]: the lines of each ```console block, fences out."""
+    """[(first, last, loose)]: the lines of each ```console block, fences
+    out, and whether a `<!-- walkthrough: loose -->` line opens it."""
     out, i = [], 0
     while i < len(lines):
         m = FENCE_RE.match(lines[i])
@@ -50,7 +73,7 @@ def blocks(lines):
         while j < len(lines) and not lines[j].startswith(fence[:3]):
             j += 1
         if lang == "console":
-            out.append((i + 1, j))
+            out.append((i + 1, j, i > 0 and bool(LOOSE_RE.match(lines[i - 1]))))
         i = j + 1
     return out
 
@@ -82,6 +105,63 @@ def widened(cmd, width):
     return cmd
 
 
+def this_machine():
+    """This machine's name as qd gives it (hosts.local_name)."""
+    try:
+        name = socket.gethostname().strip()
+    except OSError:
+        name = ""
+    if not name:
+        return "localhost"
+    return name if re.match(r"^[0-9.:]+$", name) else (
+        name.split(".", 1)[0] or "localhost")
+
+
+def line_re(want):
+    """A loose block's line as a pattern: `[...]` any text, a time stamp
+    any stamp, two or more blanks any two or more."""
+    parts = []
+    for piece in want.split(ANY):
+        out, at = [], 0
+        for m in re.finditer(r"\d{8}-\d{6}| {2,}", piece):
+            out.append(re.escape(piece[at:m.start()]))
+            out.append(r"\d{8}-\d{6}" if m.group(0)[0].isdigit()
+                       else " {2,}")
+            at = m.end()
+        out.append(re.escape(piece[at:]))
+        parts.append("".join(out))
+    return re.compile("^" + ".*?".join(parts) + "$")
+
+
+def loose_match(want, got):
+    """Whether got (a loose block's output) is what want shows."""
+    pats = [None if w.strip() == ANY else line_re(w) for w in want]
+    memo = {}
+
+    def at(i, j):
+        if (i, j) in memo:
+            return memo[(i, j)]
+        if i == len(pats):
+            ok = j == len(got)
+        elif pats[i] is None:
+            ok = any(at(i + 1, k) for k in range(j, len(got) + 1))
+        else:
+            ok = j < len(got) and bool(pats[i].match(got[j])) and \
+                at(i + 1, j + 1)
+        memo[(i, j)] = ok
+        return ok
+    return at(0, 0)
+
+
+def as_named(got, machine, name):
+    """got with this machine's name given as the page's NAME."""
+    if not name or machine == name:
+        return got
+    word = re.compile(r"(?<![A-Za-z0-9_.-])%s(?![A-Za-z0-9_-]|\.\w)"
+                      % re.escape(machine))
+    return [word.sub(name, ln) for ln in got]
+
+
 def run(cmd, cwd, width):
     p = subprocess.Popen(["bash", "-c", widened(cmd, width)], cwd=cwd,
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -106,10 +186,12 @@ def main(argv):
     lines = text.split("\n")
     m = WIDTH_RE.search(text)
     width = int(m.group(1)) if m else 100
+    m = MACHINE_RE.search(text)
+    name, machine = (m.group(1) if m else None), this_machine()
     bad, n, prev = [], 0, None
     # (first, last, new lines) to put back, last first
     edits = []
-    for first, last in blocks(lines):
+    for first, last, loose in blocks(lines):
         rc = None
         for cmd, want, lo, hi in steps(lines, first, last):
             n += 1
@@ -125,13 +207,22 @@ def main(argv):
                                "after it" % (prev, rc, STATUS))
                 rc, got = run(cmd, cwd, width)
                 prev = cmd
-            if got != [ln.rstrip() for ln in want]:
+            want = [ln.rstrip() for ln in want]
+            if loose and cmd != STATUS:
+                got = as_named(got, machine, name)
+                if not loose_match(want, got):
+                    bad.append("$ %s  (line %d, a loose block: put it right "
+                               "by hand)\n%s" % (cmd, lo, "\n".join(
+                                   difflib.unified_diff(
+                                       want, got, "the page",
+                                       "what it printed", lineterm=""))))
+            elif got != want:
                 if update:
                     edits.append((lo, hi, got))
                 else:
                     bad.append("$ %s  (line %d)\n%s" % (cmd, lo, "\n".join(
                         difflib.unified_diff(
-                            [ln.rstrip() for ln in want], got,
+                            want, got,
                             "the page", "what it printed", lineterm=""))))
         if rc not in (None, 0):
             bad.append("%s: exit %d, and the page shows no `$ %s` after it"
@@ -143,7 +234,9 @@ def main(argv):
             fh.write("\n".join(lines))
         sys.stdout.write("walkthrough: %d commands, %d outputs rewritten in "
                          "%s\n" % (n, len(edits), page))
-        return 0
+        for b in bad:
+            sys.stdout.write(b + "\n\n")
+        return 1 if bad else 0
     if not n:
         sys.stdout.write("walkthrough: no commands in %s\n" % page)
         return 1

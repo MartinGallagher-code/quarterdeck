@@ -66,9 +66,12 @@ EOF
 t_the_screen_files_every_point_with_fio_columns() {
     stand_in_doe
     screen
-    qdf_rc doe run fio-screen.json -s hosts.txt -q > out
+    qdf_rc doe run fio-screen.json -s hosts.txt -q > out 2> err
     assert_status "$QD_RC" 0
     assert_contains "$(cat out)" "8 of 8 points measured"
+    # a point runs longer than qd's 60 s default: the config's qd_timeout
+    # raises --timeout, and says so
+    assert_contains "$(cat err)" "--timeout 180s, as the config's metadata.qd_timeout asks"
     assert_contains "$(cat out)" "next: qd doe analyze fio-screen"
     assert_eq "$(grep -c '1/1 ok' out)" "8"
     # the command was the config's, its fixed factors and levels put in

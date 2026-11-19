@@ -5,7 +5,7 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
-## 0.48.0 — 2026-11-19
+## 0.49.0 — 2026-11-19
 
 Every run of a study -- a screen, its follow-up and every later round --
 side by side, in `qd compare --study` and in `qd web` (QD-070, step 5 of
@@ -52,6 +52,221 @@ QD-066's fio tuning study).
   its columns and a store written before reads as one study per design.
 - `qd --help`'s compare line names `--study`; qd web's sidebar heading
   is "Studies, campaigns and designs".
+- **The manual:** `docs/larger-jobs.md` has a new section, "A study,
+  every run of it", after the doe follow-up; `docs/over-time.md`'s
+  `qd compare` examples carry `--study`, and `docs/reading.md`'s `qd web`
+  list names the study view.
+
+## 0.48.0 — 2026-11-19
+
+A design's main effects, interactions and a Pareto of effect sizes as
+charts on its page in `qd web`, and doe's own HTML report and plots kept
+by `qd doe analyze --report` and linked from there (QD-068, step 2 of
+QD-066).
+
+### Added
+- **`qd doe analyze NAME -c COL --report [DIR]`** runs `doe analyze`
+  without `--no-plots --no-report`, so doe makes its Pareto,
+  main-effects, half-normal and other plots and its HTML report, and
+  keeps them, with the results and config that made them, in DIR or
+  else in qd's cache (`~/.cache/quarterdeck/doe/STORE/DESIGN/COLUMN`, never
+  the store). It says where the report is and names the plots. A
+  directory qd made before is emptied first; one holding anything else
+  is refused, never emptied (`quarterdeck/doe.py`: `report_dir`,
+  `report_files`; `quarterdeck/cli.py`: `doe_report_lines`).
+- **`/api/design?name=NAME&c=COL&agg=AGG`** in `qd web`: each point's
+  value, each factor's level means, each pair of factors' cell means, the
+  two-level interaction effects and a Pareto of effect sizes, all from
+  `doe.effects()` (plain means of the points measured; the statistics
+  stay doe's), with the design's response columns and a link to doe's
+  report when one is kept. doe's reports and plots are served at `/doe/`
+  from qd's cache only, in a sandbox (`Content-Security-Policy: sandbox
+  allow-scripts`), so a report can neither act as the page nor read its
+  API.
+- **A design's page in `qd web`** has a column and a per-point figure
+  picker, the Pareto chart, a main-effects chart per factor on one shared
+  scale, an interaction chart for a chosen pair, and the link to doe's
+  report (`quarterdeck/web/app.js`: `designCharts`, `paretoChart`,
+  `levelChart`). A point not measured is left out of every mean and
+  drawn as a gap, never as zero.
+- Tests: `tests/test_web.sh` checks every figure for a design with known
+  responses, blank points left out, the report served sandboxed from the
+  cache and nothing else; `tests/test_doe.sh` checks `--report` (where,
+  remade, a directory named, a foreign directory refused), and with the
+  real doe where it is installed. The suite's stand-in doe writes a plot
+  and a report unless told not to, as the real one does.
+
+## 0.47.0 — 2026-11-19
+
+The advice qd already prints now points newcomers at the beginner
+commands, where they save steps (QD-065).
+
+### Added
+- **`qd hints` opens with Getting started**: `qd setup`, `qd ask`, `qd
+  survey`, `qd again` and `qd odd`, each with its question, in the start
+  card's order. Their hints moved there from Run, Read it back, Over time
+  and Help, so each command is hinted once. The heading is the start
+  card's own (bare `qd`); the full card, at its 50-line limit, keeps its
+  headings, and the rest of `qd hints` stays under them
+  (`quarterdeck/cli.py`: `HINT_GROUPS`, `HINTS`, `cmd_hints()`).
+- **WHAT TO DO NEXT after `qd run` and `qd probe`** suggests:
+  - `qd odd latest` for a run of several columns, in place of one
+    column's `qd outliers` (the block keeps its length);
+  - `qd again latest` for a run every host answered with no earlier one
+    to diff against, and only when `qd again` would accept it: not a
+    probe, a pushed run, a campaign part or a design point
+    (`quarterdeck/again.py`: `why_not()`, the refusals `the_run()` makes,
+    now shared);
+  - `qd survey` with the hosts and options typed, after `qd probe facts`,
+    for next time: facts and inventory, and one screen of who stands
+    out. Not after `--every`/`--count`, which survey refuses
+    (`quarterdeck/cli.py`: `report_run()`'s `probe`, `survey_tip()`,
+    `run_next_steps()`).
+- **An empty store says the two ways in:** `qd log` on a store with no
+  runs (and no datasets) prints WHAT TO DO NEXT with `qd setup` and `qd
+  demo`; `qd doctor` on one adds `qd setup` beside its `qd demo`; and a
+  read of `latest` in one ends its error with "new to qd: `qd setup`, or
+  `qd demo` to practise" (`quarterdeck/cli.py`: `cmd_log()`,
+  `cmd_doctor()`; `quarterdeck/store.py`: `resolve()`).
+
+### Tests
+- `tests/test_help.sh`: `qd hints` opens with Getting started and the
+  five commands in order, each hinted once; its first heading is the
+  start card's and the rest the full card's; the hints check fails on a
+  misspelt heading (`tests/help_unit.py`: `HINT_GROUPS`, and a new `next
+  FILE` case: every `qd` command under a WHAT TO DO NEXT parses).
+- `tests/test_run.sh`: `qd again` after a first run, `qd diff` and no `qd
+  again` after a second, `--rerun` and no `qd again` when a host did not
+  answer, `qd odd` in place of `qd outliers` for several columns, none
+  after `--script`, every suggestion parsing and each block six lines at
+  most; an empty store's `qd log` and `qd show latest`.
+- `tests/test_probe.sh`: `qd probe facts` suggests `qd survey` with the
+  options typed, and `qd odd`, never `qd again`; not after another probe,
+  or with `--count`.
+- `tests/test_demo.sh`: `qd doctor` on an empty store names `qd setup`
+  too.
+- `tests/test_ask.sh`: `qd ask` falling back to qd run's summary for
+  several columns suggests `qd odd` and `qd again` as qd run does.
+
+## 0.46.4 — 2026-11-19
+
+The README is now a short front page, and the manual is in `docs/`, a
+chapter for each thing you are trying to do (QD-041). A move, not a
+rewrite: every section of the old README is in exactly one place, word
+for word, with only heading levels and links changed (and four
+cross-references on the front page made links, since their sections
+moved).
+
+- **`README.md`** (202 lines, PyPI's page): what qd is, install, *Thirty
+  seconds*, the commands by what they are for, the manual's chapters,
+  Related and License. Its links into `docs/` are absolute GitHub links,
+  so they work on PyPI too.
+- **`docs/README.md`**: the contents. The chapters: `running.md` (the
+  demo fleet, `qd setup`, `qd run`, `qd ask`, `qd probe` with saved probes
+  and `qd survey`, `qd do`, at scale), `reading.md` (`--where`, `freq`,
+  `outliers`, `odd`, `diff`, `again`, `qd view`, `qd web` and its
+  screenshots), `over-time.md` (`qd compare`, `qd changes`, peers and
+  baselines), `judging.md` (`qd check` with waivers, `--manual`,
+  `--baseline`, JUnit and `--rule`; `qd report`), `larger-jobs.md` (`qd
+  split`, `qd coverage`, `qd campaign`, `qd doe`),
+  `telemetry-and-export.md` (`qd join`, the floor plan, export),
+  `stores.md` (provost's store, who ran it, named stores),
+  `conventions.md` (conventions, exit status) and `contributing.md`
+  (tests, what CI runs, working on quarterdeck). `getting-started.md`,
+  `concepts.md` and `scale.md` keep their names; `concepts.md`'s links
+  now land in the chapters.
+- **`tests/check_links.py`**, new: every link and image between
+  `README.md` and `docs/*.md` lands, `#anchors` by GitHub's slugs,
+  absolute links to this repository checked against the tree. Run by
+  `tests/check.sh`, by `tests/test_help.sh` (with broken copies to show it
+  fails) and by a new CI job, *manual links and pointers*.
+- **`tests/check_readme_pointers.py`** reads the whole manual, and a
+  pointer names its page: `docs/judging.md: "Waivers"`. The seven
+  pointers in `cli.py`, `coverage.py`, `exporters.py` and `policy.py` name
+  their chapters.
+- `qd --help`'s *Full manual*, `common.DOCS` and `pyproject.toml`'s
+  Documentation URL point at `docs/`; `MANIFEST.in` ships every `docs/*.md`
+  and screenshot; `CLAUDE.md` says README.md and docs/ are the manual.
+  `tests/test_saved.sh`, `test_odd.sh` and `test_concepts.sh` read the
+  chapters their text moved to.
+
+## 0.46.3 — 2026-11-19
+
+The README's everyday read commands now come right after `qd run` and
+`qd probe`, ahead of the specialist sections (QD-048). A pure move of whole
+sections: no heading or prose changed but one cross-reference.
+
+### Changed
+- **README:** the H2 sections now run: the introduction and "Thirty
+  seconds"; `qd run`, `qd ask`, `qd probe`; "Reading it back"; `qd view`,
+  `qd web`; `qd compare`; then the specialist sections in their old order
+  (`qd split`, `qd coverage`, `qd campaign`, `qd peers`/`qd baseline`,
+  `qd check`, `qd report`, `qd doe`, `qd do`, `qd join`, the floor plan,
+  Splunk/Prometheus/notebook); "What it keeps: provost's store", with Named
+  stores; Conventions, At scale, Exit status; Tests, Working on quarterdeck;
+  Related, License. The sorted lines before and after differ in one line:
+  `qd compare`'s "(next section)" for the Mann-Whitney test, now "(*Peer
+  groups and qualified baselines*, below)".
+- **tests/test_concepts.sh:** the Named stores excerpt ends at
+  "## Conventions", the section that now follows it.
+
+## 0.46.2 — 2026-11-19
+
+The getting-started page is a newcomer's first day: the start card, then
+the five beginner commands in order, each run and checked (QD-064).
+
+### Changed
+- **`docs/getting-started.md`** opens with the start card (bare `qd`) and
+  takes QD-057's five first-day questions in order: can I reach my hosts
+  (`qd setup`), who agrees and who differs (`qd ask`), what is every host
+  like (`qd survey`), what changed (`qd again`) and who is odd (`qd odd`).
+  Each shows the command's real output and the plain qd commands it
+  stands for. `qd odd` and the plain commands read the demo; setup, ask,
+  survey and again ask this machine, reached without ssh, into the store
+  `main` setup makes, so the demo's store keeps only the demo. It ends
+  with where to go next: `qd --help`, `qd help VERB`, `qd hints`, the
+  Concepts page and the README.
+- **The start card names the page**, on a line of its own under its
+  footer.
+
+### Tests
+- `tests/walkthrough.py` checks a block opened by `<!-- walkthrough:
+  loose -->` (a command that asks this machine) with `[...]` for what is
+  the reader's own, this machine's name read as the page's `<!--
+  walkthrough: this machine is NAME -->`, and time stamps and widened
+  columns matched; everything else is compared exactly, and `--update`
+  leaves a loose block to be put right by hand.
+- `tests/test_demo.sh`: the checker on a page of its own, each rule
+  broken in turn; a changed line of the real page fails on the demo; the
+  page is the start card, the five questions in order, each with what it
+  stands for, and where to go next last; every qd command on it parses
+  with `build_parser()`. That `qd demo` ignores the shell's fleet
+  settings is checked on `--rebuild`, since the page's fleet commands
+  honour them. `tests/test_help.sh`: the start card names the page.
+
+## 0.46.1 — 2026-11-19
+
+Every use of column `A` in the docs and help now says what it is: provost's
+name for a column nothing names, `A`, `B`, ... as a spreadsheet's (QD-047).
+
+### Changed
+- **README:** "Thirty seconds" also says that `qd show latest` shows the
+  columns, and reads the sample run's `[provost: uname: A]` (the dataset,
+  then its columns); the demo block, "Over time"'s `qd trend latest A`,
+  `qd ask`'s opening paragraph (linking Concepts) and "Reading it back"'s
+  `qd freq latest A` each carry a short gloss.
+- **`qd --help`**'s core-loop `qd freq latest A` (reworded, still 50 lines
+  of at most 80 columns), **`qd hints`**' `qd ask` entry, **`qd help
+  ask`**, the demo's WHAT TO DO NEXT and `qd setup`'s run tip say what `A`
+  is (`quarterdeck/cli.py`, `demo.py`, `firstrun.py`).
+- **docs/getting-started.md:** the demo's WHAT TO DO NEXT, the kernel
+  step (now linking Concepts) and the own-fleet loop.
+
+### Tests
+- `tests/test_run.sh`: a one-word answer files a column named `A`
+  (`[...: A]` on the summary, `host,A` from `qd show`), on whichever
+  provost path the suite runs, so a change in provost's naming fails
+  rather than leaving the docs wrong.
 
 ## 0.46.0 — 2026-11-19
 
@@ -112,6 +327,11 @@ responses at once (QD-067, the first step of QD-066's fio tuning study).
   bandwidth, mean and p99 completion latency. The factor set is a
   proposal for the owner to approve before the first real run
   (`quarterdeck/doe.py`: `FIO_SCREEN`, `init`).
+- **A config can say how long one point needs** (`metadata.qd_timeout`,
+  seconds), and `qd doe run` uses at least that as its per-host
+  `--timeout`, saying so. The fio screen asks for 180 s: one point is a
+  10 s ramp and a 60 s run, past qd's 60 s default, which would have
+  stopped every point part-way (`quarterdeck/doe.py`: `timeout_of`).
 - **`qd doe run CONFIG`** needs no command after `--` when the config
   names one (`metadata.qd_command`), and puts doe's `fixed_factors` into
   the command by `{name}` like the factors. A design run again with other

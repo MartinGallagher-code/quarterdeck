@@ -8,8 +8,11 @@ page does no arithmetic of its own -- every figure, filter, group, diff,
 comparison and outlier comes back from the same functions `qd stats`,
 `qd diff`, `qd compare` and the rest print, so the browser and the terminal
 cannot disagree about a number.  Campaigns and designs are listed as
-`qd campaign status` and `qd doe status` list them, and a study's runs
-(a screen and its follow-ups) as `qd compare --study` lines them up.
+`qd campaign status` and `qd doe status` list them, a design with its
+main-effect, interaction and Pareto figures (doe.effects) and a link to
+doe's own report where `qd doe analyze --report` kept one, served from
+qd's cache at /doe/, and a study's runs (a screen and its follow-ups) as
+`qd compare --study` lines them up.
 
 When datacenter_visualization is installed its viewer is served beside it at
 /floor/, with qd's overlays at /floor/files/, so "Floor plan" on any dataset
@@ -651,6 +654,40 @@ class Api(object):
             if factor and response else None
         return out
 
+    def design(self, q):
+        """A design's figures for one response column, as charts want
+        them: level means (main effects), cell means (interactions), a
+        Pareto of effect sizes -- doemod.effects, every number the page
+        draws -- and where doe's own report is, when `qd doe analyze
+        --report` has kept one."""
+        name = one(q, "name")
+        if not name or name not in doemod.names(self.book):
+            die("no design %r in this store" % (name or ""))
+        _, cfg, _ = doemod.load(self.book, name)
+        columns = doemod.response_columns(self.book, name)
+        column = one(q, "c")
+        if not column:
+            wanted = [r.get("name") for r in cfg.get("responses") or []
+                      if isinstance(r, dict)]
+            column = next((c for c in wanted if c in columns),
+                          columns[0] if columns else None)
+        agg = one(q, "agg") or "median"
+        out = {"design": name, "columns": columns, "column": column,
+               "agg": agg, "report": None}
+        if not column:
+            return out
+        out.update(doemod.effects(self.book, name, column, agg))
+        path = doemod.report_path(self.book, name, column)
+        html, plots = doemod.report_files(path)
+        if html or plots:
+            base = "/doe/" + quote(doemod.report_rel(self.book, name, column))
+            out["report"] = {
+                "path": storemod.tilde(path),
+                "url": base + "/" + html if html else None,
+                "plots": [{"name": p, "url": base + "/" + quote(p)}
+                          for p in plots]}
+        return out
+
     def raw(self, q):
         t = self.table(one(q, "e"), one(q, "t"))
         e = getattr(t, "entry", None)
@@ -829,7 +866,7 @@ ROUTES = {"/api/entries": "entries", "/api/entry": "entry_info",
           "/api/trend": "trend", "/api/diff": "diff", "/api/raw": "raw",
           "/api/overlay": "overlay", "/api/compare": "compare",
           "/api/groups": "groups", "/api/join": "join",
-          "/api/study": "study"}
+          "/api/design": "design", "/api/study": "study"}
 
 
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
@@ -1031,6 +1068,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, text, "text/plain; charset=utf-8", {
                     "Content-Disposition": 'attachment; filename="%s"'
                     % re.sub(r'[^\w.@-]', "_", name)})
+            elif path.startswith("/doe/"):
+                self.doe_report(path[len("/doe"):])
             elif path == "/floor" or path.startswith("/floor/"):
                 self.floor(path[len("/floor"):] or "/")
             elif path.startswith("/api/"):
@@ -1055,6 +1094,20 @@ class Handler(BaseHTTPRequestHandler):
         with open(f, "rb") as fh:
             body = fh.read()
         self.send(200, body, TYPES.get(ext, "application/octet-stream"))
+
+    def doe_report(self, rest):
+        """doe's reports and plots, from qd's cache only (what `qd doe
+        analyze --report` keeps there).  Its own page, in a sandbox: what
+        a report holds can neither run as this page nor read its API."""
+        f = safe_join(doemod.report_root(), rest)
+        ext = os.path.splitext(f)[1].lower()
+        if ext not in (".html", ".png") or not os.path.isfile(f):
+            self.send(404, "not found\n", "text/plain")
+            return
+        with open(f, "rb") as fh:
+            body = fh.read()
+        self.send(200, body, TYPES[ext], {
+            "Content-Security-Policy": "sandbox allow-scripts"})
 
     def floor(self, rest):
         root = self.api.floor_root()

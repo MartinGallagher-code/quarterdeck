@@ -825,7 +825,8 @@ class Store(object):
         if m and (m.group(1) or m.group(2)):
             if not entries:
                 die("no runs in the store %s yet -- `qd run`, `qd do` or "
-                    "`qd import` files one (or point --store at another)"
+                    "`qd import` files one (or point --store at another; "
+                    "new to qd: `qd setup`, or `qd demo` to practise)"
                     % self.shown())
             back = int(m.group(2) or 0) + (1 if m.group(1) == "prev" else 0)
             if back >= len(entries):

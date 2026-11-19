@@ -1461,10 +1461,11 @@
 
   function groupByName(name) { return S.groups.find((g) => g.name === name) || null; }
 
-  function openGroup(name) {
+  function openGroup(name, keep) {
     const g = groupByName(name);
     if (!g) return;
-    S.e = S.s = null; S.g = name; S.t = null; S.where = []; S.sort = ""; S.p = {};
+    S.e = S.s = null; S.g = name; S.t = null; S.where = []; S.sort = "";
+    if (!keep) S.p = {};
     closePanel(true);
     renderEntries();
     writeHash();
@@ -1484,9 +1485,147 @@
     const li = g.columns.indexOf("last_run");
     const rows = g.rows.map((r) => r.map((v, j) => j === li && v ?
       h("button", { type: "button", class: "link mono", text: v, onclick: (ev) => { ev.stopPropagation(); openEntry(v); } }) : v));
-    clear($("view")).append(h("div", { class: "card" },
+    const view = clear($("view"));
+    const charts = g.kind === "design" ? h("div", { id: "design-charts" }) : null;
+    if (charts) view.append(charts);
+    view.append(h("div", { class: "card" },
       h("h3", { text: g.rows.length + " " + (g.kind === "design" ? "points" : "parts") }),
       plainTable(g.columns, rows, { numeric: g.columns.map((c, j) => ["hosts", "runs", "point", "block"].includes(c) ? j : -1) })));
+    if (charts) designCharts(g, charts).catch(showError);
+  }
+
+  // -------------------------------------------------------------------------
+  // A design's charts: main effects, interactions and a Pareto of effect
+  // sizes for one column.  Every figure is the engine's (/api/design, from
+  // doe.effects); the page only places them.  A point not measured has no
+  // figure and is drawn as a gap, never as zero.
+  // -------------------------------------------------------------------------
+
+  async function designCharts(g, box) {
+    const d = await api("/api/design", { name: g.name, c: S.p.c || null, agg: S.p.agg || null });
+    if (S.g !== g.name) return;
+    clear(box);
+    const col = d.column;
+    const cmd = "qd doe analyze " + shq(g.name) + " -c " + shq(col || "COLUMN");
+    if (!col) {
+      box.append(h("div", { class: "card" }, h("h3", { text: "Effects" }),
+        h("p", { class: "empty", text: "No point has a numeric column to chart yet: qd doe status " + g.name + " says which are measured." })));
+      return;
+    }
+    const redo = () => { writeHash(); designCharts(g, box).catch(showError); };
+    const card = h("div", { class: "card" });
+    card.append(h("h3", { text: "Effects on " + col }));
+    card.append(h("div", { class: "controls" },
+      select("Column", col, d.columns.map((c) => [c, c]), (v) => { S.p.c = v; S.p.pair = ""; redo(); }),
+      select("Each point", d.agg, [["median", "median over hosts"], ["mean", "mean over hosts"],
+        ["min", "min over hosts"], ["max", "max over hosts"]], (v) => { S.p.agg = v; redo(); })));
+    const notes = [d.measured + " of " + d.total + " points have a " + col +
+      (d.measured < d.total ? "; the rest are left out of every figure, not counted as zero" : "") + ".",
+      "Plain means of the points measured. doe's analysis has the statistics (significance, ANOVA): " + cmd + "."];
+    card.append(h("ul", { class: "notes" }, notes.map((n) => h("li", { text: n }))));
+    if (d.report) {
+      card.append(h("p", null, d.report.url ?
+        h("a", { href: d.report.url, target: "_blank", rel: "noopener", text: "doe's report" }) : "doe's plots",
+        " (kept in " + d.report.path + "): ",
+        d.report.plots.map((p, i) => [i ? ", " : "", h("a", { href: p.url, target: "_blank", rel: "noopener", text: p.name })])));
+    } else {
+      card.append(h("p", { class: "count", text: "doe's own report and plots: " + cmd + " --report, and they are linked here." }));
+    }
+    box.append(card);
+    renderCli(cmd + (d.agg !== "median" ? " --agg " + d.agg : "") + " --report");
+
+    box.append(h("div", { class: "card" }, h("h3", { text: "Pareto of effect sizes" }),
+      d.pareto.length ? paretoChart(d.pareto) :
+        h("p", { class: "empty", text: "Too few points measured to size an effect." })));
+
+    const all = d.main.flatMap((m) => m.levels.map((c) => c.mean))
+      .concat(d.interactions.flatMap((x) => x.cells.flat().map((c) => c.mean)))
+      .filter((v) => v !== null);
+    const dom = all.length ? [Math.min(...all), Math.max(...all)] : [0, 1];
+    box.append(h("div", { class: "card" }, h("h3", { text: "Main effects: mean " + col + " at each level" }),
+      h("div", { class: "small-multiples" }, d.main.map((m) => h("div", null,
+        h("div", { class: "sm-title", text: m.factor + (m.effect !== null ? "  (" + (m.effect > 0 ? "+" : "") + fmtNum(m.effect) + ")" : "") }),
+        levelChart(m.levels.map((c) => c.level), [{ name: m.factor, cells: m.levels }], dom, col))))));
+
+    if (d.interactions.length) {
+      const pairs = d.interactions.map((x) => x.a + " x " + x.b);
+      const ranked = d.pareto.find((p) => p.kind === "interaction");
+      let pair = S.p.pair && pairs.includes(S.p.pair) ? S.p.pair : (ranked ? ranked.term : pairs[0]);
+      const x = d.interactions[pairs.indexOf(pair)];
+      const series = x.b_levels.map((lv, j) => ({ name: x.b + "=" + lv, cells: x.cells[j] }));
+      box.append(h("div", { class: "card" }, h("h3", { text: "Interaction: " + x.a + " by " + x.b }),
+        h("div", { class: "controls" }, select("Factors", pair, pairs.map((p) => [p, p]), (v) => { S.p.pair = v; redo(); })),
+        h("p", { class: "count", text: "Mean " + col + " at each level of " + x.a + ", a line for each level of " + x.b +
+          ". Lines that are not parallel are an interaction" + (x.effect !== null ? " (effect " + fmtNum(x.effect) + ")" : "") + "." }),
+        levelChart(x.a_levels, series, dom, col),
+        series.length > 1 ? h("div", { class: "legend" }, series.map((s, i) =>
+          h("span", null, h("span", { class: "key", style: { background: seriesColor(i) } }), s.name))) : null));
+    }
+  }
+
+  // Horizontal bars, largest first as the engine sorted them.
+  function paretoChart(rows) {
+    const W = 640, L = 170, R = 60, rowH = 22, T = 4;
+    const H = T + rows.length * rowH + 4;
+    const top = Math.max(...rows.map((r) => r.size)) || 1;
+    const svg = h("svg", { class: "chart", viewBox: "0 0 " + W + " " + H, role: "img",
+      "aria-label": "Pareto of effect sizes", style: { maxWidth: W + "px" } });
+    rows.forEach((r, i) => {
+      const y = T + i * rowH;
+      const w = Math.max(1, (W - L - R) * r.size / top);
+      const bar = h("rect", { class: "hist-bar" + (r.kind === "interaction" ? " ix" : ""), x: L, y: y + 3, width: w, height: rowH - 8, rx: 2 });
+      const g = h("g", { tabindex: "0", "aria-label": r.term + ": " + fmtNum(r.size) },
+        h("text", { class: "lbl", x: L - 6, y: y + rowH / 2 + 3, "text-anchor": "end", text: r.term }),
+        bar, h("text", { x: L + w + 4, y: y + rowH / 2 + 3, text: fmtNum(r.size) }));
+      const on = (ev) => { bar.classList.add("hot"); showTip(ev, r.term, [
+        { value: fmtNum(r.size), name: "size of the effect" },
+        { value: r.effect === null ? "" : fmtNum(r.effect), name: r.kind === "interaction" ? "interaction effect" : "last level less first" }]); };
+      g.addEventListener("pointermove", on);
+      g.addEventListener("pointerleave", () => { bar.classList.remove("hot"); hideTip(); });
+      svg.append(g);
+    });
+    return svg;
+  }
+
+  // Means at each level along x, a line per series, on the y range dom
+  // (one range for every chart of the design, so they read alike).  A
+  // cell with no mean is a gap in its line.
+  function levelChart(levels, series, dom, col) {
+    const W = 300, H = 170, L = 46, R = 12, T = 10, B = 26;
+    const yt = niceTicks(dom[0], dom[1], 4);
+    const y0 = Math.min(dom[0], yt[0]), y1 = Math.max(dom[1], yt[yt.length - 1]);
+    const X = (i) => levels.length < 2 ? (L + W - R) / 2 : L + (W - L - R) * i / (levels.length - 1);
+    const Y = (v) => T + (H - T - B) * (y1 === y0 ? 0.5 : 1 - (v - y0) / (y1 - y0));
+    const svg = h("svg", { class: "chart", viewBox: "0 0 " + W + " " + H, role: "img",
+      "aria-label": series.map((s) => s.name).join(", "), style: { maxWidth: W + "px" } });
+    for (const t of yt) {
+      if (t < y0 || t > y1) continue;
+      svg.append(h("line", { class: "gridline", x1: L, x2: W - R, y1: Y(t), y2: Y(t) }));
+      svg.append(h("text", { x: L - 6, y: Y(t) + 4, "text-anchor": "end", text: compact(t) }));
+    }
+    svg.append(h("line", { class: "axis", x1: L, x2: W - R, y1: H - B, y2: H - B }));
+    levels.forEach((lv, i) => svg.append(h("text", { x: X(i), y: H - 8, "text-anchor": "middle", text: lv })));
+    series.forEach((s, k) => {
+      const color = seriesColor(k);
+      let d = "", gap = true;
+      s.cells.forEach((c, i) => {
+        if (c.mean === null) { gap = true; return; }
+        d += (gap ? "M" : "L") + X(i).toFixed(1) + "," + Y(c.mean).toFixed(1);
+        gap = false;
+      });
+      if (d) svg.append(h("path", { class: "series", d: d, stroke: color }));
+      s.cells.forEach((c, i) => {
+        if (c.mean === null) return;
+        const dot = h("circle", { class: "dot", cx: X(i), cy: Y(c.mean), r: 4, fill: color, tabindex: "0",
+          "aria-label": s.name + " at " + levels[i] + ": " + fmtNum(c.mean) });
+        dot.addEventListener("pointermove", (ev) => showTip(ev, s.name + " at " + levels[i], [
+          { value: fmtNum(c.mean), name: "mean " + col, color: color },
+          { value: String(c.n), name: c.n === 1 ? "point" : "points" }]));
+        dot.addEventListener("pointerleave", hideTip);
+        svg.append(dot);
+      });
+    });
+    return svg;
   }
 
   // -------------------------------------------------------------------------
@@ -1750,7 +1889,7 @@
       try {
         await loadEntries();
         if (S.e) await openEntry(S.e, true);
-        else if (S.g) openGroup(S.g);
+        else if (S.g) openGroup(S.g, true);
         else if (S.s) await renderView();
       } catch (err) { showError(err); }
     });
@@ -1784,7 +1923,7 @@
       }
     }
     if (S.e) await openEntry(S.e, true);
-    else if (S.g && groupByName(S.g)) openGroup(S.g);
+    else if (S.g && groupByName(S.g)) openGroup(S.g, true);
     else if (S.s) await openStudy(S.s, true);
     else if (S.entries.length) await openEntry(S.entries[0].id);
     else renderView();

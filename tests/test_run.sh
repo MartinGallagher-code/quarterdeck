@@ -107,6 +107,10 @@ t_run_keeps_every_answer_and_says_who_failed() {
     assert_contains "$out" "node09"
     assert_contains "$out" "qd freq latest A"
     assert_contains "$out" "captures c0001..c0003"
+    # the docs' claim (QD-047): provost names a one-word answer's column A,
+    # on whichever provost path this suite runs on
+    assert_contains "$out" ": A]"
+    assert_eq "$(qd show latest --cols host,A --format csv | head -n 1)" "host,A"
     # what came back is provost's: a capture per host, the answer verbatim
     cap="$(qd show latest --where host=node03 --cols capture --format csv | tail -1)"
     assert_contains "$(cat "$QD_STORE/captures/$cap/output.txt")" "6.1.0-13"
@@ -751,6 +755,73 @@ t_not_run_is_not_measured() {
     assert_contains "$(cat qd-report-*/summary.md)" "5 not-run"
 }
 
+# QD-065: WHAT TO DO NEXT suggests the beginner commands where they save
+# steps -- qd again for a first run that answered everywhere, qd odd for
+# a run of several columns -- and every command it suggests parses
+next_block() { sed -n '/WHAT TO DO NEXT/,$p' "$1" | grep -c '^    \* '; }
+
+t_next_steps_suggest_the_beginner_commands() {
+    seed
+    printf 'node01\nnode02\nnode03\n' > three.txt
+    for h in node01 node02 node03; do
+        printf 'cores: 8\nmodel: x%s\n' "$h" > "$FAKE_ROOT/$h/kv"
+    done
+    # a first run, every host answered: run it again, as it ran
+    qdf_rc run -s three.txt -- cat kernel > out
+    assert_status "$QD_RC" 0
+    assert_contains "$(cat out)" "* qd again latest"
+    assert_not_contains "$(cat out)" "qd odd"
+    assert_not_contains "$(cat out)" "qd diff latest"
+    "$PY" "$QD_DIR/tests/help_unit.py" "$QD_DIR" next out > parsed
+    assert_contains "$(cat parsed)" "ok "
+    [ "$(next_block out)" -le 6 ] || fail "$(next_block out) next steps"
+    # the same again: qd diff against it, and no qd again beside it
+    qdf_rc run -s three.txt -- cat kernel > out
+    assert_contains "$(cat out)" "* qd diff latest"
+    assert_not_contains "$(cat out)" "qd again"
+    # a host did not answer: --rerun, not qd again
+    qdf_rc run -s hosts.txt -- cat n > out
+    assert_status "$QD_RC" 1
+    assert_contains "$(cat out)" "* qd run --rerun latest"
+    assert_not_contains "$(cat out)" "qd again"
+    # several columns: qd odd, every one at once, in place of one
+    # column's qd outliers
+    qdf_rc run -s three.txt -- cat kv > out
+    assert_status "$QD_RC" 0
+    assert_contains "$(cat out)" "* qd odd latest"
+    assert_contains "$(cat out)" "in any of the 2 columns"
+    assert_not_contains "$(cat out)" "qd outliers"
+    "$PY" "$QD_DIR/tests/help_unit.py" "$QD_DIR" next out > parsed
+    assert_eq "$(head -c 3 parsed)" "ok "
+    [ "$(next_block out)" -le 6 ] || fail "$(next_block out) next steps"
+    # a pushed run cannot be run again: not suggested
+    printf '#!/bin/sh\necho 1\n' > s.sh
+    qdf_rc run -s three.txt --script s.sh --remote-dir rd -- x > out
+    assert_status "$QD_RC" 0
+    assert_not_contains "$(cat out)" "qd again"
+    # the check fails on a command that does not parse
+    printf '  WHAT TO DO NEXT\n    * qd odd latest --srevers  x\n' > bad
+    set +e
+    "$PY" "$QD_DIR/tests/help_unit.py" "$QD_DIR" next bad > parsed
+    rc=$?
+    set -e
+    assert_status "$rc" 1
+    assert_contains "$(cat parsed)" "unrecognized arguments: --srevers"
+}
+
+# QD-065: an empty store's qd log says the two ways in
+t_an_empty_store_suggests_setup_and_demo() {
+    qd log > out
+    assert_contains "$(cat out)" "no runs in the store"
+    assert_contains "$(cat out)" "* qd setup"
+    assert_contains "$(cat out)" "* qd demo"
+    "$PY" "$QD_DIR/tests/help_unit.py" "$QD_DIR" next out > parsed
+    assert_eq "$(cat parsed)" "ok 2"
+    qd_rc show latest 2> err
+    assert_status "$QD_RC" 2
+    assert_contains "$(cat err)" "new to qd: \`qd setup\`, or \`qd demo\` to practise"
+}
+
 run_test "hosts: ranges, attributes, order"           t_hosts_ranges_attrs_and_order
 run_test "hosts: warn on an attribute that is a host" t_hosts_warn_when_an_attribute_looks_like_a_host
 run_test "hosts: --layout asks manifest"              t_hosts_layout_asks_manifest
@@ -789,4 +860,6 @@ run_test "-s - reads a csv or tsv host table"         t_servers_from_stdin_read_
 run_test "--retries keeps every attempt"              t_retries_keep_every_attempt
 run_test "Ctrl-C keeps the hosts that answered"       t_ctrl_c_keeps_the_hosts_that_answered
 run_test "not-run is not measured, never zero"        t_not_run_is_not_measured
+run_test "next steps suggest the beginner commands"   t_next_steps_suggest_the_beginner_commands
+run_test "an empty store: qd setup and qd demo"       t_an_empty_store_suggests_setup_and_demo
 finish
