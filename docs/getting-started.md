@@ -128,7 +128,8 @@ repository provost looks after, one of `qd store ls`.
 A command names a run by its name (`demo-kernel`: the latest run of that
 name), `latest`, `latest~1` (the one before), its id or a unique part of
 it, or `ds:NAME` for every run of a dataset at once; `demo-kernel:hosts`
-is that run's other table.
+is that run's other table. [Concepts](concepts.md) has these words and
+the rest qd uses, and every way to name a run, an example each.
 
 ## 1. Is the fleet consistent?
 

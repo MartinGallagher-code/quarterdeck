@@ -218,7 +218,8 @@ EOF
     qd_rc store import junk.tgz --as t4 2> err
     assert_contains "$(cat err)" "is not a qd store archive"
     # nothing was registered, and nothing was left half-made
-    assert_not_contains "$(qd store ls)" "t1"
+    # the store names only: the paths hold mktemp's random suffix, which can contain "t1"
+    assert_not_contains "$(qd store ls | awk '{print $1}')" "t1"
     assert_eq "$(find "$(STORES)" -mindepth 1 -maxdepth 1 | sed 's|.*/||' | tr '\n' ' ')" "lab "
 }
 

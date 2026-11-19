@@ -42,7 +42,7 @@ The core loop:
 
 RUN: latest, latest~1, a run id or part of one, a --name, ds:NAME, or a
 file; :TABLE picks a table, @STORE a registered store (latest:hosts@wr01).
-Kept in provost's store: --store, QD_STORE, else provost's own choice.
+Stored by provost: --store, QD_STORE, else its own choice. See docs/concepts.md
 
 Exit status: 0 done, every host answered; 1 a finding (a host that did
 not answer, a difference, a failed check); 2 usage error, or I/O failed.
