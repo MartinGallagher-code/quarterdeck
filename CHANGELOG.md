@@ -22,7 +22,7 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
   NEXT. Exit 0 when every host answered and nothing changed, 1 when a host
   did not answer or something changed, 2 when RUN cannot be run again
   exactly: a `qd do` run, a `qd import`, a campaign's part, a design point,
-  a probe, a run that pushed files, or one filed before 0.32.0. It is
+  a probe, a run that pushed files, or one filed before 0.40.0. It is
   composed of `qd run` (`cmd_run`, given the Namespace the parser makes of
   the plain command) and `qd diff` (`cmd_diff`): no reader or statistic of
   its own (`quarterdeck/again.py`; `cli.py`: the verb, `cmd_again`).
