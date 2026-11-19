@@ -12,7 +12,9 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 **New to qd? Start with [Getting started](docs/getting-started.md)
 (docs/getting-started.md):** ten minutes, a question a step, on a made-up
 fleet's week that `qd demo` files for you. No hosts, ssh or network
-needed.
+needed. The words every command assumes (run, dataset, capture, store
+...) and every way to name a run are on one page:
+[Concepts](docs/concepts.md).
 
 The quarterdeck is where a ship is commanded from: the binnacle's
 instruments are read there and the log is kept there. This one does that
@@ -62,12 +64,29 @@ pip install provost binnacle             # the store, and the instruments
 pip install ./quarterdeck                # or put qd (and quarterdeck) on PATH
 ```
 
-`qd --help` is the reference card, `qd help VERB` one verb's flags
-(`qd help run`, as `qd run --help` prints them), and this README the
-manual.
+Bare `qd` prints a short start card, the few commands to begin with
+(`qd start` and `qd help basics` print it too); `qd --help` is the
+reference card: every command, one screen, under what it is for, everyday
+ones first.
+
+| Heading | Commands |
+|---|---|
+| Run | `run`, `probe`, `do`, `import`, `hosts` |
+| Read it back | `log`, `show`, `stats`, `freq`, `hist`, `outliers`, `pivot`, `trend`, `view`, `web` |
+| Over time | `diff`, `compare`, `changes` |
+| Judge and report | `check`, `report`, `peers`, `baseline` |
+| Larger jobs | `split`, `campaign`, `doe`, `join` |
+| Stores and output | `store`, `rm`, `export`, `floor` |
+| Help | `hints`, `doctor`, `start`, `demo`, `help` |
+
+`qd hints` maps questions to commands under the same headings, `qd help
+VERB` gives one verb's flags (`qd help run`, as `qd run --help` prints
+them), and this README is the manual.
 
 qd itself is Python 3.6+, standard library only. It needs provost to keep
-anything (`--no-store` runs without it); binnacle gives it its probes'
+anything (`--no-store` runs without it): any version files a run, and
+provost 2.28.0 or later files a small one quickly, in well under half the
+time 2.27.0 took (`docs/scale.md`, "Small runs"); binnacle gives it its probes'
 instruments and campaigns' muster, and `doe` its designs, each found on
 `PATH` or where `QD_<TOOL>` points. Nothing is installed on the fleet, and
 a command qd gives up on (past `--timeout` or `--max-output`) is stopped
@@ -92,9 +111,14 @@ qd ask -- uname -r                       # both at once: who agrees, who differs
 qd probe facts                           # why-slow's readings, a column each
 qd stats facts cpu.busy_pct --by rack    # centre and spread, per rack
 qd outliers facts mem.available_pct      # who is far from everybody else
+qd odd facts                             # who is unlike the rest, in any column
 qd compare facts -c cpu.busy_pct --last 5    # the last five runs, host by host
 qd web                                   # all of it, in a browser
 ```
+
+`A` is the column `uname -r` fills: provost names a field it found no
+name for `A`, `B`, ... as a spreadsheet does (see
+[Concepts](docs/concepts.md#the-objects)).
 
 ```text
 qd run -- uname -r: 48 hosts, 46 ok, 2 unreachable   [provost: uname: A]
@@ -319,18 +343,10 @@ straight away.
   name. `qd store rm` deletes the copy and leaves the store on the other
   machine as it was.
 
-Name a run the way you'd say it:
-
-| Reference | Means |
-|---|---|
-| `latest`, `latest~1`, `prev` | the newest run, the one before it |
-| `20261029-142233-uname` | that run; any unique part of an id works too |
-| `kernel` | the newest run named `kernel` (`--name`, a probe's name) |
-| `latest:hosts` | one table of a run: `data` (the default), `hosts` |
-| `ds:uname` | a whole provost dataset: every run that ever filed into it |
-| `results.tsv`, `reports/` | a file or directory, read without filing it |
-| `kernel@wr02`, `latest:hosts@wr01` | any of the above, read in the registered store `wr02` |
-
+Every way to name a run (`latest`, `latest~1`, `prev`, an id or part of
+one, a run's name, `ds:NAME`, `RUN:TABLE`, a file, `RUN@STORE`) is set
+out, with an example each, in
+[Concepts: Naming a run](docs/concepts.md#naming-a-run).
 `qd log` lists the runs and `qd log RUN` describes one.
 
 **Runs from different stores side by side**: add `@STORE` to a reference
@@ -1113,6 +1129,68 @@ reads. `--format csv` gives `group,host,...` instead.
 
 ---
 
+## Which hosts have had it: `qd coverage`
+
+```bash
+qd coverage facts iperf burnin -s hosts.txt               # a host a row, a test a column
+qd coverage facts iperf burnin -s hosts.txt --owed owed/  # and owed/NAME.txt: the hosts that owe it
+qd run -s owed/burnin.txt --name burnin -- ./burnin.sh    # close the gap
+qd coverage -s hosts.txt --since 2026-11-01               # covered this month?
+```
+
+A campaign keeps its own progress (`qd campaign status`). Ordinary runs
+have none, so `qd coverage` answers "has every host had its facts, iperf
+and burn-in, and which haven't?" across them. A test is a run's name
+(`--name`, a probe's name, a campaign's). The hosts are the list `qd run`
+would read (`-s`, `-S`, `--layout`, `QD_SERVERS` or a `hosts.txt`; naming
+none is an error, not this machine). For each host and each name it shows
+the host's latest answer in any run of that name, and the run it came
+from:
+
+| Shown | Counted as | Owed |
+|---|---|---|
+| `ok` | ok | no |
+| `failed`, `timeout`, `push-failed` | failed | yes |
+| `unreachable` | unreachable | yes |
+| `never`: no run of that name reached the host | never | yes |
+
+The head gives the counts per name: ok, failed, unreachable, never, and
+how many hosts owe it.
+
+- **Latest is by when the run started** (`created` in `qd.runs`, then
+  the order the store filed them), never by id. Within a run, a host's
+  last pass and last try count, as `--rerun` reads them.
+- **A `not-run` row is not an answer.** A run stopped before it reached
+  a host leaves the host as it was: its earlier answer, or never.
+- **A host the runs saw that the list does not hold** is listed apart,
+  under the grid, and is not counted.
+- **With no NAME,** the eight names run most recently are shown, newest
+  first, and the head says how many more there are. `--all` shows every
+  one.
+- **`--since DATE|RUN`** reads no run that started before it, so an old
+  ok is never. A date is `YYYY-MM-DD` (UTC midnight) or
+  `YYYY-MM-DDTHH:MM`, UTC. A run (`latest~3`, an id, a name) counts
+  itself and what came after.
+- **`--owed DIR`** writes `DIR/NAME.txt` for each name shown. It holds
+  the hosts that owe the test (never, or not ok) with the attributes the
+  list gave them, in the list's order: a host list `qd run -s`, `qd
+  probe -s` and the rest of the suite read. A name nothing is owed for
+  gets a file with no hosts, so an older list is never left standing.
+- **A name the store has no run of** is shown with every host never, and
+  qd says so on stderr. A name whose runs are not on the fleet (`qd do`,
+  `qd import`) has no host rows and is refused. An empty store with no
+  NAME has nothing to show (exit 2).
+- `--format csv|tsv|json|ndjson|md` gives the table behind it, a row per
+  host and name: `host, name, status, counted, owed, run, when, listed`.
+  `when` is when the host's answer started, in UTC. The hosts outside the
+  list come last, `listed` no and `owed` blank.
+
+The exit status is 1 when any host in the list owes any name shown (a
+finding), 0 when none does, and 2 for a usage error. It reads only
+`qd.runs` and `qd.hosts`, never the answers.
+
+---
+
 ## A system in parts: `qd campaign`
 
 ```bash
@@ -1489,14 +1567,16 @@ qd check latest --against limits.tsv --each   # one row per host per requirement
 qd check latest --against limits.tsv --keep   # and file the verdicts (qd web, qd export)
 qd check latest --against limits.tsv --format csv -o trr.csv
 qd check latest --against limits.tsv --waivers waivers.tsv   # agreed deviations
+qd check latest --against limits.tsv --manual inspected.tsv  # a person's pass or fail
 qd check latest --against limits.tsv --fail-level high       # exit 1 only for high and critical
 qd check latest --against limits.tsv --format junit -o qd-check.xml   # for CI
 qd check latest --against drift.tsv --baseline RUN|NAME     # limits relative to an earlier run
+qd check latest --against limits.tsv --rule 'all(SYS-1*, atleast(3, SYS-2*))'   # one verdict
 ```
 
 The thresholds file is TSV (or CSV) with a header. `req`, `column`, `op`
-and `limit` are required; `limit2`, `where`, `agg`, `unit`, `note` and
-`severity` may be left out or blank:
+and `limit` are required; `limit2`, `where`, `agg`, `unit`, `note`,
+`severity` and `weight` (for `--rule`, below) may be left out or blank:
 
 ```text
 req      column  op       limit  limit2  where      agg   unit
@@ -1508,8 +1588,9 @@ SYS-104  temp    between  20     45                 max
 
 - **`op`**: `<`, `<=`, `>`, `>=`, `==`, `!=`, `in` (a comma list of
   words, without regard to case), `between` (`limit` to `limit2`,
-  inclusive) or `within` (below). `==` and `!=` compare numbers as numbers
-  and words as words.
+  inclusive), `within` (below) or `manual` (a person decides it, with
+  `--manual`; below). `==` and `!=` compare numbers as numbers and words
+  as words.
 - **`within`** holds a value to a reference give or take a tolerance, as
   ReFrame's references do: `limit` is the reference and `limit2` the
   tolerance, `+-10%` (or `±10%`), `-5%,+10%` (or `-5%;+10%` in a CSV),
@@ -1526,7 +1607,8 @@ SYS-104  temp    between  20     45                 max
   command line narrows them for every check.
 - **`agg`**: `each` (the default: every row must pass) or one figure over
   the rows -- `mean`, `median`, `min`, `max`, `sum`, `stdev`, `range`,
-  `p05`, `p25`, `p75`, `p95`, `p99`.
+  `p05`, `p25`, `p75`, `p95`, `p99`, or the spread and shape figures
+  `cv`, `skew`, `kurtosis` and `zmax` (below).
 - **`unit`** is the limit's unit, if the limit does not carry one
   (`250us` does). Sizes and times are put on one scale, so `0.3ms`
   fails `<= 250us` and `2G` passes `<= 4096M`, and the observed value is
@@ -1555,6 +1637,67 @@ still a failure in the table, and the head says how many were let off.
 Two things are never let off: a check with **no** severity (it counts at
 every level, so a file without the column behaves as it always did), and
 **not measured**, whatever its severity.
+
+### Spread and shape: `cv`, `skew`, `kurtosis`, `zmax`
+
+`qd stats` and `qd outliers` show how alike the hosts are; these four
+aggregates let a check pass or fail on it. `agg zmax` with `op <= 3.5`
+reads "no host is an outlier", and `agg cv` with `op <= 0.05` "the hosts
+agree within 5%":
+
+```text
+req      column  op  limit  agg
+FLT-001  mbps    <=  3.5    zmax
+FLT-002  mbps    <=  0.05   cv
+FLT-003  rtt     <   1      skew
+```
+
+| `agg` | what it is | fewest values |
+|---|---|---|
+| `cv` | coefficient of variation: the sample stdev (n - 1, as `stdev`) over the mean's size, `stdev / abs(mean)` | 2 |
+| `skew` | the adjusted Fisher-Pearson sample skewness, G1 = g1 sqrt(n(n-1)) / (n-2) with g1 = m3 / m2^1.5 (Excel's `SKEW`): 0 for a symmetric spread, positive when a long tail runs high | 3 |
+| `kurtosis` | the sample **excess** kurtosis, G2 = ((n+1) g2 + 6)(n-1) / ((n-2)(n-3)) with g2 = m4 / m2^2 - 3 (Excel's `KURT`): 0 for a normal distribution, positive for heavier tails | 4 |
+| `zmax` | the largest robust \|z\| over the rows, 0.6745 (x - median) / MAD, as `qd outliers` scores it | 3 |
+
+(m2, m3 and m4 are the central moments, sums of (x - mean)^k over n.)
+
+- **They are unitless.** Cells in units are read on one scale, as `qd
+  outliers` reads them (`1ms` beside `0.1s`), and the figure is shown as
+  it is: the column's unit does not scale it, and the `unit` column of
+  the verdict is blank. A limit with a unit on one of them -- in `unit`,
+  in `limit` or `limit2` (`5%` included: write `0.05`), or in a `within`
+  tolerance or a baseline offset -- is refused with exit 2, naming the
+  check. A tolerance or an offset in percent (`+-10%`, `baseline+10%`)
+  is a share of the figure, not a unit, and is taken.
+- **Not measured, never a pass**, when the figure cannot be had: fewer
+  values than the table's last column, a mean of 0 for `cv`, every value
+  the same for `skew` and `kurtosis`, and a MAD of 0 for `zmax` (most
+  hosts agree exactly: `qd outliers` lists every one that differs). The
+  note says which. A figure over some rows but not all is shown and not
+  passed, as every aggregate's is.
+- **`zmax` is `qd outliers`' score**: the same median, MAD and formula,
+  so the two agree on the worst host and its z. Where hosts repeat (a
+  time series), each host's median is scored, as `qd outliers` does by
+  default; its fewest values are then hosts. The note names the host
+  with the worst |z|, its signed z to one place as `qd outliers` prints
+  it, and the median and MAD. A zmax over three or four hosts is noisy:
+  with so few, the MAD is small and a host a little off can score high.
+- **Under `--each`**, a row of a `zmax` check is that host's own robust
+  z, held to the limit by its size; a row of a `cv`, `skew` or
+  `kurtosis` check shows the host's value and carries the check's
+  verdict, since the figure is the fleet's, not the host's.
+- **With `--baseline`, a relative limit works** as it does on the other
+  aggregates: `baseline+0.02` or `baseline+50%` is held to the same
+  figure over the baseline's rows of the same hosts (each host's median
+  there for a `zmax` over hosts that repeat, and for a qualified
+  baseline), and a host the baseline lacks makes it not measured, as
+  does a baseline whose own figure cannot be had. The `baseline` and
+  `drift_pct` columns give the baseline's figure and the change from it;
+  a percentage of a skew or kurtosis near 0 swings widely, so prefer an
+  absolute offset there.
+- Waivers, severities, `--fail-level`, `--keep` and every `--format`,
+  JUnit included, treat these verdicts as any other aggregate's. A
+  thresholds file with none of them gives the output it always gave.
 
 ### Waivers
 
@@ -1593,6 +1736,78 @@ day it holds), `where` (only these rows, in `--where`'s grammar),
 With waivers, the verdict table gains `justification`, `expires` and
 `granted_by`, and the head counts waived apart from passed. Without
 `--waivers` and without a `severity` column the output is what it was.
+
+### A person's results: `--manual`
+
+Some requirements nothing measures: the cabling inspected, the labels
+right, a host's console checked. A review needs them in the same record
+as the measured ones, not in a spreadsheet beside it. Write such a
+requirement in the thresholds file with **`op manual`**; `column` may
+name what was looked at or be blank, and `limit`, `limit2`, `unit` and
+`agg` stay blank (say what is wanted in `note`). `where`, `severity`,
+`weight` and `note` work as on any check:
+
+```text
+req      column   op      limit  where    note
+SYS-201  cabling  manual                  as built, drawing E-104
+SYS-202  labels   manual         rack=r2
+```
+
+A manual requirement is **not measured** until a person's result is
+given, so the run exits 1: blank is never a pass. **`--manual FILE`**
+(`QD_MANUAL`) names the results, TSV or CSV like the waivers file:
+
+```text
+req      verdict  by        date        where    note
+SYS-201  pass     J. Smith  2026-11-17
+SYS-202  pass     QA board  2026-11-18
+SYS-202  fail     QA board  2026-11-18  n4       label swapped with n5
+```
+
+`req`, `verdict` (`pass` or `fail`, without regard to case) and `by` are
+required; `date` (YYYY-MM-DD, or with a time: `2026-11-17T14:30` or
+`2026-11-17 14:30`), `where` and `note` may be blank.
+
+- A result covers **the rows its `where` picks** (in `--where`'s grammar;
+  one bare word is a host, so `n4` is `host=n4`), or every row of the
+  check without one. Each row is what the results that cover it say, and
+  when they disagree **the fail stands** (the note says so); a row no
+  result covers is not measured. The check's verdict is then taken over
+  its rows as `each` takes it: one row failed fails it, otherwise one
+  row not covered makes it not measured. With **`--each`**, a row per
+  host, each with its own result.
+- With `--manual`, the verdict table gains **`decided_by`**, **`decided`**
+  (the date as written) and **`decision_note`**: who decided each manual
+  verdict, when, and what they wrote; `observed` reads `manual pass` or
+  `manual fail`. The head line counts the results and names who gave
+  them.
+- **Waivers apply to a manual fail** as to any fail (waived, and expect
+  `fail` on a manual pass is an unexpected pass); `--rule`, severities,
+  `--fail-level` and every `--format` take a manual verdict as any
+  other. In **JUnit**, a manual testcase carries `by` and `date` as
+  properties, a manual fail is `<failure type="manual" message="failed by
+  a person's decision: J. Smith on 2026-11-17: ...">`, and the suite
+  names the manual file with its sha256, as it does the thresholds and
+  waivers files.
+- **A result dated before the run is warned of, not refused**: the note
+  says `decided 2026-11-01, before the run (2026-11-17)` and the head
+  counts them. An inspection is often made the day before a run, so a
+  date cannot decide it alone; but a manual file kept from an earlier
+  run would otherwise pass a later one unremarked. A dataset read from a
+  file has no start, so there is nothing to compare with. The head also
+  counts results with no date.
+- **Refused with exit 2**, naming the line: a result whose `req` no
+  check has, or one whose check is measured rather than manual (a
+  person's result does not override a measurement); a verdict other than
+  `pass` or `fail`; a blank `req`, `verdict` or `by`; a date qd cannot
+  read; a `where` it cannot parse. A manual check with a `limit`,
+  `limit2`, `unit` or an `agg` is refused in the thresholds file.
+
+`--keep` files the manual columns with the verdicts, names the manual
+file in the filed run's command, and keeps a note of its name and its
+sha256 (`qd log RUN`), since a person's result is a claim nobody can
+recheck. Without `--manual` and without a manual row the output is what
+it was.
 
 ### Against an earlier run: `--baseline`
 
@@ -1653,7 +1868,8 @@ and `--keep` names the baseline in the filed run's command.
 `--keep` files the verdict table in the store as a run of kind `check`,
 named `check-<run>`, so `qd show`, `qd export` and `qd web` read it like
 any other dataset; with its severity and waiver columns, and the
-`--waivers` file named in its command.
+`--waivers` file named in its command (and the `--manual` file, with its
+sha256).
 
 ### JUnit XML, for CI
 
@@ -1678,6 +1894,7 @@ that runs `qd check` shows each requirement as a test:
 | unexpected pass | `<failure type="unexpected pass">`: it fails the run, so it fails the build |
 | not measured | `<error type="not measured" message="not measured: ...">`: never a pass, and not counted as one |
 | waived | `<skipped message="waived: justification (expires ...; granted by ...)">` |
+| manual fail | `<failure type="manual" message="failed by a person's decision: ...">`, with `by` and `date` as properties |
 
 So `tests`, `failures`, `errors` and `skipped` on `<testsuite>` are the
 head line's counts: failures are fail and unexpected pass, errors not
@@ -1687,6 +1904,95 @@ the suite carries `fail_level` as a property. Every string is escaped,
 and the characters XML 1.0 cannot hold (NUL and the other control
 characters) are dropped, so a hostile host name or note cannot break the
 file. The exit status is the same as for any other format.
+
+With `--rule`, the overall verdict is one more `<testcase>`, `classname`
+`rule` and `name` the rule: nothing in it for a pass, a `<failure
+type="rule">` for a fail, an `<error type="not measured">` for not
+measured, the why as its message. The suite carries `rule`,
+`rule.verdict` and `rule.why` as properties.
+
+### One verdict from many: `--rule`
+
+A test-readiness review often accepts a run that meets most of a group of
+requirements: every SYS-1xx, and three of the four SYS-2xx. **`--rule
+RULE`** (`QD_RULE`) builds one overall verdict from the requirements, and
+the exit status follows it: 0 when it passes, 1 when it fails or is not
+measured. The verdict of every check is the same as without it; the rule
+is one more layer on top.
+
+```bash
+qd check latest --against limits.tsv --rule 'all(SYS-1*, atleast(3, SYS-2*))'
+qd check latest --against limits.tsv --rule 'weighted(0.8, SYS-*)'
+QD_RULE='all(SYS-101, any(SYS-201, SYS-202))' qd check latest --against limits.tsv
+```
+
+The rule is calls and names, nothing else (quote it, for the shell):
+
+| Written | Passes when |
+|---|---|
+| `SYS-101` | that requirement passes |
+| `all(A, B, ...)` | every one passes |
+| `any(A, B, ...)` | one or more passes |
+| `not(A)` | A fails |
+| `atleast(N, A, B, ...)` | N or more pass; N is a whole number from 1 to how many there are |
+| `weighted(T, A, B, ...)` | the weights of those that pass, over the weights of all, come to T or more; T is from 0 to 1 |
+
+- A name is a `req` of the thresholds file, or a glob over them (`*`,
+  `?`, `[...]`, case counts): `SYS-2*` in a list is every SYS-2 requirement,
+  one item each. Where one requirement belongs (the whole rule, or
+  `not`'s), a glob must match exactly one.
+- The calls nest: `all`, `any`, `not` and `atleast` take requirements and
+  other calls; `weighted` takes requirements and globs.
+- A requirement with several checks passes when all of them do.
+- **Weights** come from a `weight` column in the thresholds file: a
+  number 0 or more, written on any one of the requirement's rows (two
+  different weights for one requirement are refused); blank is 1.
+- In the rule, a **waived** check counts as a pass, an **unexpected
+  pass** as a fail, and a failure below `--fail-level` as a pass.
+  **Not measured is never a pass**: a call is not measured when the
+  requirements not measured could still decide it (`all(A, U)` with A
+  passing, `atleast(2, A, U, F)`), and `not` of not measured is not
+  measured.
+- A requirement the rule does not name counts for nothing, and the head
+  says which those are.
+
+Worked example. With these limits, SYS-203 failing and SYS-204 not
+measured:
+
+```text
+req      column  op  limit  weight
+SYS-101  mbps    >=  900    2
+SYS-102  rtt     <=  250us
+SYS-201  temp    <=  70
+SYS-202  fan     >=  1000
+SYS-203  psu_w   <=  400
+SYS-204  ecc     ==  0
+```
+
+```console
+$ qd check latest --against limits.tsv --rule 'all(SYS-1*, atleast(2, SYS-2*))'
+qd check -- run-... against limits.tsv (...): 4 pass, 1 fail, 1 not measured; rule pass: all 3 passed
+  rule pass         all(SYS-1*, atleast(2, SYS-2*)): all 3 passed
+         pass         atleast(2, SYS-2*): 2 of 4 SYS-2* passed, need 2; 1 not measured: SYS-204
+```
+
+With `atleast(3, SYS-2*)` the same run is **not measured**, `2 of 4
+SYS-2* passed, need 3; 1 not measured: SYS-204` (SYS-204 could still have
+made it 3), and the exit status is 1. `weighted(0.8, SYS-*)` is not
+measured either: `weighted score 0.7143 of SYS-* (5 of 7), need 0.8; 1
+not measured: SYS-204`. SYS-101 weighs 2, so the four that passed weigh
+5 of 7, and SYS-204 passing would have made it 6 of 7.
+
+The overall verdict is in every format: the head line in text, with a
+line per call beneath it; one more row of the verdict table (`req`
+`(rule)`, the rule as its `limit`, the why as its `observed`) in CSV,
+TSV, JSON and the rest, and in what `--keep` files, whose command names
+the rule; and in JUnit as above. A rule qd cannot read is refused with
+exit 2, naming what is wrong: a `req` no check has, a glob that matches
+nothing (or several where one belongs), N above the count, a threshold
+outside 0 to 1, the same requirement twice in one list, weights that add
+up to 0, or anything left over. Without `--rule` the output and the exit
+status are what they always were.
 
 ---
 
@@ -1891,6 +2197,7 @@ qd hist latest rtt_p99 --bins 20
 qd outliers latest mbps                       # far from the median, by MAD
 qd outliers latest mbps --peers sku           # far from its own peer group's
 qd outliers firmware --categorical            # differs from its rack-mates, by value
+qd odd latest                                 # every column at once: who is unlike the rest
 qd stats latest mbps --peers sku              # per peer group (qd peers)
 qd pivot latest --rows host --cols peer --values pps
 qd trend latest load1 --by host --over ts
@@ -1949,6 +2256,54 @@ reduced to its median first, so a hundred rows count as one opinion.
 than `--k` (1.5) interquartile ranges, scored in IQRs past the nearer
 quartile. `--peers NAME` holds each host against its own peer group
 (`qd peers`), each group with its own median and spread.
+
+### Who is odd: `qd odd`
+
+`qd outliers` asks about one column, and on a run of fifty columns a
+newcomer does not know which to ask about. `qd odd [RUN]` (default:
+latest) asks about every one, and lists the hosts unlike the rest, ranked,
+with the column, the host's value and the typical one beside it:
+
+```bash
+qd odd                          # the latest run: who stands out, and in what
+qd odd facts --peers sku        # each host against its own peer group
+qd odd latest --top 5 --format csv
+```
+
+It is the two checks above, run column by column, and computes nothing of
+its own:
+
+- **Numbers** go through `qd outliers`' median and MAD, against the whole
+  run (or, with `--peers NAME`, each host's own peer group), a host's
+  repeated rows reduced to their median first. They are ranked by how far
+  out, in robust z; where most of the run agrees exactly (MAD 0) every
+  value that differs is infinitely far, and the column fewer hosts differ
+  in comes first.
+- **Words** go through `qd outliers --categorical`, within each rack (or
+  peer group). They are ranked by **rarity**: the share of the host's group
+  that says something else, so one host in twelve on another kernel (92%)
+  comes before four in twelve on another SKU (67%).
+
+The two are **two lists**, each ranked on its own scale: a robust z has no
+ceiling and a rarity is a share, and putting them on one scale would rank
+by the choice of scale, not by how odd a host is. `--top N` (20) limits
+each list. `--format` gives one table of both, `list, group, host, column,
+value, typical, score, agree`, in rank order.
+
+What it reads: in a `qd run`, what the hosts said (the columns after
+`capture`), not the host list's attributes or qd's own bookkeeping; in a
+file or another table, every column. Either way it leaves out what is
+meant to differ (serials, UUIDs, addresses, host names, uptime, times) and
+says so. A column every host agrees in is not checked, and neither is one
+**fewer than half the rows measured**: blank is not measured, never zero,
+and a host that measured nothing is neither odd nor a vote for the
+majority. A host that did not answer the run is named apart. A column
+split with no majority has no odd one, and is named too.
+
+The exit status is 1 when any host stands out, 0 when none does, and 2 on
+a usage error, so a CI job can gate on it. WHAT TO DO NEXT gives the `qd
+outliers` command for the top column of each list, which shows the same
+finding in full, and `qd show` for the first host named.
 
 ### `diff`: what changed
 
@@ -2391,7 +2746,7 @@ The numbers, and how they were measured, are in
 | | |
 |---|---|
 | 0 | done, and every host answered |
-| 1 | a finding: a host that did not answer, answers that differ (`qd ask`), a diff or compare that differs, a change or a slide `qd changes` found, a check that failed or was not measured, nothing to bin, a join that found no telemetry in any window, a report that records any of these |
+| 1 | a finding: a host that did not answer, answers that differ (`qd ask`), a host `qd odd` finds unlike the rest, a diff or compare that differs, a change or a slide `qd changes` found, a check that failed or was not measured, nothing to bin, a join that found no telemetry in any window, a host that still owes a test `qd coverage` names, a report that records any of these |
 | 2 | a usage error, or something could not be read or written |
 | other | `qd do` passes on the tool's own |
 

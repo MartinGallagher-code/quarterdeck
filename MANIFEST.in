@@ -9,6 +9,8 @@ recursive-include quarterdeck/web *.html *.js *.css
 recursive-include quarterdeck/demo *
 # the walkthrough, which tests/test_demo.sh runs
 include docs/getting-started.md
+# the words and run references, which tests/test_concepts.sh checks
+include docs/concepts.md
 # Ship the test suite in the sdist so it can be run against exactly what was
 # unpacked. It needs only bash and python3.
 recursive-include tests *

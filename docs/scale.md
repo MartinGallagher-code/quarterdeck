@@ -61,6 +61,62 @@ SCALE_JOBS=64 bash tests/scale.sh 300
    evenly. Use a rate of 5 to 10 a second through a default sshd, or
    raise `MaxStartups`.
 
+## Small runs (QD-056)
+
+A one-host `qd run -- ls` should feel instant; with provost 2.24.0 to
+2.27.0 it took 1.6 to 1.9 s on a quiet 4-core Linux machine, of which
+qd's own part (`--no-store`) was 0.06 s. Nearly all of it was provost
+filing three tiny captures (the answer, `qd.hosts` and `qd.runs`), and
+most of that was a fixed cost per capture: detecting each one's format
+from scratch, and reading the confidence ceiling of every one of
+provost's 274 strategies with an `awk` of its own each time.
+
+provost 2.28.0 changes two things, and files the same tables:
+
+- **One scan for the ceilings.** One `awk` reads every strategy's
+  ceiling, once per `provost batch`, and hands the table to the parses;
+  the per-file scan started about 230 `awk` processes per capture.
+- **A dataset's own strategy first.** A capture filed under a name the
+  store already has (`qd.runs` and `qd.hosts` on every run, an answer from
+  its second run on) is read with the strategy of that dataset's latest
+  capture, and kept only when batch reuse would keep it: the same
+  strategy, the same header, coverage no lower. Otherwise it is detected
+  from scratch, as before. meta.tsv says `detection  reused (...)`, and
+  `PROVOST_BATCH_REUSE=0` turns it off.
+
+Measured on 2026-11-18 with `tests/small_run.sh` (median of 5 runs; the
+fake ssh, so no network time) and with the run's own `provost batch` on
+its own (the same three inputs, `--context-columns`). The machine had 4
+cores and was shared with other test suites at a load of about 30, so the
+times are several times what a quiet machine gives; compare the rows with
+each other, not with the figures above. Processes are counted with
+`strace -f` (programs started; the ticket's 1,003 counted every `execve`
+call, failed `PATH` lookups included: 948 for the batch alone here).
+
+| | provost 2.27.0 | provost 2.28.0 |
+|---|---:|---:|
+| `qd run -- ls`, `--no-store` | 0.24 s, 5 processes | 0.22 s, 5 processes |
+| `qd run -- ls`, a new store | 8.08 s, 727 processes (497 `awk`) | 4.88 s, 280 processes (44 `awk`) |
+| `qd run -- ls`, the store has it | 7.36 s, 747 processes (496 `awk`) | 2.97 s, 275 processes (42 `awk`) |
+| its `provost batch`, the store has it | 6.74 s, 723 processes, 948 `execve` | 2.76 s (41%), 266 processes, 474 `execve` |
+| the same, `provost batch -j 1` | 8.88 s | 2.92 s (33%) |
+
+What is left is per capture, not per strategy: about 90 processes for
+each capture provost reads with a known strategy (`dirname`, `wc`, `tr`,
+`head`, `git`, `sha256sum` and others), which is still why a fleet's
+answers cost about 0.15 s each to file. A dataset whose table changes
+size between runs (an `ls` of a directory that gained a file, a fleet of
+another size) is detected from scratch, because the header provost
+compares names its rows.
+
+```bash
+bash tests/small_run.sh                        # the table's qd rows
+QD_PROVOST=/path/to/provost bash tests/small_run.sh
+```
+
+CI's **small run** job prints the same table for PyPI's provost and for
+provost's `main`, as a report: it never fails on a time or a count.
+
 ## Tree fan-out
 
 No ticket is filed. Nothing here calls for qd on a head node fanning out

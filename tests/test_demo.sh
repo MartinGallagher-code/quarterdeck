@@ -5,7 +5,8 @@
 # qd demo, and the walkthrough that reads it (QD-039): a made-up fleet's
 # week, filed through provost as any run is, with no ssh, network or host
 # list; docs/getting-started.md, every command of which runs here and must
-# print what the page shows.
+# print what the page shows; and the examples of docs/concepts.md's
+# "Naming a run", which read the demo (QD-042).
 #
 # Filing the demo is a few hundred provost captures, the slow part, so
 # only two cases file it: the walkthrough (the page's own `qd demo`) and
@@ -60,6 +61,16 @@ t_walkthrough() {
     [ -n "${QD_WALKTHROUGH_UPDATE:-}" ] && update=(--update)
     "$PY" "$QD_DIR/tests/walkthrough.py" "$GUIDE" "$PWD" "${update[@]}"
     unset QD_VIA QD_MAX_FAIL QD_RETRIES QD_RATE QD_READ_ONLY QD_JOBS QD_SERVERS
+
+    # every example of docs/concepts.md's "Naming a run", against the demo
+    # the page says they read, each exiting 0 as it says (QD-042)
+    assert_eq "$(active_store)" "demo"
+    set +e
+    out="$("$PY" "$QD_DIR/tests/concepts_unit.py" "$QD_DIR" run qd)"
+    rc=$?
+    set -e
+    assert_status "$rc" 0
+    assert_contains "$out" "every one exits 0"
 
     # nothing filed or made where it should not be
     assert_no_file "$HOME/.provost"
