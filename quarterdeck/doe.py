@@ -2,10 +2,11 @@
 # SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 """Designed experiments on a fleet: doe designs and analyses, qd measures.
 
+    qd doe init fio                          a starting config: fio's screen
     qd doe plan CONFIG.json                  the design doe makes of it
     qd doe run CONFIG.json -s hosts.txt -- 'iperf3 -c peer -P {streams}'
     qd doe status NAME                       which points are measured
-    qd doe analyze NAME -c COLUMN            doe's effects, ANOVA, power
+    qd doe analyze NAME -c COLUMN[,COL...]   doe's effects, ANOVA, power
 
 The design is design_of_experiments' (`doe`, pip install doehelper): its
 config file (factors, levels, the design to use -- full or fractional
@@ -22,11 +23,24 @@ host groups (one rack a block, say), which is what blocking is for.  A
 point already measured is not run again unless asked (--redo), so an
 interrupted design carries on where it stopped.
 
-`qd doe analyze` reduces each point's runs to one response (the median of
-COLUMN over the hosts, or --agg), writes them the way doe reads results --
-run_<id>.json beside the design's design_matrix.json -- and hands them to
-`doe analyze` (and `doe optimize` with --optimize).  doe needs Python 3.10
-and numpy; qd runs it as a command, so qd itself keeps its 3.6 floor.
+`qd doe analyze` reduces each point's runs to one response per column (the
+median of COLUMN over the hosts, or --agg), writes them the way doe reads
+results -- run_<id>.json beside the design's design_matrix.json, one key per
+response, and no key at all for a response a point did not measure -- and
+hands them to `doe analyze` (and `doe optimize` with --optimize).  Several
+responses go to doe in one go, and doe's main effects (its --csv tables)
+are ranked per response, the big factors being those inside doe's own 80%
+Pareto line.  doe needs Python 3.10 and numpy; qd runs it as a command, so
+qd itself keeps its 3.6 floor.
+
+A config may carry what qd needs beyond doe's own keys, which doe ignores:
+`metadata.qd_command`, the command a point runs (so `qd doe run CONFIG`
+needs no command after --), `metadata.qd_timeout`, the seconds one point
+needs (qd doe run's --timeout is at least that), and a `column` on each response, the column of
+the filed run it is read from.  doe's `fixed_factors` -- what the design
+holds still -- are put into the command by {name} like the factors.
+`qd doe init fio` writes such a config: QD-067's Plackett-Burman screen of
+fio's parameters on one drive of one host.
 """
 
 import hashlib
@@ -130,15 +144,48 @@ def points(matrix):
     return out
 
 
-def substitute(template, levels):
-    """{factor} replaced by its level; a {name} that is no factor is an
-    error, not a silent literal."""
-    d = dict(levels)
+def fixed_of(cfg):
+    """doe's fixed_factors: what the design holds still, {name: value}."""
+    fx = cfg.get("fixed_factors") or {}
+    if not isinstance(fx, dict):
+        return []
+    return [(str(k), str(v)) for k, v in sorted(fx.items())]
+
+
+def command_of(cfg):
+    """The command the config names for its points (metadata.qd_command),
+    or ""."""
+    meta = cfg.get("metadata") or {}
+    cmd = meta.get("qd_command") if isinstance(meta, dict) else None
+    return cmd.strip() if isinstance(cmd, str) else ""
+
+
+def timeout_of(cfg):
+    """The seconds one point needs (metadata.qd_timeout), or None.  qd doe
+    run uses at least this as its per-host --timeout, so a point that runs
+    longer than qd's 60 s default is not stopped part-way."""
+    meta = cfg.get("metadata") or {}
+    v = meta.get("qd_timeout") if isinstance(meta, dict) else None
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
+
+
+def substitute(template, levels, fixed=()):
+    """{factor} replaced by its level, {name} of a fixed factor by its
+    value; a {name} that is neither is an error, not a silent literal."""
+    d = dict(fixed)
+    d.update(dict(levels))
 
     def one(m):
         if m.group(1) not in d:
             die("the command names {%s}, which is not a factor of the "
-                "design (factors: %s)" % (m.group(1), ", ".join(d)))
+                "design (factors: %s%s)" % (
+                    m.group(1), ", ".join(k for k, _ in levels),
+                    ("; held fixed: %s" % ", ".join(k for k, _ in fixed))
+                    if fixed else ""))
         return d[m.group(1)]
     return FACTOR_RE.sub(one, template)
 
@@ -192,6 +239,14 @@ def point_runs(st, name):
     return out
 
 
+def answered(runs):
+    """Whether any of a point's runs had a host answer ok: a point every
+    run of which failed everywhere has measured nothing, and `qd doe run`
+    runs it again."""
+    return any(((e.meta.get("hosts") or {}).get("ok") or 0) > 0
+               for e in runs)
+
+
 def names(st):
     """Every design in the store, in the order they were first filed."""
     out = []
@@ -206,19 +261,20 @@ STATUS_COLUMNS = ["point", "block", "factors", "runs", "last_run", "ok"]
 
 def status_rows(st, name):
     """(the design's row, a STATUS_COLUMNS row per point, how many points
-    have been measured)."""
+    have been measured: a host answered ok)."""
     row, _, matrix = load(st, name)
     runs = point_runs(st, name)
-    rows = []
+    rows, done = [], 0
     for rid, blk, lv in points(matrix):
         rs = runs.get(rid, [])
+        done += 1 if answered(rs) else 0
         last = rs[-1] if rs else None
         h = (last.meta.get("hosts") or {}) if last else {}
         rows.append([str(rid), str(blk), " ".join("%s=%s" % kv for kv in lv),
                      str(len(rs)), last.id if last else "",
                      ("%d/%d" % (h.get("ok", 0), h.get("total", 0))) if h
                      else ""])
-    return row, rows, sum(1 for r in rows if r[3] != "0")
+    return row, rows, done
 
 
 def responses(st, name, column, agg="median"):
@@ -253,52 +309,326 @@ def responses(st, name, column, agg="median"):
     return out
 
 
-def analyze(st, name, column, agg="median", optimize=False, extra=()):
+def response_name(column):
+    """A response's name as doe keeps it: the column, made a word."""
+    return re.sub(r"[^A-Za-z0-9_]+", "_", column).strip("_") or "response"
+
+
+def specs(cfg, columns=None):
+    """[(response name, column, optimize)]: the -c columns given (each a
+    column, or a response of the config by name), else every response of
+    the config that names its column; [] when neither says."""
+    rs = [r for r in cfg.get("responses") or [] if isinstance(r, dict)]
+    by_name = dict((r.get("name"), r) for r in rs)
+    by_col = dict((r.get("column"), r) for r in rs if r.get("column"))
+    out = []
+    if columns:
+        for c in columns:
+            r = by_col.get(c) or by_name.get(c) or \
+                by_name.get(response_name(c)) or {}
+            col = r.get("column") or c
+            out.append((r.get("name") if r.get("column") else
+                        response_name(col), col,
+                        r.get("optimize", "maximize")))
+    else:
+        out = [(r["name"], r["column"], r.get("optimize", "maximize"))
+               for r in rs if r.get("name") and r.get("column")]
+    seen = set()
+    for n, _, _ in out:
+        if n in seen:
+            die("two responses are both named %s: -c each column once" % n)
+        seen.add(n)
+    return out
+
+
+PARETO = 80.0   # doe's pareto_threshold: its Pareto chart's line
+
+
+def big_factors(effects):
+    """The first of doe's ranked effects whose contributions reach its 80%
+    Pareto line: the few that matter, the rest being the trivial many."""
+    out, total = [], 0.0
+    for f, _, pct in effects:
+        if total >= PARETO or not pct:
+            break
+        out.append(f)
+        total += pct
+    return out
+
+
+def level_key(x):
+    """doe's order of a factor's levels: numbers by value, then the rest
+    by name.  A positive main effect is the second level's mean over the
+    first's."""
+    try:
+        return (0, float(x), "")
+    except ValueError:
+        return (1, 0.0, x)
+
+
+def best_levels(matrix, effects, optimize):
+    """{factor: the level doe's effect says is better for this response}."""
+    lv = {}
+    for _, _, levels in points(matrix):
+        for f, v in levels:
+            lv.setdefault(f, set()).add(v)
+    out = {}
+    for f, eff, _ in effects:
+        ls = sorted(lv.get(f, ()), key=level_key)
+        if len(ls) != 2 or not eff:
+            continue
+        higher = ls[1] if eff > 0 else ls[0]
+        lower = ls[0] if eff > 0 else ls[1]
+        out[f] = higher if optimize != "minimize" else lower
+    return out
+
+
+def read_effects(path):
+    """doe's main_effects_<response>.csv: [(factor, effect, % contribution)]
+    in doe's order, largest first; [] when doe wrote none."""
+    import csv
+    if not os.path.isfile(path):
+        return []
+    out = []
+    with open(path) as f:
+        for r in csv.DictReader(f):
+            try:
+                out.append((r["factor_name"], float(r["main_effect"]),
+                            float(r["pct_contribution"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+    return out
+
+
+def analyze(st, name, columns=None, agg="median", optimize=False, extra=()):
     """Write the responses as doe reads them and run doe analyze (and
-    optimize); returns (doe's text, the per-point responses)."""
+    optimize) on all of them at once.  Returns (doe's text, the responses
+    [(name, column, optimize, [(run_id, value or None, n)])], doe's ranked
+    effects {name: [(factor, effect, pct)]}, the design's matrix)."""
     row, cfg, matrix = load(st, name)
-    resp = responses(st, name, column, agg)
-    got = [r for r in resp if r[1] is not None]
-    if len(got) < 2:
+    sp = specs(cfg, columns)
+    if not sp:
+        die("analyze what? -c COLUMN[,COLUMN...]: the responses, as qd show "
+            "names them (or a config whose responses name their column)")
+    allr = [(n, c, o, responses(st, name, c, agg)) for n, c, o in sp]
+    usable = [r for r in allr if sum(1 for x in r[3] if x[1] is not None) >= 2]
+    if not usable:
+        n = max(sum(1 for x in r[3] if x[1] is not None) for r in allr)
         die("only %d of the design's %d points have a %s to analyse: "
             "`qd doe status %s` says which are measured" % (
-                len(got), len(resp), column, name))
+                n, len(allr[0][3]), " or ".join(c for _, c, _, _ in allr),
+                name))
     work = tempfile.mkdtemp(prefix="qd-doe-")
     try:
         out_dir = os.path.join(work, "results")
+        csv_dir = os.path.join(work, "effects")
         os.makedirs(out_dir)
         write_text(os.path.join(out_dir, "design_matrix.json"),
                    json.dumps(matrix, indent=2))
-        rname = re.sub(r"[^A-Za-z0-9_]+", "_", column).strip("_") or "response"
-        for rid, v, _ in got:
+        # one run_<id>.json a point, a key per response it measured: a
+        # response not measured is no key -- blank, never 0 -- and doe
+        # leaves that point out of that response's analysis
+        per = {}
+        for rname, _, _, resp in usable:
+            for rid, v, _ in resp:
+                if v is not None:
+                    per.setdefault(rid, {})[rname] = v
+        for rid, vals in sorted(per.items()):
             write_text(os.path.join(out_dir, "run_%d.json" % rid),
-                       json.dumps({rname: v}))
+                       json.dumps(vals, sort_keys=True))
         cfg = json.loads(json.dumps(cfg))
-        old = dict((r.get("name"), r) for r in cfg.get("responses") or [])
-        keep = old.get(rname) or old.get(column) or {}
-        cfg["responses"] = [{"name": rname,
-                             "optimize": keep.get("optimize", "maximize")}]
+        cfg["responses"] = [{"name": rname, "optimize": o}
+                            for rname, _, o, _ in usable]
         settings = cfg.setdefault("settings", {})
         settings["out_directory"] = out_dir
         settings.setdefault("test_script", "true")
         conf = os.path.join(work, "config.json")
         write_text(conf, json.dumps(cfg, indent=2))
         args = ["analyze", "--config", conf, "--results-dir", out_dir,
-                "--no-plots", "--no-report", "--partial"] + list(extra)
+                "--no-plots", "--no-report", "--partial",
+                "--csv", csv_dir] + list(extra)
         rc, text = run_doe(args, cwd=work)
         if rc != 0:
             die("doe analyze failed (exit %d):\n%s" % (rc, text[-2000:]))
+        effects = {}
+        for rname, _, _, _ in usable:
+            safe = rname.replace("/", "_").replace(" ", "_")
+            effects[rname] = read_effects(
+                os.path.join(csv_dir, "main_effects_%s.csv" % safe))
         if optimize:
             rc, more = run_doe(["optimize", "--config", conf, "--results-dir",
                                 out_dir, "--partial"], cwd=work)
             text += "\n" + more
-        return clean(text), resp
+        return clean(text), allr, effects, matrix
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def ranking_lines(allr, effects, matrix, width=80, indent="  "):
+    """Lines a response: its big factors, each with its share of the
+    effect and the level that is better for that response, then the rest
+    in doe's order."""
+    import textwrap
+    lines = []
+    head = max([len(r[0]) for r in allr] + [8]) + 2
+    pad = indent + " " * head
+    wrap = max(40, (width or 80))
+
+    def put(first, text):
+        lines.extend(textwrap.wrap(text, wrap, initial_indent=first,
+                                   subsequent_indent=pad,
+                                   break_on_hyphens=False) or [first])
+
+    for rname, _, o, resp in allr:
+        first = indent + rname.ljust(head)
+        eff = effects.get(rname)
+        if eff is None:
+            n = sum(1 for x in resp if x[1] is not None)
+            put(first, "not analysed: %d point%s measured it" % (
+                n, "" if n == 1 else "s"))
+            continue
+        if not eff:
+            put(first, "doe gave no main effects")
+            continue
+        big = big_factors(eff)
+        best = best_levels(matrix, eff, o)
+        put(first, "big: " + ", ".join(
+            "%s %.0f%%%s" % (f, p, (" (%s %s)" % (
+                "max" if o != "minimize" else "min", best[f]))
+                if f in best else "")
+            for f, _, p in eff if f in big))
+        rest = ["%s %.0f%%" % (f, p) for f, _, p in eff if f not in big]
+        if rest:
+            put(pad, "then: " + ", ".join(rest))
+    return lines
 def clean(text):
     """doe's report, less the warning about the stand-in test script qd
     gives it (qd ran the tests; doe only reads their results)."""
     return "\n".join(ln for ln in text.splitlines()
                      if "test_script" not in ln).strip("\n")
+
+
+# ---------------------------------------------------------------------------
+# Starting configs: `qd doe init NAME`
+# ---------------------------------------------------------------------------
+
+# QD-067: a Plackett-Burman screen of fio's parameters on one drive of one
+# host.  The factors, levels and the reason for each are the proposal the
+# owner approves (or changes) before the first real run; the manual says
+# the same at more length,
+# README: "A screen of fio's parameters: qd doe init fio"
+FIO_COMMAND = (
+    "fio --name=qd-screen --filename={filename} --size={size} --time_based "
+    "--runtime={runtime} --ramp_time={ramp_time} --group_reporting "
+    "--output-format=json --rw={rw} --rwmixread={rwmixread} --bs={bs}k "
+    "--iodepth={iodepth} --numjobs={numjobs} --ioengine={ioengine} "
+    "--direct={direct}")
+
+FIO_SCREEN = {
+    "metadata": {
+        "name": "fio-screen",
+        "description": "Plackett-Burman screen of fio's parameters on one "
+                       "drive of one host (QD-067): which of them move "
+                       "IOPS, bandwidth and latency most.",
+        "qd_command": FIO_COMMAND,
+        # one point is the 10 s ramp and the 60 s run, plus fio's start
+        # and the file's laying out: past qd's 60 s default --timeout
+        "qd_timeout": 180,
+        "qd_note": "Set fixed_factors.filename to a file on the drive under "
+                   "test before the first run. A /dev path writes the raw "
+                   "device and destroys what is on it: qd doe run refuses "
+                   "it without --yes.",
+    },
+    "factors": [
+        {"name": "bs", "label": "block size",
+         "levels": ["4", "128"], "type": "continuous",
+         "unit": "KiB",
+         "description": "Block size: 4k is the small random I/O that "
+                        "IOPS is quoted for, 128k the large I/O streaming "
+                        "work issues. It trades IOPS for bandwidth more "
+                        "than any other setting."},
+        {"name": "iodepth", "label": "I/Os in flight per job",
+         "levels": ["1", "32"], "type": "continuous",
+         "description": "I/Os each job keeps in flight: 1 is latency-bound, "
+                        "one at a time; 32 fills a SATA/SAS queue and goes "
+                        "a long way towards an NVMe drive's."},
+        {"name": "numjobs", "label": "jobs submitting at once",
+         "levels": ["1", "8"], "type": "continuous",
+         "description": "Jobs (processes) submitting at once: parallelism "
+                        "on the host side, which iodepth alone does not "
+                        "give an NVMe drive's many queues. 8 stays under "
+                        "a server's core count."},
+        {"name": "rwmixread", "label": "share of reads",
+         "levels": ["30", "70"], "type": "continuous",
+         "unit": "% reads",
+         "description": "Share of reads. Kept off 0 and 100 so every point "
+                        "does reads and writes, and every response is "
+                        "measured at every point: fio reports 0 for a "
+                        "direction that did no I/O, which would read as a "
+                        "measurement."},
+        {"name": "rw", "label": "sequential or random",
+         "levels": ["rw", "randrw"], "type": "categorical",
+         "description": "Access pattern, sequential (rw) or random "
+                        "(randrw), both mixed so rwmixread applies at every "
+                        "point. Categorical: a central composite or "
+                        "Box-Behnken follow-up holds it at its better "
+                        "level."},
+        {"name": "ioengine", "label": "how fio submits I/O",
+         "levels": ["libaio", "io_uring"],
+         "type": "categorical",
+         "description": "How fio submits I/O: both asynchronous, so iodepth "
+                        "means the same at both levels (a synchronous "
+                        "engine such as psync ignores iodepth). io_uring "
+                        "needs Linux 5.1+ and a fio built with it (fio "
+                        "--enghelp lists it)."},
+        {"name": "direct", "label": "page cache or O_DIRECT",
+         "levels": ["0", "1"], "type": "categorical",
+         "description": "1 bypasses the page cache (O_DIRECT) and measures "
+                        "the drive; 0 goes through it, and measures what "
+                        "applications that do not use O_DIRECT get. libaio "
+                        "is only asynchronous with direct=1, an interaction "
+                        "a screen cannot separate from the main effects."},
+    ],
+    "fixed_factors": {
+        "filename": "/mnt/DRIVE/qd-fio.dat",
+        "size": "8G",
+        "runtime": "60",
+        "ramp_time": "10",
+    },
+    "responses": [
+        {"name": "read_iops", "column": "jobs.0.read.iops",
+         "optimize": "maximize", "unit": "IO/s"},
+        {"name": "write_iops", "column": "jobs.0.write.iops",
+         "optimize": "maximize", "unit": "IO/s"},
+        {"name": "read_bw", "column": "jobs.0.read.bw_bytes",
+         "optimize": "maximize", "unit": "B/s"},
+        {"name": "write_bw", "column": "jobs.0.write.bw_bytes",
+         "optimize": "maximize", "unit": "B/s"},
+        {"name": "read_lat_mean", "column": "jobs.0.read.clat_ns.mean",
+         "optimize": "minimize", "unit": "ns"},
+        {"name": "read_lat_p99",
+         "column": "jobs.0.read.clat_ns.percentile.99.000000",
+         "optimize": "minimize", "unit": "ns"},
+        {"name": "write_lat_mean", "column": "jobs.0.write.clat_ns.mean",
+         "optimize": "minimize", "unit": "ns"},
+        {"name": "write_lat_p99",
+         "column": "jobs.0.write.clat_ns.percentile.99.000000",
+         "optimize": "minimize", "unit": "ns"},
+    ],
+    "settings": {"operation": "plackett_burman", "block_count": 1},
+}
+
+EXAMPLES = {"fio": ("fio-screen.json", FIO_SCREEN)}
+
+
+def init(kind, path=None):
+    """Write the starting config `kind` (EXAMPLES) to path (its own name in
+    this directory by default); returns (path, config)."""
+    if kind not in EXAMPLES:
+        die("no starting config %r: %s" % (kind, ", ".join(sorted(EXAMPLES))))
+    default, cfg = EXAMPLES[kind]
+    path = path or default
+    if os.path.exists(path):
+        die("%s is there already: move it, or edit it" % path)
+    write_text(path, json.dumps(cfg, indent=2) + "\n")
+    return path, cfg
