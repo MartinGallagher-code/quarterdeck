@@ -7,14 +7,14 @@
 # `qd run --name NAME -- COMMAND` would.  Kept in probes.json beside qd's
 # config.json, never in a store; and never a way around --allow,
 # --read-only or the mutation guard, which see its command, not its name.
-# fio is the README's worked example: its JSON, from a fixture, filed by
+# fio is the manual's worked example (docs/running.md): its JSON, from a fixture, filed by
 # the real provost.
 
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/test_helper.bash"
 
 FIO_JSON="$QD_DIR/tests/corpus/fio/randread.json"
-# the README's fio probe, word for word
+# the manual's fio probe (docs/running.md), word for word
 FIO_CMD="fio --name=randread --rw=randread --bs=4k --size=256M --runtime=30 --time_based --directory=/var/tmp --direct=1 --ioengine=libaio --iodepth=4 --output-format=json"
 
 seed() {
@@ -251,8 +251,8 @@ t_a_store_brings_no_commands() {
     assert_contains "$(cat err)" "no probe 'mykernel'"
 }
 
-# The README's fio example, filed by the provost under test.  If this
-# provost does not file these columns from fio's JSON, the README's
+# The manual's fio example (docs/running.md), filed by the provost under
+# test.  If this provost does not file these columns from fio's JSON, its
 # example is wrong for it: change the example to what does parse.
 t_fio_json_files_the_readme_columns() {
     seed
@@ -263,17 +263,17 @@ t_fio_json_files_the_readme_columns() {
     cols="host,jobs.0.read.iops,jobs.0.read.bw,jobs.0.read.clat_ns.percentile.99.000000,jobs.0.read.lat_ns.mean,disk_util.0.util"
     csv="$(qd show fio-randread --cols "$cols" --format csv)"
     if [ "$(printf '%s\n' "$csv" | head -1)" != "$cols" ]; then
-        fail "$QD_PROVOST did not file the README's fio columns from fio's JSON (got: $(printf '%s\n' "$csv" | head -1)): change README's fio example to what it does file"
+        fail "$QD_PROVOST did not file the manual's fio columns from fio's JSON (got: $(printf '%s\n' "$csv" | head -1)): change docs/running.md's fio example to what it does file"
     fi
     assert_contains "$csv" "a,28952.931569,115811,272384,138073.53,99.512"
     assert_contains "$csv" "b,28952.931569,115811,272384,138073.53,99.512"
-    # every column named here is the README's, and so is the command
+    # every column named here is the manual's, and so is the command
     for c in jobs.0.read.iops jobs.0.read.bw jobs.0.read.clat_ns.percentile.99.000000 \
             jobs.0.read.lat_ns.mean disk_util.0.util; do
-        assert_contains "$(cat "$QD_DIR/README.md")" "$c"
+        assert_contains "$(cat "$QD_DIR/docs/running.md")" "$c"
     done
-    assert_contains "$(cat "$QD_DIR/README.md")" "$FIO_CMD"
-    # the README's limits: IOPS passes, a p99 over 250 us fails
+    assert_contains "$(cat "$QD_DIR/docs/running.md")" "$FIO_CMD"
+    # the manual's limits: IOPS passes, a p99 over 250 us fails
     printf 'req\tcolumn\top\tlimit\tagg\tunit\n' > fio-limits.tsv
     printf 'STO-1\tjobs.0.read.iops\t>=\t20000\tmin\t\n' >> fio-limits.tsv
     printf 'STO-2\tjobs.0.read.clat_ns.percentile.99.000000\t<=\t250000\tmax\tns\n' >> fio-limits.tsv
@@ -290,5 +290,5 @@ run_test "clash, bad name, no --replace: exit 2"    t_clashes_bad_names_and_exis
 run_test "read-only and --allow see its command"    t_read_only_and_allow_see_a_saved_probes_command
 run_test "the mutation guard catches a saved rm -rf" t_the_mutation_guard_catches_a_saved_rm_rf
 run_test "a store brings no commands to run"        t_a_store_brings_no_commands
-run_test "fio's JSON: the README's columns"         t_fio_json_files_the_readme_columns
+run_test "fio's JSON: the manual's columns"         t_fio_json_files_the_readme_columns
 finish

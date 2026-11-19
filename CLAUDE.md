@@ -51,7 +51,12 @@ stores read from a git copy -- is `quarterdeck/stores.py`.
   workflow" on `main`; either uploads to PyPI (there is no TestPyPI dry
   run). A number that is never published is fine; a change with no number
   is not.
-- `--help` stays a reference card; README.md is the manual.
+- `--help` stays a reference card; README.md and docs/ are the manual:
+  README.md the short front page (and PyPI's page, so its links are
+  absolute), docs/README.md the contents, a chapter a task. Code points
+  at a section as `docs/CHAPTER.md: "Section"`, which
+  `tests/check_readme_pointers.py` checks; `tests/check_links.py` checks
+  every link between the pages.
 
 ## Tests
 
@@ -78,8 +83,8 @@ in progress; a push to `main` always runs to the end. Every job has a
 
 `tests/check.sh` runs the version check, the 3.6 checks, shellcheck, `node
 --check`, `reuse lint`, the wheel build and the suite on both provost paths,
-skipping (and naming) what is not installed. README's "Working on
-quarterdeck" is the setup.
+skipping (and naming) what is not installed. docs/contributing.md's
+"Working on quarterdeck" is the setup.
 
 No network: a fake ssh/scp, stand-in tools, `QD_TEST_KEYS` for the
 explorer, and a real server on loopback for the web API (and, in

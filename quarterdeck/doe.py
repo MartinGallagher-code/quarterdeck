@@ -734,7 +734,7 @@ def clean(text):
 # host.  The factors, levels and the reason for each are the proposal the
 # owner approves (or changes) before the first real run; the manual says
 # the same at more length,
-# README: "A screen of fio's parameters: qd doe init fio"
+# docs/larger-jobs.md: "A screen of fio's parameters: qd doe init fio"
 FIO_COMMAND = (
     "fio --name=qd-screen --filename={filename} --size={size} --time_based "
     "--runtime={runtime} --ramp_time={ramp_time} --group_reporting "

@@ -254,7 +254,7 @@ t_on_the_card_in_hints_and_help() {
     assert_contains "$out" "--top N"
     assert_contains "$out" "--peers NAME"
     # shellcheck disable=SC2016  # the backquotes are the heading's own text
-    assert_contains "$(cat "$QD_DIR/README.md")" '### Who is odd: `qd odd`'
+    assert_contains "$(cat "$QD_DIR/docs/reading.md")" '### Who is odd: `qd odd`'
 }
 
 run_test "the demo: the slow host and the odd kernel, ranked first" t_demo_slow_host_and_odd_kernel_first

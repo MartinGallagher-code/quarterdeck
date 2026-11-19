@@ -16,7 +16,7 @@ not be changed: name what may run, and everything else is refused.
 It is policy, not a sandbox: a pushed script, an allow-listed shell or a
 quoting trick gets past any list of patterns.  The real control is the
 account's own ssh and sudo rights on the hosts
-(README: "Allow-lists and read-only").
+(docs/running.md: "Allow-lists and read-only").
 
 Every run under a policy says so in its qd.runs notes (the list's name
 and hash, read-only, and any confirmed override, with who confirmed),

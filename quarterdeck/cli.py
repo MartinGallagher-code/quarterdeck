@@ -36,7 +36,7 @@ Help
 
 The core loop:
   qd run -s hosts.txt -- uname -r      every host, every answer, kept
-  qd freq latest A                     who said which
+  qd freq latest A                     who said which (A: an unnamed column)
   qd outliers latest COL               who is far from the rest
   qd compare NAME -c COL --last 5      the last five runs, host by host
   qd web                               all of it, in a browser
@@ -49,12 +49,14 @@ Exit status: 0 done, every host answered; 1 a finding (a host that did
 not answer, a difference, a failed check); 2 usage error, or I/O failed.
 
 New to qd? qd demo, then docs/getting-started.md; your own fleet: qd setup.
-Full manual: https://github.com/MartinGallagher-code/quarterdeck#readme
+Full manual: https://github.com/MartinGallagher-code/quarterdeck/tree/main/docs
 """
 
 import argparse
+import contextlib
 import datetime
 import difflib
+import io
 import os
 import re
 import shlex
@@ -1330,7 +1332,9 @@ def did_not_answer_lines(bad):
     return lines
 
 
-def report_run(args, command, hs, job, title=None):
+def report_run(args, command, hs, job, title=None, probe=None):
+    """What a run found, and WHAT TO DO NEXT.  probe: the probe's name,
+    when `qd probe` ran it."""
     t, entry = job.table, job.entry
     passes, last = job.passes, job.last
     dcols = data_columns(t)
@@ -1352,11 +1356,42 @@ def report_run(args, command, hs, job, title=None):
             lines.append("  ... %d more row(s): %s show %s" % (
                 len(ok_rows) - args.preview, PROG,
                 entry.id if entry else "..."))
-    lines.extend(run_next_steps(t, dcols, entry, bad, passes))
+    lines.extend(run_next_steps(t, dcols, entry, bad, passes,
+                                survey_tip(args, probe, entry, passes)))
     sys.stdout.write(render.page(lines))
 
 
-def run_next_steps(t, dcols, entry, bad, passes):
+def survey_tip(args, probe, entry, passes):
+    """After `qd probe facts`: the same hosts, as `qd survey` would ask
+    them next time -- facts and inventory, and one screen of who stands
+    out (QD-065).  None for any other run, or one survey would refuse."""
+    if probe != "facts" or entry is None or passes != 1 or args.every:
+        return None
+    argv = list(getattr(args, "_argv", None) or [])
+    if "probe" not in argv:
+        return None
+    i = argv.index("probe")
+    rest = argv[i + 1:]
+    for n in args.names:
+        if n in rest:
+            rest.remove(n)
+    argv = argv[:i] + ["survey"] + rest
+    parser, _ = build_parser()
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            parser.parse_args(argv)
+    except SystemExit:
+        return None
+    return ("%s %s" % (PROG, " ".join(shlex.quote(a) for a in argv)),
+            "next time: facts and inventory, and who stands out")
+
+
+def run_next_steps(t, dcols, entry, bad, passes, survey=None):
+    """WHAT TO DO NEXT after a run.  The beginner commands come in where
+    they save steps (QD-065): qd odd for a run of several columns, in
+    place of one column's qd outliers; qd again for a run that answered
+    everywhere and has no earlier one to diff against; and survey, a
+    `qd survey` after `qd probe facts`."""
     ref = "latest" if entry else "<run>"
     tips = []
     if bad:
@@ -1379,13 +1414,19 @@ def run_next_steps(t, dcols, entry, bad, passes):
         else:
             tips.append(("", "every host that answered said the same thing"))
     nums = [c for c in filled if ok.kind(c) == "num" and c != "n"]
+    many = bool(ok.rows) and len(filled) > 1
+    if many:
+        tips.append(("%s odd %s" % (PROG, ref),
+                     "who is unlike the rest, in any of the %d columns"
+                     % len(filled)))
     if nums:
         c = nums[0]
         if passes > 1:
             tips.append(("%s trend %s %s" % (PROG, ref, c),
                          "%s over the passes, host by host" % c))
-        tips.append(("%s outliers %s %s" % (PROG, ref, c),
-                     "who is far from the fleet's median"))
+        if not many:
+            tips.append(("%s outliers %s %s" % (PROG, ref, c),
+                         "who is far from the fleet's median"))
         attrs = [a for a in ("rack", "row", "room", "role") if t.has(a)]
         tips.append(("%s stats %s %s%s" % (PROG, ref, c,
                                           " --by " + attrs[0] if attrs
@@ -1400,11 +1441,18 @@ def run_next_steps(t, dcols, entry, bad, passes):
         if prev is not None:
             tips.append(("%s diff %s" % (PROG, ref),
                          "against the last time this ran (%s)" % prev.id))
+        elif not bad and isinstance(entry, storemod.Run):
+            from . import again
+            if again.why_not(sys.modules[__name__], entry) is None:
+                tips.append(("%s again %s" % (PROG, ref),
+                             "this again, as it ran; then what changed"))
         caps = entry.captures()
         n = storemod.first_row(entry.store.meta(caps[0])) if caps else None
         if n is not None:
             tips.append((entry.store.provost("source %d" % n),
                          "one host's answer exactly as it came back"))
+    if survey:
+        tips.append(survey)
     tips.append(("%s view %s" % (PROG, ref), "explore it full-screen"))
     return next_steps(tips)
 
@@ -1767,9 +1815,17 @@ def cmd_log(args):
     st = home_store(args)
     entries = st.entries()
     if not entries:
+        datasets = st.dataset_names()
         out("no runs in the store %s yet%s" % (
             st.shown(), " (provost ls lists its datasets)"
-            if st.dataset_names() else ""))
+            if datasets else ""))
+        if not datasets:
+            # an empty store: the two ways in (QD-065)
+            sys.stdout.write(render.page(next_steps([
+                ("%s setup" % PROG,
+                 "your own fleet: a store, a host list, who answers"),
+                ("%s demo" % PROG,
+                 "a practice fleet to learn on, no machines needed")])))
         return 0
     shown = entries if args.all else entries[-args.n:]
     rows = []
@@ -4311,7 +4367,8 @@ def run_probes(args, names, say=True):
         done[name] = job
         if say:
             report_run(args, what, hs, job, title="%s probe %s" % (PROG,
-                                                                   name))
+                                                                   name),
+                       probe=name)
         worst = max(worst, job.rc)
     # tools drive the fleet themselves, from here, one after another
     for n in names:
@@ -5757,10 +5814,13 @@ def cmd_doctor(args):
         hints.insert(0, "ssh/scp are needed for qd run: install openssh")
     tips = [("", h) for h in hints]
     if not book.exists() or not book.entries():
-        # nothing to read back yet: the demo is something to learn on
+        # nothing to read back yet: the demo is something to learn on,
+        # and qd setup the way onto your own fleet (QD-065)
         tips.append(("%s demo" % PROG, "nothing in this store yet: a "
                      "made-up fleet's week to learn on, no fleet needed "
                      "(docs/getting-started.md)"))
+        tips.append(("%s setup" % PROG, "your own fleet: a store, a host "
+                     "list, who answers"))
     if tips:
         lines.extend(next_steps(tips))
     sys.stdout.write(render.page(lines))
@@ -5958,6 +6018,7 @@ Looking at what you have
   qd web                       all of it in a browser
 
 Everything else: qd --help    One command: qd help VERB    Ideas: qd hints
+A first day with these, a question a step: docs/getting-started.md
 """
 
 
@@ -5972,12 +6033,26 @@ def cmd_start(args):
 GROUPS = ["Run", "Read it back", "Over time", "Judge and report",
           "Larger jobs", "Stores and output", "Help"]
 
+# qd hints' headings: the start card's own first, for the beginner
+# commands (QD-065), then the full card's.  The full card has no room
+# for another heading (50 lines), and needs none: every verb is on it.
+HINT_GROUPS = ["Getting started"] + GROUPS
+
 # (heading, question, command): grouped by what the question is for
 HINTS = [
+    ("Getting started", "First time on my own fleet: can I reach my hosts?",
+     "qd setup   (or qd setup -s hosts.txt --yes in a script)"),
+    ("Getting started", "Who agrees and who differs about X?",
+     "qd ask --servers hosts.txt -- uname -r   (qd run, then qd freq latest A;"
+     " A: the answer's unnamed column)"),
+    ("Getting started", "What is every host like, and who stands out?",
+     "qd survey -s hosts.txt   or   qd probe facts inventory -s hosts.txt"),
+    ("Getting started", "The same again, and what changed",
+     "qd again   (the last run, its hosts and options; or qd again RUN)"),
+    ("Getting started", "Who is odd, and in what? Every column at once",
+     "qd odd latest"),
     ("Run", "Is my host list even real?",
      "qd run --servers hosts.txt -- true            (then: reachable hosts.txt -i)"),
-    ("Run", "What does every host say about X?",
-     "qd ask --servers hosts.txt -- uname -r   (qd run, then qd freq latest A)"),
     ("Run", "A command I run often, by name (fio, say)",
      "qd probe add NAME -- COMMAND; qd probe NAME -s hosts.txt"),
     ("Run", "Settings as columns",
@@ -5986,8 +6061,6 @@ HINTS = [
      "qd run -s hosts.txt --every 10 --count 30 -- cat /proc/loadavg"),
     ("Run", "The servers in racks 1-3",
      "qd run --layout floor.dc --select 'rack[1-3]' -- ...   (needs binnacle)"),
-    ("Run", "Everything about every host, and who stands out",
-     "qd survey -s hosts.txt   or   qd probe facts inventory -s hosts.txt"),
     ("Run", "Why is the fleet slow?",
      "qd do -- agree script why-slow --servers hosts.txt --fleet-csv -- --csv"),
     ("Run", "Packets per second, everyone to everyone",
@@ -5997,8 +6070,6 @@ HINTS = [
     ("Run", "How is every host doing right now?",
      "qd do -- dcprobe scan --servers hosts.txt -o host_status.tsv"),
     ("Read it back", "Who is far from the rest?", "qd outliers latest COLUMN"),
-    ("Read it back", "Who is odd, and in what? Every column at once",
-     "qd odd latest"),
     ("Read it back", "Centre and spread, per rack",
      "qd stats latest COLUMN --by rack"),
     ("Read it back", "One host's answer, exactly",
@@ -6006,8 +6077,6 @@ HINTS = [
     ("Read it back", "Look around",
      "qd view   (everything: ] [ page, Enter opens)"),
     ("Over time", "What changed since last time?", "qd diff latest"),
-    ("Over time", "The same again, and what changed",
-     "qd again   (the last run, its hosts and options; or qd again RUN)"),
     ("Over time", "Has it changed over the last five runs?",
      "qd compare NAME -c COLUMN --last 5"),
     ("Over time", "When did it start to slide?",
@@ -6043,8 +6112,6 @@ HINTS = [
      "qd floor latest --layout floor.dc"),
     ("Help", "New to qd? Somewhere to try it, no fleet needed",
      "qd demo   (then docs/getting-started.md: ten minutes, a question a step)"),
-    ("Help", "First time on my own fleet: a store, a host list, who answers?",
-     "qd setup   (or qd setup -s hosts.txt --yes in a script)"),
     ("Help", "Can this machine drive the toolchain?", "qd doctor"),
 ]
 
@@ -6078,10 +6145,11 @@ def cmd_setup(args):
 
 
 def cmd_hints(args):
-    """The hints under the card's headings, in its order."""
+    """The hints under the start card's Getting started, then under the
+    full card's headings, in its order."""
     w = max(len(q) for _, q, _ in HINTS)
     lines = ["%s hints -- what you want to know, and the command" % PROG]
-    for group in GROUPS:
+    for group in HINT_GROUPS:
         rows = [(q, c) for g, q, c in HINTS if g == group]
         if rows:
             lines.extend(["", group])
@@ -6401,7 +6469,8 @@ def build_parser():
     sp.set_defaults(fn=cmd_run)
 
     sp = verb("ask", "run a command on every host and show who agrees and "
-              "who differs: qd run, then qd freq latest A")
+              "who differs: qd run, then qd freq latest A (A: the answer's "
+              "unnamed column)")
     add_hosts(sp)
     g = add_ssh(sp)
     g.add_argument("--push", action="append", metavar="FILE",
@@ -6459,7 +6528,7 @@ def build_parser():
     g.add_argument("--map", metavar="FILE",
                    help="which column is which: time, host, metric, value "
                    "or metrics, time_format, tz; implies --telemetry "
-                   "(README: \"Telemetry exports\")")
+                   "(docs/telemetry-and-export.md: \"Telemetry exports\")")
     g.add_argument("--alias", metavar="FILE",
                    help="lines NAME ALIAS...: keep each ALIAS's samples "
                    "under NAME, the run's name for it; implies --telemetry")
@@ -6608,7 +6677,7 @@ def build_parser():
                     "min, max, sum, stdev, range, p05..p99, or unitless cv, "
                     "skew, kurtosis (excess), zmax (robust |z|, as qd "
                     "outliers) "
-                    "(README: \"Against requirements: qd check\")")
+                    "(docs/judging.md: \"Against requirements: qd check\")")
     sp.add_argument("--waivers", default=env("WAIVERS"), metavar="FILE",
                     help="excuse failures: req, justification [expires, "
                     "where, expect, granted_by] (QD_WAIVERS)")
@@ -6631,7 +6700,7 @@ def build_parser():
                     "weighted(0.8, ..) over reqs and globs, quoted, e.g. "
                     "'all(SYS-1*, atleast(3, SYS-2*))'; weights from a "
                     "weight column, blank 1 (QD_RULE) "
-                    "(README: \"One verdict from many: --rule\")")
+                    "(docs/judging.md: \"One verdict from many: --rule\")")
     sp.add_argument("--each", action="store_true",
                     help="a row per host per check, not one per check")
     sp.add_argument("--keep", action="store_true",
@@ -6738,7 +6807,7 @@ def build_parser():
                     "one)")
     sp.add_argument("--map", metavar="FILE",
                     help="which column of the export is which "
-                    "(README: \"Telemetry exports\")")
+                    "(docs/telemetry-and-export.md: \"Telemetry exports\")")
     sp.add_argument("--alias", metavar="FILE",
                     help="lines NAME ALIAS...: the run's name for a host, "
                     "then what the telemetry calls it")
