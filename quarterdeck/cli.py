@@ -24,7 +24,7 @@ Judge and report
 Larger jobs
   qd split [HOSTS] --by rack|--into N  one host list into several
   qd campaign new|run|status|retry|ls  a system in parts, progress kept
-  qd doe init|plan|run|status|analyze  designed experiments; fio screen
+  qd doe plan|run|status|analyze|next  designed experiments; init fio
   qd join RUN TELEMETRY                beside Splunk/Prometheus samples
 Stores and output
   qd store new|ls|use|rename|rm|clear|export|import    named stores
@@ -4481,6 +4481,18 @@ def cmd_doe(args):
         lines = ["%s doe -- %s: %d of %s measured" % (
             PROG, args.target, done, plural(len(rows), "point")),
             "  command  %s" % row.get("command", "")]
+        _, scfg, _ = doemod.load(st, args.target)
+        meta = scfg.get("metadata") or {}
+        if isinstance(meta, dict) and meta.get("qd_study"):
+            fol = meta.get("qd_follows") or {}
+            how = []
+            if isinstance(fol, dict) and fol.get("design"):
+                how.append("follows %s: %s" % (fol["design"],
+                                               fol.get("response", "")))
+            if meta.get("qd_like"):
+                how.append("like %s" % meta["qd_like"])
+            lines.append("  study    %s%s" % (
+                meta["qd_study"], (" (%s)" % "; ".join(how)) if how else ""))
         lines.extend(render.render_rows(
             doemod.STATUS_COLUMNS, rows,
             numeric=[0, 1, 3], width=width_of(args), indent="  "))
@@ -4547,14 +4559,117 @@ def cmd_doe(args):
         lines.extend("  " + ln for ln in text.splitlines())
         sys.stdout.write(render.page(lines))
         return 0
-    die("unknown doe action %r (init, plan, run, status, analyze)" % what)
+    if what == "next":
+        return doe_next(args, st, doemod)
+    die("unknown doe action %r (init, plan, run, status, analyze, next)"
+        % what)
+
+
+def doe_next(args, st, doemod):
+    """qd doe next SCREEN -c RESPONSE (QD-069): a central composite or
+    Box-Behnken follow-up on the screen's few big factors, the rest held at
+    their better level, written as a config `qd doe run --like` runs where
+    the screen ran."""
+    import json
+    import textwrap
+    screen = args.target
+    row, cfg, smatrix = doemod.load(st, screen)
+    cols = [c.strip() for c in (args.column or "").split(",") if c.strip()]
+    if len(cols) != 1:
+        names = [n for n, _, _ in doemod.specs(cfg)]
+        die("a follow-up is for one response: -c NAME%s (%s doe analyze %s "
+            "ranks what moves each)" % (
+                (", one of %s" % ", ".join(names)) if names else
+                " (a column, as qd show names it)", PROG, screen))
+    _, allr, effects, _ = doemod.analyze(st, screen, cols)
+    rname, column, optimize, _ = allr[0]
+    eff = effects.get(rname)
+    if not eff:
+        die("doe gave no main effects for %s: %s doe analyze %s -c %s says "
+            "why" % (rname, PROG, screen, cols[0]))
+    best = doemod.best_levels(smatrix, eff, optimize)
+    picked = [f.strip() for f in (args.factors or "").split(",")
+              if f.strip()]
+    varied, held, said = doemod.choose(cfg, eff, best, picked)
+    if not varied:
+        die("nothing to fit a surface over: %s's %s %s; a central composite "
+            "or Box-Behnken varies numbers (--factors names numeric ones)"
+            % (rname, "chosen factors are" if picked else
+               "big factors are", ", ".join(said) or "not numeric"))
+    if args.budget < 1:
+        die("--budget wants a number of runs above 0")
+    op, est, why, text = doemod.suggest(len(varied), args.budget)
+    if op not in doemod.SURFACES:
+        die("doe suggest, for %s with a budget of %d runs, chose %s, not a "
+            "central composite or Box-Behnken:\n  %s\n(a larger --budget "
+            "gives it room for one)" % (
+                plural(len(varied), "numeric factor"), args.budget, op,
+                "\n  ".join(why)))
+    name, new = doemod.follow_up(screen, row, cfg, rname, column, optimize,
+                                 varied, held, op)
+    path = args.output or (name + ".json")
+    if os.path.exists(path):
+        die("%s is there already: move it, or -o another file" % path)
+    matrix = doemod.generate(new, doemod.seed_of(new))
+    n = len(doemod.points(matrix))
+    write_text(path, json.dumps(new, indent=2) + "\n")
+    wrap = max(40, min(width_of(args) or 80, 100) - 2)
+    pct = dict((f, p) for f, _, p in eff)
+
+    def para(head, text):
+        lines.extend(textwrap.wrap(text, wrap, initial_indent="  %-9s " % head,
+                                   subsequent_indent=" " * 12,
+                                   break_on_hyphens=False))
+    lines = ["%s doe -- wrote %s: %s on %s, %s" % (
+        PROG, path, op.replace("_", "-"), plural(len(varied), "factor"),
+        plural(n, "point"))]
+    para("for", "%s (%s, %s), as the screen %s ranked it" % (
+        rname, column, "maximise" if optimize != "minimize" else "minimise",
+        screen))
+    rows = [[f["name"], " / ".join(f["levels"]),
+             "%.0f%%" % pct[f["name"]] if f["name"] in pct else "",
+             "varied: the screen's range"] for f in varied]
+    rows += [[nm, lv, "%.0f%%" % pct[nm] if nm in pct else "",
+              "held: its better level" if how == "better" else
+              "held: no effect seen, its first level"]
+             for nm, lv, how in held]
+    rows += [[k, v, "", "held, as in the screen"]
+             for k, v in doemod.fixed_of(cfg)]
+    lines.extend(render.render_rows(["factor", "level(s)", "effect", "why"],
+                                    rows, width=width_of(args), indent="  "))
+    for ln in said:
+        para("note", ln)
+    para("design", "%s, doe suggest's choice%s; doe generate lays out "
+         "%s." % (op.replace("_", " "), (" (%s)" % " ".join(
+             w.rstrip(".") for w in why[1:])) if len(why) > 1 else "",
+             plural(n, "point")))
+    for f, v in doemod.between(matrix, varied):
+        para("warning", "%s's middle level is %s, and a count takes whole "
+             "numbers: move a level of %s by one in %s so they sum to an "
+             "even number" % (f, v, f, path))
+    para("levels", "the screen's own range for each varied factor, not "
+         "re-centred on its best corner: edit the levels in %s to move the "
+         "region, then %s doe plan it" % (path, PROG))
+    study = doemod.study_of(new, name)
+    para("study", "%s, %s" % (study, "the screen's own" if study == screen
+                               else "as %s is" % screen))
+    lines.extend(next_steps([
+        ("%s doe plan %s" % (PROG, path), "the points doe lays out"),
+        ("%s doe run %s --like %s" % (PROG, path, screen),
+         "measure them on the host and target %s ran on" % screen)]))
+    sys.stdout.write(render.page(lines))
+    return 0
 
 
 def doe_run(args, st, doemod):
     from . import split as splitmod
     cmd = strip_dashes(args.command)
     cfg = doemod.read_config(args.target)
-    template = " ".join(cmd) or doemod.command_of(cfg)
+    like = getattr(args, "like", None)
+    if like:
+        lrow, lcfg = like_design(args, st, doemod, like, cfg)
+    template = " ".join(cmd) or doemod.command_of(cfg) or \
+        (lrow.get("command", "") if like else "")
     if not template:
         die("a design runs a command with its factors in braces: %s doe run "
             "CONFIG -s hosts -- 'iperf3 -c peer -P {streams}' (or the "
@@ -4585,7 +4700,21 @@ def doe_run(args, st, doemod):
     if left:
         warn("the command does not use %s: those factors will not change "
              "anything" % ", ".join("{%s}" % f for f in left))
-    hs = collect(args)
+    if like:
+        hs = like_hosts(args, st, doemod, like)
+        if template != lrow.get("command"):
+            warn("--like %s: this is not the command %s ran (%s)" % (
+                like, like, lrow.get("command")))
+        out("%s doe %s -- like %s: on %s %s, with %s, holding what it "
+            "held (%s)" % (
+                PROG, name, like, "its host" if len(hs) == 1 else
+                "its %d hosts" % len(hs), ", ".join(h.name for h in hs),
+                "its command" if template == lrow.get("command") else
+                "another command", " ".join(
+                    "%s=%s" % kv for kv in doemod.fixed_of(lcfg)) or
+                "nothing"))
+    else:
+        hs = collect(args)
     check_limit(args, hs)
     blocks = None
     if args.blocks_by:
@@ -4603,6 +4732,7 @@ def doe_run(args, st, doemod):
                      ", ".join(g for g, _ in groups[nblocks:])))
     done = doemod.point_runs(st, name)
     worst, ran = 0, 0
+    answered_on, missed = set(), {}
     # every point's command is checked before the first runs: a point the
     # guard refuses half way through would leave the design half measured
     for rid, blk, levels in pts:
@@ -4631,11 +4761,25 @@ def doe_run(args, st, doemod):
             continue
         ran += 1
         worst = max(worst, job.rc)
+        for r in job.last:
+            if r.outcome == fleet.OK:
+                answered_on.add(r.host.name)
+            else:
+                missed.setdefault(r.host.name, r.outcome)
         h = outcome_counts(job.last)
         out("%s doe %s -- point %d/%d (%s): %d/%d ok  (%s)" % (
             PROG, name, rid, len(pts), factors, h.get(fleet.OK, 0),
             len(hosts), job.entry.id if job.entry else "not kept"))
     st.reset()
+    gone = [h for h in missed if h not in answered_on]
+    if gone:
+        # a host that answered at no point: said, never skipped in silence
+        warn("%s answered at none of the %s run here (%s)%s: %s points "
+             "there are not measured" % (
+                 ", ".join(gone), plural(ran, "point"),
+                 ", ".join("%s %s" % (h, missed[h]) for h in gone),
+                 (" -- %s ran there; has it gone?" % like) if like else "",
+                 "their" if len(gone) > 1 else "its"))
     measured = sum(1 for rs in doemod.point_runs(st, name).values()
                    if doemod.answered(rs))
     out("%s doe %s -- %d of %s measured%s" % (
@@ -4645,6 +4789,59 @@ def doe_run(args, st, doemod):
         out("  next: %s doe analyze %s%s" % (
             PROG, name, "" if doemod.specs(cfg) else " -c COLUMN"))
     return worst
+
+
+def like_design(args, st, doemod, like, cfg):
+    """--like SCREEN: the screen's design row and config.  The config is
+    made to hold what the screen held (its fixed factors: the file, the
+    size, the run time): one it leaves out is taken from the screen, one it
+    sets otherwise is refused.  It joins the screen's study."""
+    if args.servers or args.server or args.layout or args.select or \
+            getattr(args, "rerun", None):
+        die("--like is the host list -- the hosts %s ran on -- so it takes "
+            "no -s, -S, --layout, --select or --rerun" % like)
+    lrow, lcfg, _ = doemod.load(st, like)
+    fixed = cfg.setdefault("fixed_factors", {})
+    if not isinstance(fixed, dict):
+        die("%s: fixed_factors is not an object" % args.target)
+    names = set(f.get("name") for f in cfg.get("factors") or []
+                if isinstance(f, dict))
+    for k, v in doemod.fixed_of(lcfg):
+        if k in names:
+            die("--like %s: %s held %s at %s, and %s varies it: the target "
+                "is not the screen's" % (like, like, k, v, args.target))
+        if k not in fixed:
+            fixed[k] = v
+        elif str(fixed[k]) != v:
+            die("--like %s: %s ran with %s=%s, and %s has %s=%s: the same "
+                "host and target means the same %s (edit the config, or "
+                "leave out --like)" % (like, like, k, v, args.target, k,
+                                       fixed[k], k))
+    meta = cfg.setdefault("metadata", {})
+    if isinstance(meta, dict):
+        meta.setdefault("qd_study", doemod.study_of(lcfg, like))
+        meta["qd_like"] = like
+    return lrow, lcfg
+
+
+def like_hosts(args, st, doemod, like):
+    """The hosts the design `like` ran its points on, with their addresses
+    and attributes, in the order they first ran; the way they were reached
+    too, when that was this machine (as --rerun does)."""
+    rows = doemod.screen_hosts(st, like)
+    if not rows:
+        die("--like %s: none of its points has run, so it has no hosts to "
+            "give (%s doe status %s)" % (like, PROG, like))
+    hs = []
+    for h, _ in rows:
+        addr = h.get("addr") or ""
+        hs.append(hostmod.parse_host_token(
+            "%s=%s" % (h["host"], addr) if addr else h["host"],
+            storemod.split_attrs(h.get("attrs"))))
+    vias = set(v for _, v in rows)
+    if not getattr(args, "via", None) and vias == set(["local"]):
+        args.via = "local"
+    return hs[:args.first] if args.first is not None else hs
 
 
 # ---------------------------------------------------------------------------
@@ -5855,10 +6052,11 @@ def build_parser():
     sp = verb("doe", "designed experiments: doe designs, qd measures, doe "
               "analyses")
     sp.add_argument("action",
-                    choices=["init", "plan", "run", "status", "analyze"])
+                    choices=["init", "plan", "run", "status", "analyze",
+                             "next"])
     sp.add_argument("target", metavar="CONFIG|NAME",
                     help="init: a starting config (fio); plan/run: a doe "
-                    "config; status/analyze: the design's name")
+                    "config; status/analyze/next: the design's name")
     add_fleet(sp, preview=0)
     sp.add_argument("--name", help="the design's name (default the "
                     "config's)")
@@ -5875,6 +6073,16 @@ def build_parser():
                     "(median)")
     sp.add_argument("--optimize", action="store_true",
                     help="analyze: doe optimize's recommendation too")
+    sp.add_argument("--factors", metavar="A,B",
+                    help="next: the factors to vary (default: the big "
+                    "numeric ones, 2 to 4)")
+    sp.add_argument("--budget", type=int, default=30, metavar="N",
+                    help="next: the runs doe suggest may plan for (30)")
+    sp.add_argument("-o", "--output", metavar="FILE",
+                    help="next: the follow-up config (default NAME.json)")
+    sp.add_argument("--like", metavar="DESIGN",
+                    help="run: on the hosts DESIGN ran on, holding what it "
+                    "held")
     sp.set_defaults(fn=cmd_doe, command=[])
 
     sp = verb("export", "write a dataset out: csv, tsv, json, ndjson, md, "

@@ -5,6 +5,47 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.46.0 — 2026-11-19
+
+A central composite or Box-Behnken follow-up from a screen's big
+factors, run on the same host and target as the screen (QD-069, steps 3
+and 4 of QD-066's fio tuning study, on one drive of one host).
+
+### Added
+- **`qd doe next SCREEN -c RESPONSE`** writes a follow-up doe config for
+  one response: the screen's big numeric factors (inside doe's 80% Pareto
+  line, at most four; topped up to two from the next numeric factor that
+  moved it; `--factors` to choose) varied over the screen's own levels,
+  every other factor held at the level the screen found better for that
+  response (or its first level where it saw no effect), the screen's own
+  fixed factors, command and responses kept. The design is doe's: `doe
+  suggest --goal response_surface` for that many factors and `--budget`
+  runs (30), its choice and reasons shown, and the point count `doe
+  generate` lays out. A categorical factor is never varied: it is held,
+  with a line saying so; a response moved only by categorical factors has
+  nothing to fit a surface over, and is refused. A suggestion that is not
+  a central composite or Box-Behnken (too small a budget) is refused, as
+  is writing over a file. Box-Behnken's fractional middle level of a
+  whole-number factor (16.5 between 1 and 32) is warned about
+  (`quarterdeck/doe.py`: `choose`, `suggest`, `follow_up`, `between`;
+  `quarterdeck/cli.py`: `doe_next`).
+- **`qd doe run CONFIG --like DESIGN`** runs on exactly the hosts DESIGN's
+  points ran on (addresses and attributes), and says so; it takes no other
+  host list. The config holds what DESIGN held: a fixed factor it leaves
+  out is taken from DESIGN, one it sets otherwise is refused. A host that
+  answered at none of the points run is named at the end, as gone, rather
+  than skipped (`like_design`, `like_hosts`).
+- **A study**: the follow-up's config names the study it belongs to
+  (`metadata.qd_study`, the screen's) and what it follows
+  (`metadata.qd_follows`), filed with the design; `qd doe status` shows
+  it. QD-070 builds its study view on this.
+- The stand-in doe in `tests/test_helper.bash` makes central composite
+  and Box-Behnken designs as doe/pyDOE3 do, and answers `suggest`;
+  `tests/test_doe_next.sh` is the new suite (in `TIMES`).
+
+### Changed
+- `qd --help`'s doe line names `next` (and `init fio` beside it).
+
 ## 0.44.0 — 2026-11-19
 
 A Plackett-Burman screen of fio's parameters on one drive of one host,

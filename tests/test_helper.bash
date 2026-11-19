@@ -679,8 +679,9 @@ in_allocation() {
 
 # -- a stand-in doe ------------------------------------------------------------
 
-# design_of_experiments' doe, for the suites: full factorial and
-# Plackett-Burman designs, block_count copies of them, and two-level main
+# design_of_experiments' doe, for the suites: full factorial,
+# Plackett-Burman, central composite and Box-Behnken designs, block_count
+# copies of them, its suggest for a response surface, and two-level main
 # effects for every response in the config -- the files, headings and
 # --csv tables the real one has (it needs Python 3.10 and numpy).  Each
 # value it was given is logged to $FAKE_BIN/doe-values, so a case can see
@@ -709,6 +710,37 @@ def pbdesign(k):
     rows = [[g[(j - i) % (n - 1)] == "+" for j in range(n - 1)]
             for i in range(n - 1)] + [[False] * (n - 1)]
     return [r[:k] for r in rows]
+if a[0] == "suggest":
+    # doe's response_surface rule (doe/suggest.py), in doe's words
+    k, budget = int(opt("--factors")), int(opt("--budget"))
+    why = ["Goal: response surface \u2014 fit a quadratic over %d factor(s)." % k]
+    bb = {3: 13, 4: 25, 5: 41}.get(k)
+    if bb and budget >= bb:
+        op, n, rc = "box_behnken", bb, 3
+        why.append("Box-Behnken on %d continuous factors uses %d runs (incl. "
+                   "3 centre points) \u2014 rotatable and avoids the cube "
+                   "corners." % (k, bb))
+    elif budget >= 2 ** k + 2 * k + 5:
+        op, n, rc = "central_composite", 2 ** k + 2 * k + 5, 5
+        why.append("Central composite on %d continuous factors uses ~%d runs "
+                   "(corners + axials + 5 centre)." % (k, n))
+    elif k >= 3:
+        op, n, rc = "definitive_screening", 2 * k + 1, 0
+        why.append("Budget (%d) is too small for a Box-Behnken/CCD; "
+                   "definitive screening fits %d runs and still detects main "
+                   "effects + curvature." % (budget, n))
+    else:
+        op, n, rc = "full_factorial", 3 ** k, 0
+        why.append("Few factors \u2014 a 3-level full factorial on %d factors "
+                   "uses %d runs and supports a quadratic." % (k, n))
+    print("\n=== Suggestion ===")
+    print("  operation        : %s" % op)
+    print("  estimated runs   : %d" % n)
+    if rc:
+        print("  replicate_center : %d" % rc)
+    for w in why:
+        print("  - %s" % w)
+    sys.exit(0)
 cfg = json.load(open(opt("--config")))
 out = cfg["settings"]["out_directory"]
 op = cfg["settings"].get("operation", "full_factorial")
@@ -718,6 +750,34 @@ if a[0] == "generate":
     if op == "plackett_burman":
         base = [tuple(f["levels"][int(hi)] for f, hi in zip(cfg["factors"], r))
                 for r in pbdesign(len(names))]
+    elif op in ("central_composite", "box_behnken"):
+        # pyDOE3's face-centred ccdesign(k, center=(4, 4)) and
+        # bbdesign(k, center=3), decoded as doe/design.py does
+        k = len(names)
+        if op == "central_composite":
+            coded = [list(c) for c in itertools.product((-1, 1), repeat=k)]
+            coded += [[0] * k] * 4
+            for i in range(k):
+                for s in (-1, 1):
+                    coded.append([s if j == i else 0 for j in range(k)])
+            coded += [[0] * k] * 4
+        else:
+            coded = []
+            for i, j in itertools.combinations(range(k), 2):
+                for si, sj in itertools.product((-1, 1), repeat=2):
+                    c = [0] * k
+                    c[i], c[j] = si, sj
+                    coded.append(c)
+            coded += [[0] * k] * 3
+        def dec(c, f):
+            lo, hi = float(f["levels"][0]), float(f["levels"][1])
+            v = (lo + hi) / 2.0 + c * (hi - lo) / 2.0
+            if op == "central_composite" and all(
+                    float(x).is_integer() for x in f["levels"]):
+                return str(int(round(v)))
+            return "%.6g" % v
+        base = [tuple(dec(c, f) for c, f in zip(row, cfg["factors"]))
+                for row in coded]
     else:
         base = list(itertools.product(*[f["levels"] for f in cfg["factors"]]))
     # the run order is shuffled within each block, as the real one does,
