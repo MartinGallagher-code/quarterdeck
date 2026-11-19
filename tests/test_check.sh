@@ -1444,7 +1444,7 @@ t_manual_dated_before_the_run() {
 }
 
 t_manual_none_unchanged() {
-    # no manual rows and no --manual: the output 0.29.0 gave, byte for byte
+    # no manual rows and no --manual: the output 0.35.0 gave, byte for byte
     data
     limits t.tsv 'R1|mbps|>=|900||status=ok||' 'R2|temp|between|20|45|rack=r1|max|'
     for f in text csv junit; do
