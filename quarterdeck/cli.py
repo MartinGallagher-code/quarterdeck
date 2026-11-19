@@ -5648,6 +5648,7 @@ Looking at what you have
   qd web                       all of it in a browser
 
 Everything else: qd --help    One command: qd help VERB    Ideas: qd hints
+A first day with these, a question a step: docs/getting-started.md
 """
 
 

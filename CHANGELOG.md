@@ -5,6 +5,40 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.46.2 — 2026-11-19
+
+The getting-started page is a newcomer's first day: the start card, then
+the five beginner commands in order, each run and checked (QD-064).
+
+### Changed
+- **`docs/getting-started.md`** opens with the start card (bare `qd`) and
+  takes QD-057's five first-day questions in order: can I reach my hosts
+  (`qd setup`), who agrees and who differs (`qd ask`), what is every host
+  like (`qd survey`), what changed (`qd again`) and who is odd (`qd odd`).
+  Each shows the command's real output and the plain qd commands it
+  stands for. `qd odd` and the plain commands read the demo; setup, ask,
+  survey and again ask this machine, reached without ssh, into the store
+  `main` setup makes, so the demo's store keeps only the demo. It ends
+  with where to go next: `qd --help`, `qd help VERB`, `qd hints`, the
+  Concepts page and the README.
+- **The start card names the page**, on a line of its own under its
+  footer.
+
+### Tests
+- `tests/walkthrough.py` checks a block opened by `<!-- walkthrough:
+  loose -->` (a command that asks this machine) with `[...]` for what is
+  the reader's own, this machine's name read as the page's `<!--
+  walkthrough: this machine is NAME -->`, and time stamps and widened
+  columns matched; everything else is compared exactly, and `--update`
+  leaves a loose block to be put right by hand.
+- `tests/test_demo.sh`: the checker on a page of its own, each rule
+  broken in turn; a changed line of the real page fails on the demo; the
+  page is the start card, the five questions in order, each with what it
+  stands for, and where to go next last; every qd command on it parses
+  with `build_parser()`. That `qd demo` ignores the shell's fleet
+  settings is checked on `--rebuild`, since the page's fleet commands
+  honour them. `tests/test_help.sh`: the start card names the page.
+
 ## 0.43.0 — 2026-11-19
 
 Your own named probes: `qd probe add NAME -- COMMAND` gives a command a
