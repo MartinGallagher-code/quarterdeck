@@ -10,9 +10,9 @@
 #
 # What it runs, in order: the version check, the Python 3.6 compile check,
 # vermin, shellcheck, that every suite is in exactly one of CI's shares,
-# that every README pointer in the code lands, node --check on the page,
-# reuse lint, a wheel build with twine check (installed in a venv of its
-# own, which files `qd demo`), and the whole suite on both of provost's
+# that every manual pointer in the code lands, that every link between
+# README.md and docs/ lands, node --check on the page, reuse lint, a
+# wheel build with twine check (installed in a venv of its own, which files `qd demo`), and the whole suite on both of provost's
 # paths (with `batch`, then QD_PROVOST_BATCH=0), one suite per core at a
 # time (QD_TEST_JOBS=N for N, 1 for the serial run).  A check whose tool
 # is not installed is skipped and said so, never failed; the summary at
@@ -77,7 +77,8 @@ else
 fi
 
 step "every suite in exactly one share" bash tests/check_shards.sh
-step "every README pointer in the code lands" "$PY" tests/check_readme_pointers.py
+step "every manual pointer in the code lands" "$PY" tests/check_readme_pointers.py
+step "every link in the README and docs/ lands" "$PY" tests/check_links.py
 
 if have node; then
     step "web page syntax" node --check quarterdeck/web/app.js

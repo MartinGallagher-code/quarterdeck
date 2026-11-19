@@ -49,7 +49,7 @@ Exit status: 0 done, every host answered; 1 a finding (a host that did
 not answer, a difference, a failed check); 2 usage error, or I/O failed.
 
 New to qd? qd demo, then docs/getting-started.md; your own fleet: qd setup.
-Full manual: https://github.com/MartinGallagher-code/quarterdeck#readme
+Full manual: https://github.com/MartinGallagher-code/quarterdeck/tree/main/docs
 """
 
 import argparse
@@ -6148,7 +6148,7 @@ def build_parser():
     g.add_argument("--map", metavar="FILE",
                    help="which column is which: time, host, metric, value "
                    "or metrics, time_format, tz; implies --telemetry "
-                   "(README: \"Telemetry exports\")")
+                   "(docs/telemetry-and-export.md: \"Telemetry exports\")")
     g.add_argument("--alias", metavar="FILE",
                    help="lines NAME ALIAS...: keep each ALIAS's samples "
                    "under NAME, the run's name for it; implies --telemetry")
@@ -6297,7 +6297,7 @@ def build_parser():
                     "min, max, sum, stdev, range, p05..p99, or unitless cv, "
                     "skew, kurtosis (excess), zmax (robust |z|, as qd "
                     "outliers) "
-                    "(README: \"Against requirements: qd check\")")
+                    "(docs/judging.md: \"Against requirements: qd check\")")
     sp.add_argument("--waivers", default=env("WAIVERS"), metavar="FILE",
                     help="excuse failures: req, justification [expires, "
                     "where, expect, granted_by] (QD_WAIVERS)")
@@ -6320,7 +6320,7 @@ def build_parser():
                     "weighted(0.8, ..) over reqs and globs, quoted, e.g. "
                     "'all(SYS-1*, atleast(3, SYS-2*))'; weights from a "
                     "weight column, blank 1 (QD_RULE) "
-                    "(README: \"One verdict from many: --rule\")")
+                    "(docs/judging.md: \"One verdict from many: --rule\")")
     sp.add_argument("--each", action="store_true",
                     help="a row per host per check, not one per check")
     sp.add_argument("--keep", action="store_true",
@@ -6427,7 +6427,7 @@ def build_parser():
                     "one)")
     sp.add_argument("--map", metavar="FILE",
                     help="which column of the export is which "
-                    "(README: \"Telemetry exports\")")
+                    "(docs/telemetry-and-export.md: \"Telemetry exports\")")
     sp.add_argument("--alias", metavar="FILE",
                     help="lines NAME ALIAS...: the run's name for a host, "
                     "then what the telemetry calls it")

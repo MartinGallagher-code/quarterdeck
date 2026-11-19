@@ -10,7 +10,7 @@ ok, failed (a non-zero exit, a timeout, a push that failed), unreachable,
 or never.  Everything is read from qd.hosts, the table every run on the
 fleet files a row per host and pass into; no answer is read.
 
-The rules (README: "Which hosts have had it: qd coverage"):
+The rules (docs/larger-jobs.md: "Which hosts have had it: qd coverage"):
 
   - latest is by when the run started (qd.runs `created`, then the order
     the store filed them in), never by id;

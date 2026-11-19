@@ -6,9 +6,11 @@
 # line for every verb the parser registers (QD-043), under the goal
 # headings, in at most 50 lines of 80 columns with six examples at most
 # (QD-040), every command `qd hints` suggests still parses (QD-045), its
-# headings are the card's (QD-040), and every README pointer in qd's
-# code names a section the README has (QD-046,
-# tests/check_readme_pointers.py, which tests/check.sh also runs), and `qd
+# headings are the card's (QD-040), every manual pointer in qd's code
+# names a section of the page it names (QD-046, QD-041:
+# tests/check_readme_pointers.py), every link between README.md and
+# docs/*.md lands (QD-041: tests/check_links.py; tests/check.sh runs
+# both), and `qd
 # help VERB` prints what `qd VERB --help` does (QD-044).  Bare `qd`, `qd
 # start` and `qd help basics` print the start card, at most 25 lines of
 # 80 columns, every command on it a registered verb that parses, while
@@ -137,11 +139,13 @@ pointers() {
     set -e
 }
 
-# a copy of the code and the README to break, in tree/
+# a copy of the code, the README and docs/ to break, in tree/
 copy_tree() {
+    rm -rf tree
     mkdir -p tree/quarterdeck
     cp "$QD_DIR"/quarterdeck/*.py tree/quarterdeck/
     cp "$QD_DIR/README.md" tree/
+    cp -R "$QD_DIR/docs" tree/
 }
 
 # edit FILE SED-SCRIPT: sed FILE in place, as BSD and GNU sed both can
@@ -150,10 +154,10 @@ edit() { sed "$2" "$1" > "$1.new" && mv "$1.new" "$1"; }
 t_readme_pointers_all_land() {
     pointers
     assert_status "$RC" 0
-    assert_contains "$OUT" "every one names a section of README.md"
-    # the one that had gone stale, as it is now
+    assert_contains "$OUT" "every one names a section of the page it names"
+    # the one that had gone stale, as it is now: in a chapter (QD-041)
     assert_contains "$(cat "$QD_DIR/quarterdeck/exporters.py")" \
-        '(README: "Into Splunk, Prometheus or a notebook")'
+        '(docs/telemetry-and-export.md: "Into Splunk, Prometheus or a notebook")'
 }
 
 t_readme_pointer_check_fails_where_one_does_not_land() {
@@ -162,35 +166,54 @@ t_readme_pointer_check_fails_where_one_does_not_land() {
     assert_status "$RC" 0
     # the section's name before it was renamed
     edit tree/quarterdeck/exporters.py \
-        's/README: "Into Splunk, Prometheus or a notebook"/README: "Sending a run to Splunk or Prometheus"/'
+        's/"Into Splunk, Prometheus or a notebook"/"Sending a run to Splunk or Prometheus"/'
     pointers tree
     assert_status "$RC" 1
-    assert_eq "$OUT" 'quarterdeck/exporters.py:8: README has no section "Sending a run to Splunk or Prometheus"'
+    assert_eq "$OUT" 'quarterdeck/exporters.py:9: docs/telemetry-and-export.md has no section "Sending a run to Splunk or Prometheus"'
+    # the old pointer, at the README, which no longer holds the section
+    copy_tree
+    edit tree/quarterdeck/exporters.py \
+        's|docs/telemetry-and-export.md: "Into|README: "Into|'
+    pointers tree
+    assert_status "$RC" 1
+    assert_eq "$OUT" 'quarterdeck/exporters.py:9: README has no section "Into Splunk, Prometheus or a notebook"'
+    # a section in another chapter than the one named
+    copy_tree
+    edit tree/quarterdeck/policy.py 's|docs/running.md: "Allow|docs/judging.md: "Allow|'
+    pointers tree
+    assert_status "$RC" 1
+    assert_contains "$OUT" 'docs/judging.md has no section "Allow-lists and read-only"'
+    # a chapter that is not there
+    copy_tree
+    edit tree/quarterdeck/policy.py 's|docs/running.md: "Allow|docs/runing.md: "Allow|'
+    pointers tree
+    assert_status "$RC" 1
+    assert_contains "$OUT" 'quarterdeck/policy.py:19: no docs/runing.md in the manual'
     # a heading renamed under a pointer
     copy_tree
-    edit tree/README.md 's/^### Allow-lists and read-only$/### Allow-lists/'
+    edit tree/docs/running.md 's/^### Allow-lists and read-only$/### Allow-lists/'
     pointers tree
     assert_status "$RC" 1
     assert_contains "$OUT" 'quarterdeck/policy.py:'
-    assert_contains "$OUT" 'README has no section "Allow-lists and read-only"'
+    assert_contains "$OUT" 'docs/running.md has no section "Allow-lists and read-only"'
     # a `# comment` in an example is not a section
     copy_tree
-    edit tree/quarterdeck/policy.py 's/README: "Allow-lists and read-only"/README: "cloudvision.map"/'
-    grep -q '^# cloudvision.map$' tree/README.md || fail "the README's example lost its comment"
+    edit tree/quarterdeck/policy.py 's|docs/running.md: "Allow-lists and read-only"|docs/telemetry-and-export.md: "cloudvision.map"|'
+    grep -q '^# cloudvision.map$' tree/docs/telemetry-and-export.md || fail "the chapter's example lost its comment"
     pointers tree
     assert_status "$RC" 1
-    assert_contains "$OUT" 'README has no section "cloudvision.map"'
+    assert_contains "$OUT" 'docs/telemetry-and-export.md has no section "cloudvision.map"'
 }
 
 t_readme_pointer_check_refuses_a_pointer_it_cannot_read() {
     copy_tree
     # the old style, and a pointer cut over two lines
     edit tree/quarterdeck/exporters.py \
-        's/(README: "Into Splunk, Prometheus or a notebook")/(README, "Into Splunk, Prometheus or a notebook")/'
+        's/(docs\/telemetry-and-export.md: "Into Splunk, Prometheus or a notebook")/(README, "Into Splunk, Prometheus or a notebook")/'
     printf '# see the README: "Telemetry\n# exports"\n' >> tree/quarterdeck/policy.py
     pointers tree
     assert_status "$RC" 1
-    assert_contains "$OUT" "quarterdeck/exporters.py:8: a README mention this check cannot read"
+    assert_contains "$OUT" "quarterdeck/exporters.py:9: a README mention this check cannot read"
     assert_contains "$OUT" "quarterdeck/policy.py:"
     assert_eq "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" "2"
     # README.md, the file's name, is not a pointer
@@ -201,6 +224,62 @@ t_readme_pointer_check_refuses_a_pointer_it_cannot_read() {
     # no manual at all
     mkdir empty
     pointers empty
+    assert_status "$RC" 2
+}
+
+# links: OUT and RC from tests/check_links.py [ROOT]
+links() {
+    set +e
+    OUT="$("$PY" "$QD_DIR/tests/check_links.py" "$@")"
+    RC=$?
+    set -e
+}
+
+t_manual_links_all_land() {
+    links
+    assert_status "$RC" 0
+    assert_contains "$OUT" "every one lands"
+    # the front page points at every chapter, absolutely (it is PyPI's page)
+    local f
+    for f in "$QD_DIR"/docs/*.md; do
+        [ "$(basename "$f")" = README.md ] && continue
+        assert_contains "$(cat "$QD_DIR/README.md")" \
+            "https://github.com/MartinGallagher-code/quarterdeck/blob/main/docs/$(basename "$f")"
+    done
+}
+
+t_link_check_fails_where_one_does_not_land() {
+    copy_tree
+    links tree
+    assert_status "$RC" 0
+    # an anchor no heading has
+    edit tree/docs/concepts.md 's/(judging.md#waivers)/(judging.md#waiver)/'
+    links tree
+    assert_status "$RC" 1
+    assert_contains "$OUT" "docs/concepts.md:"
+    assert_contains "$OUT" "judging.md#waiver: no heading #waiver in docs/judging.md"
+    # a chapter that is not there, from the front page's absolute link
+    copy_tree
+    edit tree/README.md 's|blob/main/docs/stores.md|blob/main/docs/store.md|'
+    links tree
+    assert_status "$RC" 1
+    assert_contains "$OUT" "docs/store.md: no such file"
+    # a screenshot that is not there
+    copy_tree
+    rm tree/docs/qd-web-trend.png
+    links tree
+    assert_status "$RC" 1
+    assert_contains "$OUT" "docs/reading.md:"
+    assert_contains "$OUT" "qd-web-trend.png: no such file"
+    # a heading renamed under a link
+    copy_tree
+    edit tree/docs/judging.md 's/^### Waivers$/### Waived/'
+    links tree
+    assert_status "$RC" 1
+    assert_contains "$OUT" "no heading #waivers in docs/judging.md"
+    # no README at all
+    mkdir -p nolinks
+    links nolinks
     assert_status "$RC" 2
 }
 
@@ -319,4 +398,7 @@ run_test "the pointer check fails where one does not land" \
     t_readme_pointer_check_fails_where_one_does_not_land
 run_test "the pointer check refuses what it cannot read" \
     t_readme_pointer_check_refuses_a_pointer_it_cannot_read
+run_test "every link in the README and docs/ lands"    t_manual_links_all_land
+run_test "the link check fails where one does not land" \
+    t_link_check_fails_where_one_does_not_land
 finish

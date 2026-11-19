@@ -5,6 +5,48 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.46.4 — 2026-11-19
+
+The README is now a short front page, and the manual is in `docs/`, a
+chapter for each thing you are trying to do (QD-041). A move, not a
+rewrite: every section of the old README is in exactly one place, word
+for word, with only heading levels and links changed (and four
+cross-references on the front page made links, since their sections
+moved).
+
+- **`README.md`** (202 lines, PyPI's page): what qd is, install, *Thirty
+  seconds*, the commands by what they are for, the manual's chapters,
+  Related and License. Its links into `docs/` are absolute GitHub links,
+  so they work on PyPI too.
+- **`docs/README.md`**: the contents. The chapters: `running.md` (the
+  demo fleet, `qd setup`, `qd run`, `qd ask`, `qd probe` with saved probes
+  and `qd survey`, `qd do`, at scale), `reading.md` (`--where`, `freq`,
+  `outliers`, `odd`, `diff`, `again`, `qd view`, `qd web` and its
+  screenshots), `over-time.md` (`qd compare`, `qd changes`, peers and
+  baselines), `judging.md` (`qd check` with waivers, `--manual`,
+  `--baseline`, JUnit and `--rule`; `qd report`), `larger-jobs.md` (`qd
+  split`, `qd coverage`, `qd campaign`, `qd doe`),
+  `telemetry-and-export.md` (`qd join`, the floor plan, export),
+  `stores.md` (provost's store, who ran it, named stores),
+  `conventions.md` (conventions, exit status) and `contributing.md`
+  (tests, what CI runs, working on quarterdeck). `getting-started.md`,
+  `concepts.md` and `scale.md` keep their names; `concepts.md`'s links
+  now land in the chapters.
+- **`tests/check_links.py`**, new: every link and image between
+  `README.md` and `docs/*.md` lands, `#anchors` by GitHub's slugs,
+  absolute links to this repository checked against the tree. Run by
+  `tests/check.sh`, by `tests/test_help.sh` (with broken copies to show it
+  fails) and by a new CI job, *manual links and pointers*.
+- **`tests/check_readme_pointers.py`** reads the whole manual, and a
+  pointer names its page: `docs/judging.md: "Waivers"`. The seven
+  pointers in `cli.py`, `coverage.py`, `exporters.py` and `policy.py` name
+  their chapters.
+- `qd --help`'s *Full manual*, `common.DOCS` and `pyproject.toml`'s
+  Documentation URL point at `docs/`; `MANIFEST.in` ships every `docs/*.md`
+  and screenshot; `CLAUDE.md` says README.md and docs/ are the manual.
+  `tests/test_saved.sh`, `test_odd.sh` and `test_concepts.sh` read the
+  chapters their text moved to.
+
 ## 0.46.3 — 2026-11-19
 
 The README's everyday read commands now come right after `qd run` and

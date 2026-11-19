@@ -130,17 +130,17 @@ t_links_land() {
 
 t_links_check_fails_where_one_does_not_land() {
     copy_tree
-    edit tree/docs/concepts.md 's/(..\/README.md#waivers)/(..\/README.md#waiver)/'
+    edit tree/docs/concepts.md 's/(judging.md#waivers)/(judging.md#waiver)/'
     unit tree links
     assert_status "$RC" 1
     assert_contains "$OUT" "docs/concepts.md:"
-    assert_contains "$OUT" "../README.md#waiver: no heading #waiver there"
+    assert_contains "$OUT" "judging.md#waiver: no heading #waiver there"
     # a link to the page, to a heading it does not have
     copy_tree
-    edit tree/README.md 's/(docs\/concepts.md#naming-a-run)/(docs\/concepts.md#run-references)/'
+    edit tree/docs/stores.md 's/(concepts.md#naming-a-run)/(concepts.md#run-references)/'
     unit tree links
     assert_status "$RC" 1
-    assert_contains "$OUT" "README.md:"
+    assert_contains "$OUT" "docs/stores.md:"
     assert_contains "$OUT" "no heading #run-references there"
     # a file of this repository on GitHub that it does not have
     copy_tree
@@ -159,7 +159,7 @@ t_links_check_fails_where_one_does_not_land() {
 
 # What points at the page, and what moved to it: qd --help's RUN paragraph
 # ends with it, the README's first `qd freq latest A` says what A is, and
-# "Named stores" links to the table rather than keeping a copy.  The page
+# "Named stores" (docs/stores.md) links to the table rather than keeping a copy.  The page
 # stays short, its picture fits 60 columns, and the sdist ships it.
 t_pointers_and_the_page() {
     local para readme
@@ -167,14 +167,15 @@ t_pointers_and_the_page() {
     [ -n "$para" ] || fail "qd --help has no RUN paragraph"
     assert_contains "$(printf '%s\n' "$para" | grep . | tail -n 1)" "docs/concepts.md"
     readme="$QD_DIR/README.md"
-    assert_contains "$(head -n 40 "$readme")" "(docs/concepts.md)"
+    # the front page's links are absolute, so they work on PyPI (QD-041)
+    assert_contains "$(head -n 40 "$readme")" "/blob/main/docs/concepts.md)"
     assert_contains "$(sed -n '/^qd freq latest A /,/^---/p' "$readme")" \
-        "(docs/concepts.md#the-objects)"
+        "/blob/main/docs/concepts.md#the-objects)"
     assert_contains "$(sed -n '/^qd freq latest A /,/^---/p' "$readme")" \
         "provost names a field it found no"
     assert_not_contains "$(cat "$readme")" "| Reference | Means |"
-    assert_contains "$(sed -n '/^### Named stores/,/^## Conventions/p' "$readme")" \
-        "(docs/concepts.md#naming-a-run)"
+    assert_contains "$(sed -n '/^### Named stores/,$p' "$QD_DIR/docs/stores.md")" \
+        "(concepts.md#naming-a-run)"
     [ "$(wc -l < "$PAGE")" -le 150 ] || fail "the page is over 150 lines"
     awk '/^```text/{f=1; next} /^```/{f=0} f && length($0) > 60 {
         print "too wide: " $0; bad=1 } END { exit bad }' "$PAGE" ||
