@@ -692,7 +692,10 @@ stand_in_doe() {
 # doe, for the suite: full factorial and Plackett-Burman designs,
 # block_count copies of them, and two-level main effects -- the files,
 # headings and --csv tables the real one has.
-import csv, itertools, json, os, sys
+import csv, io, itertools, json, os, sys
+# the real doe runs on Python 3.10+, which writes UTF-8 even under a C
+# locale; this stand-in may run on 3.6 (CI's floor job), so it says so
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 a = sys.argv[1:]
 def opt(n):
     return a[a.index(n) + 1] if n in a else None
