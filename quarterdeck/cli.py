@@ -5495,8 +5495,7 @@ def doctor_ssh(args, lines):
 # commands QD-057 designed are named here only once they land, each on
 # its own line, under Getting started, after `qd demo`, in this order:
 #     qd setup  (QD-063)  check this machine, make a store, test your hosts
-#     qd ask    (QD-059)  ask every host; see who agrees and who differs;
-#                         it replaces the `qd run -- uname -r` line
+#                         (before qd ask)
 #     qd survey (QD-060)  everything about every host, and who stands out
 #     qd again  (QD-061)  run the last thing again; show what changed
 #     qd odd    (QD-062)  landed: on the card, last of these
