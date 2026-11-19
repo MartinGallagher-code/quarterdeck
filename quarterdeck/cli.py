@@ -5,7 +5,7 @@
 Run
   qd run [HOSTS] [OPTIONS] -- COMMAND  on every host -> a dataset
   qd ask [HOSTS] [OPTIONS] -- COMMAND  then who agrees and who differs
-  qd probe [NAME...] [HOSTS]           ask by name: facts, sysctl, gpu
+  qd survey [HOSTS] | probe [NAME...]  the standard set; or ask by name
   qd do [OPTIONS] -- TOOL ARGS...      mx, iperf, agree, reckon, dcprobe
   qd import PATH... | hosts [HOSTS]    output on disk; the host list
 Read it back
@@ -4249,9 +4249,20 @@ def cmd_probe(args):
             missing.append("%s (%s)" % (n, where))
     if missing:
         die("not available here: %s" % "; ".join(missing))
+    return run_probes(args, names)[0]
+
+
+def run_probes(args, names, say=True):
+    """Ask the fleet the probes `names` (expanded, every one available
+    here): those run on the hosts all together, each filed as a run of
+    its own name, then the tools that drive the fleet themselves.  say:
+    print each run's report, as qd probe does (qd survey prints its own).
+    Returns (worst exit status, {name: Job} for the runs on the hosts)."""
+    from . import probes
     hs = collect(args)
     check_limit(args, hs)
     worst = 0
+    done = {}
     # the probes run on the hosts: (name, what, command, stdin)
     on_hosts = []
     for n in names:
@@ -4279,7 +4290,10 @@ def cmd_probe(args):
     for (name, what, _, _), job in zip(on_hosts, jobs):
         if job is None:
             continue
-        report_run(args, what, hs, job, title="%s probe %s" % (PROG, name))
+        done[name] = job
+        if say:
+            report_run(args, what, hs, job, title="%s probe %s" % (PROG,
+                                                                   name))
         worst = max(worst, job.rc)
     # tools drive the fleet themselves, from here, one after another
     for n in names:
@@ -4290,7 +4304,7 @@ def cmd_probe(args):
                      "itself: --via %s does not apply to it"
                      % (name, how[0], via_of(args)))
             worst = max(worst, probe_tool(args, name, how, hs))
-    return worst
+    return worst, done
 
 
 def probe_tool(args, name, how, hs):
@@ -5525,6 +5539,7 @@ def doctor_ssh(args, lines):
 #     qd setup  (QD-063)  check this machine, make a store, test your hosts
 #                         (before qd ask)
 #     qd survey (QD-060)  everything about every host, and who stands out
+#                         (landed: on the card, after the run line)
 #     qd again  (QD-061)  run the last thing again; show what changed
 #     qd odd    (QD-062)  landed: on the card, last of these
 START = """\
@@ -5533,6 +5548,7 @@ qd -- run a command on many machines, keep every answer, and read it back.
 Getting started
   qd demo                      a practice fleet to learn on, no machines needed
   qd ask -- uname -r           ask every host; see who agrees and who differs
+  qd survey                    everything about every host, and who stands out
   qd again                     run the last thing again; show what changed
   qd odd                       which hosts are unlike the rest, and in what
 
@@ -5568,8 +5584,8 @@ HINTS = [
      "qd run -s hosts.txt --every 10 --count 30 -- cat /proc/loadavg"),
     ("Run", "The servers in racks 1-3",
      "qd run --layout floor.dc --select 'rack[1-3]' -- ...   (needs binnacle)"),
-    ("Run", "Everything about every host",
-     "qd probe facts inventory -s hosts.txt"),
+    ("Run", "Everything about every host, and who stands out",
+     "qd survey -s hosts.txt   or   qd probe facts inventory -s hosts.txt"),
     ("Run", "Why is the fleet slow?",
      "qd do -- agree script why-slow --servers hosts.txt --fleet-csv -- --csv"),
     ("Run", "Packets per second, everyone to everyone",
@@ -5639,6 +5655,13 @@ def cmd_again(args):
     """qd again [RUN]: RUN once more, as it ran, then qd diff (again.py)."""
     from . import again
     return again.cmd_again(sys.modules[__name__], args)
+
+
+def cmd_survey(args):
+    """qd survey: every host asked the standard questions, and one screen
+    of who stands out (survey.py, QD-060)."""
+    from . import survey
+    return survey.cmd_survey(sys.modules[__name__], args)
 
 
 def cmd_hints(args):
@@ -6490,6 +6513,11 @@ def build_parser():
     sp.add_argument("names", nargs="*", metavar="PROBE")
     add_fleet(sp, preview=12)
     sp.set_defaults(fn=cmd_probe)
+
+    sp = verb("survey", "ask every host the standard questions (facts, "
+              "inventory); one screen of who stands out")
+    add_fleet(sp, preview=0)
+    sp.set_defaults(fn=cmd_survey)
 
     sp = verb("rm", "delete runs from the store: their answers, tables "
               "and rows (--yes)")
