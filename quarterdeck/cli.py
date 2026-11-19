@@ -5480,6 +5480,11 @@ def doe_run(args, st, doemod):
             "CONFIG -s hosts -- 'iperf3 -c peer -P {streams}' (or the "
             "config's metadata.qd_command)" % PROG)
     name = doemod.design_name(cfg, args.target, args.name)
+    need = doemod.timeout_of(cfg)
+    if need and need > args.timeout:
+        warn("%s: --timeout %gs, as the config's metadata.qd_timeout asks "
+            "(a point runs longer than %gs)" % (name, need, args.timeout))
+        args.timeout = need
     prov = filing.Provost(st)
     prov.require("keep the measurements")
     new = not doemod.exists(st, name)
