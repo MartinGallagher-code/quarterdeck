@@ -35,7 +35,8 @@ qd itself keeps its 3.6 floor.
 
 A config may carry what qd needs beyond doe's own keys, which doe ignores:
 `metadata.qd_command`, the command a point runs (so `qd doe run CONFIG`
-needs no command after --), and a `column` on each response, the column of
+needs no command after --), `metadata.qd_timeout`, the seconds one point
+needs (qd doe run's --timeout is at least that), and a `column` on each response, the column of
 the filed run it is read from.  doe's `fixed_factors` -- what the design
 holds still -- are put into the command by {name} like the factors.
 `qd doe init fio` writes such a config: QD-067's Plackett-Burman screen of
@@ -157,6 +158,19 @@ def command_of(cfg):
     meta = cfg.get("metadata") or {}
     cmd = meta.get("qd_command") if isinstance(meta, dict) else None
     return cmd.strip() if isinstance(cmd, str) else ""
+
+
+def timeout_of(cfg):
+    """The seconds one point needs (metadata.qd_timeout), or None.  qd doe
+    run uses at least this as its per-host --timeout, so a point that runs
+    longer than qd's 60 s default is not stopped part-way."""
+    meta = cfg.get("metadata") or {}
+    v = meta.get("qd_timeout") if isinstance(meta, dict) else None
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
 
 
 def substitute(template, levels, fixed=()):
@@ -517,6 +531,9 @@ FIO_SCREEN = {
                        "drive of one host (QD-067): which of them move "
                        "IOPS, bandwidth and latency most.",
         "qd_command": FIO_COMMAND,
+        # one point is the 10 s ramp and the 60 s run, plus fio's start
+        # and the file's laying out: past qd's 60 s default --timeout
+        "qd_timeout": 180,
         "qd_note": "Set fixed_factors.filename to a file on the drive under "
                    "test before the first run. A /dev path writes the raw "
                    "device and destroys what is on it: qd doe run refuses "

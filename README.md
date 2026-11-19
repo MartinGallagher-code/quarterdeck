@@ -2300,6 +2300,10 @@ qd doe run fio-screen.json -s host.txt       # about 10 minutes: 8 x (60 s + 10 
 qd doe analyze fio-screen                    # what moves each response
 ```
 
+A point runs past qd's 60 s default `--timeout`, so the config's
+`metadata.qd_timeout` (180) raises it for `qd doe run`, which says so. A
+longer `--timeout` given is kept.
+
 `fio-screen.json` is a Plackett-Burman design of seven fio parameters at
 two levels each, eight points. It is a **proposal, for the owner to
 approve or change before the first real run**; the reason for each
