@@ -221,237 +221,6 @@ is not ready or a host did not answer, and the summary names which step;
 
 ---
 
-## What it keeps: provost's store
-
-qd keeps nothing of its own. What comes back is filed by
-[provost](https://github.com/MartinGallagher-code/provost), which turns
-command output into data and keeps it in git: every host's answer is a
-**capture** of its own (`provost source N` shows it exactly as it came
-back), opening with a `#%` line that says which run and which host it is.
-Where provost has `batch`, a whole run is one commit, the answers parsed in
-parallel, and `--context-columns` puts the host (and its rack, and the
-run) on every row, so `provost show NAME` says who said what without qd.
-An older provost files one capture at a time, one after another, and qd
-puts the host back from each capture's prologue just the same.
-
-Besides the answers, a run files two tables of qd's own:
-
-| Dataset | One row per | What |
-|---|---|---|
-| `qd.runs` | run | what ran, where, when, how many hosts answered |
-| `qd.hosts` | host and pass | status, rc, duration, stderr, whether it printed anything, and what its login shell printed before the command (`preamble`) |
-
-and qd puts them back together when you read a run: each host's status
-beside the rows provost parsed out of its answer, and a row for a host
-that printed nothing. Whichever store it is, `provost ls` there lists what
-qd filed.
-
-qd reads the store's files itself, as provost's store format spec
-([`docs/store-format.md`](https://github.com/MartinGallagher-code/provost/blob/main/docs/store-format.md))
-says a reader must: it refuses a store whose `.store_format` is newer than
-the formats it knows (1 to 4), takes a row's capture from `provenance.tsv`
-below format 4, reads a quoted `#%` value (`cc="gcc 13.2"`) as provost
-does, and turns `\t` and `\n` in a `meta.tsv` value back into a tab and a
-newline. A capture whose input was over provost's size cap is shown as
-what it is: the raw answer is labelled *truncated*, with the part parsed
-and where the whole input is kept (or that it is not to be found), and
-`qd split` compares hosts by the whole input where it is kept.
-
-### Who ran it
-
-Every run says who ran it and from where, so a fan-out is attributable
-after the fact. `qd log RUN` shows it, `qd log` lists the operator beside
-each run, and `qd web` puts it in the run's header.
-
-| `qd.runs` column | What | Recorded by |
-|---|---|---|
-| `operator` | `QD_OPERATOR`, else your login user | every run |
-| `operator_host` | the machine qd ran on | every run |
-| `ssh_user` | `--user`, else what your ssh config gives each host (`ssh -G`); hosts with users of their own give each, comma-separated | a fan-out |
-| `ssh_key` | the fingerprint of each key qd offered: the `-i` keys (or `IdentityFile`) in `--ssh`, else your agent's (`ssh-add -l`). Never the key itself | a fan-out |
-| `sudo` | `yes` or `no` | a fan-out |
-| `via` | how the hosts were reached: `ssh`, `srun`, `pdsh`, `clush` or `local` | a fan-out |
-| `sched_job` | the Slurm job `--via srun` ran in (each answer carries it as `sched.job`) | `--via srun` |
-
-Anything qd cannot find out is blank, never a guess: an ssh without `-G`
-(older than OpenSSH 6.8, or a wrapper), no `ssh-add` or an empty agent,
-or a key file `ssh-keygen` cannot read. Which of several offered keys a
-host accepted is not known without connecting, so `ssh_key` lists every
-one offered. With `--via` other than ssh, `ssh_user` is the `--user`
-given (pdsh's and clush's `-l`) or blank, and `ssh_key` is blank: their
-ssh is configured apart from qd's. Runs filed before 0.8.2 have none of
-these columns, and runs before 0.13.0 no `via` or `sched_job`; they show
-blank. qd also passes the operator to provost as `PROVOST_OPERATOR` (unless
-you set it yourself), for a provost that records it (PV-027); provost
-2.3.0 does not yet.
-
-### Named stores: `qd store`
-
-```bash
-qd store new lab               # ~/.local/share/quarterdeck/stores/lab
-qd store new bench --path /data/bench
-qd store use lab               # the store commands use from now on
-qd store ls                    # every store, its runs, which is active
-qd run -s hosts.txt --store bench -- uptime
-qd store rename lab lab-2026   # a store qd made moves with its name
-qd store rm bench              # forgotten; --delete deletes its files too
-qd store clear lab --yes       # empty it: every run and dataset goes
-```
-
-Which store a command uses, the first of these that applies:
-
-1. `--store NAME` or `--store DIR`: a store's name, or a directory as
-   before, so existing scripts keep working.
-2. `QD_STORE`: a name or a directory.
-3. provost's own explicit choice: `PROVOST_WORKSPACE`, or the controlled
-   directory you are in (`provost control`). qd and provost never disagree
-   about where you are.
-4. The active store: `qd store use NAME`, kept in
-   `~/.config/quarterdeck/config.json`.
-5. provost's default, `PROVOST_HOME` or `~/.provost`, with a warning that
-   no store is active.
-
-Once provost's default store exists, qd registers it as `default`, and
-makes it the active store if none is. So a machine that used qd before
-stores had names keeps working without a step. `qd log`, `show`, `view`,
-`compare`, `diff`, `stats` and the rest all read the store chosen this way.
-`qd web` has a picker for the named stores.
-
-**Moving a store between machines**:
-
-```bash
-qd store export lab lab.tgz    # NAME is optional: the store in use
-qd store import lab.tgz --as lab-from-rig2
-```
-
-An export is one archive: the store whole, with its git history and every
-raw answer under `captures/`. First comes a manifest: qd's and provost's
-versions, the store format, the run count and a sha256 for every file. The
-export takes provost's own store lock, so it refuses while a run is filing,
-and no run starts filing until the archive is written. (A run that finishes
-during a long export waits up to provost's lock timeout, 30 s.)
-
-An input over provost's size cap (`PROVOST_MAX_INPUT`, provost 2.15.0 on)
-is filed truncated: the store holds the part provost parsed, and the whole
-input is kept outside its git history, beside it, as `STORE.artifacts/SHA256`.
-An export carries those kept inputs too, under `artifacts/` (provost's own
-`export` does not), and an import puts them beside the new store, as
-`NAME.artifacts`. An archive with any is version 2, which a qd before
-0.18.0 refuses by its version; one with none is version 1, as before.
-
-An import checks the manifest, every checksum, that nothing is missing or
-added, and that this qd reads the store format. It refuses a member that
-would land outside the store, and a link or a device. Only then is the
-store given its name. It refuses a name that is taken: it never merges
-into an existing store.
-
-**A store on another machine**:
-
-```bash
-qd store new wr01 --remote wr01:~/.provost     # [USER@]HOST:PATH, as scp takes it
-qd web --store wr01                            # or log, show, view, compare, diff
-qd log --store wr01 --no-fetch                 # the copy as it is, offline
-```
-
-A remote store is read from a copy here, in
-`~/.cache/quarterdeck/remotes/NAME`. The copy is shallow: it holds the
-store as it is now, with no history, and no read needs history. `qd store
-new` makes the copy at once, so a store that cannot be reached is reported
-straight away.
-
-- **Fetching:** before a command reads the store, qd fetches what is new
-  over the same ssh `qd run` uses (`QD_SSH`, `QD_SSH_USER` unless the spec
-  names a user, your keys, your jump hosts),
-  at most once every `QD_REMOTE_REFRESH` seconds (30). `qd web` fetches the
-  same way while the page is open, so new runs show without a restart, and
-  its store picker lists the remote store with its host.
-- **SHA-256 stores:** a store made in git's SHA-256 object format
-  (`provost init --object-format sha256`) is read the same way; its copy
-  is made in that format too, which needs git 2.29 or newer here. A store
-  remade in the other format since its copy was made gets a new copy, said
-  on stderr; the old copy is read until the new one is in place.
-- **An unreachable host:** qd reads the last copy and says how old it is.
-  It does not try that host again until `QD_REMOTE_REFRESH` has passed.
-- **Writing is refused:** nothing files into a copy, because the copy would
-  then differ from the store. `qd run`, `do`, `import`, `probe`, `rm`,
-  `store clear`, and a campaign's or design's runs are refused before they
-  contact a host, with the `ssh HOST qd ...` that does it where the store
-  is.
-- **Another user's store:** if the store belongs to another user on that
-  machine, git refuses to read it. qd says so, with the `git config
-  --global --add safe.directory PATH` to run there.
-- **Renaming and removing:** `qd store rename` moves the copy with the
-  name. `qd store rm` deletes the copy and leaves the store on the other
-  machine as it was.
-
-Every way to name a run (`latest`, `latest~1`, `prev`, an id or part of
-one, a run's name, `ds:NAME`, `RUN:TABLE`, a file, `RUN@STORE`) is set
-out, with an example each, in
-[Concepts: Naming a run](docs/concepts.md#naming-a-run).
-`qd log` lists the runs and `qd log RUN` describes one.
-
-**Runs from different stores side by side**: add `@STORE` to a reference
-and it is read in that registered store, whatever `--store` says, so two
-labs' or two machines' runs are compared without exporting one store into
-the other:
-
-```bash
-qd diff kernel@wr01 kernel@wr02          # the same probe, two machines' stores
-qd diff kernel@wr01                      # against the run before it in wr01
-qd compare facts@lab facts@bench -c cpu.busy_pct
-qd compare facts --last 5@lab            # five runs, all of them lab's
-qd show latest:hosts@wr01
-qd view latest@wr02
-```
-
-- **Which commands:** every one that reads a run -- `show`, `stats`,
-  `freq`, `hist`, `outliers`, `pivot`, `trend`, `export`, `floor`, `log
-  RUN`, `diff`, `compare`, `view` -- and the Diff and Compare tabs of `qd
-  web`. Commands that file or delete (`run`, `do`, `import`, `probe`, `rm`,
-  ...) take no `@STORE`: they use `--store`, as before.
-- **Only a registered name** (`qd store ls`), never a directory: a
-  directory is `--store`'s job. A name that is not registered is an error
-  that lists the stores, never a quiet fallback to `--store`. A file or
-  directory whose name has an `@` in it is still read as a file.
-- **Where it splits:** on the last `@`, which is in no run id or provost
-  dataset name. A table goes before it: `latest:hosts@wr01`.
-- **Remote stores** are read like any other: the copy is fetched as
-  `--store` would fetch it, and once per command however many references
-  name that store.
-- **Reports say where each side came from:** a run from a store other
-  than the command's own is shown as `RUN@STORE` in report headers and in
-  `compare`'s list of runs, since the same run id can be in two stores.
-  Paste it back and it reads the same run.
-- **Different fleets:** `compare` matches hosts by name, so a host one
-  store measured and the other did not is blank on the other side (not
-  measured), never zero.
-
-**Deleting**:
-
-```bash
-qd rm latest~1                 # says what would go, and deletes nothing
-qd rm latest~1 kernel --yes    # those runs: answers, tables, their rows
-qd rm ds:loose --yes           # a whole dataset, every run's rows in it
-qd store clear lab --yes       # everything in the store
-```
-
-`qd rm` and `qd store clear` first list what would go, and delete nothing
-without `--yes`. Then provost deletes it, as one commit, so the store's git
-history keeps what was there. A run goes whole: every host's answer and
-every table it filed, from whichever datasets they are in (other runs'
-rows in those datasets stay), and its rows in `qd.runs` and `qd.hosts`.
-qd's own records (`qd.runs`, `qd.hosts`, `qd.campaigns`, `qd.designs`,
-`qd.peers`, `qd.baselines`) are never deleted whole by `qd rm`. A run that was part of a campaign is said,
-with the `qd campaign retry` that runs that part again.
-
-Deleting one run needs `provost rm --capture`, which is newer than provost
-2.2.0. An older provost is refused with that reason, and the store is left
-as it was. `qd store clear` and `qd rm ds:NAME` work with any provost.
-`qd store clear` keeps the history; for a store with none, `qd store rm
-NAME --delete` and then `qd store new NAME`.
-
----
-
 ## Running commands on many hosts: `qd run`
 
 ```bash
@@ -1265,6 +1034,470 @@ and nothing stands out, 1 otherwise, 2 on a usage error.
 
 ---
 
+## Reading it back
+
+All of these take `--where` and `--format text|csv|tsv|json|ndjson|md`
+(`-o FILE`). The text is for people; the table behind it is for whatever
+comes next.
+
+```bash
+qd show latest --where 'status!=ok'           # the rows, aligned
+qd show latest --sort -mbps --limit 10 --cols host,mbps
+qd stats latest                               # every column described
+qd stats latest mbps                          # one column in depth, with a histogram
+qd stats latest mbps loss_pct --by rack       # per group (--agg mean,p95,...)
+qd freq latest A                              # who said what (A: an unnamed column)
+qd hist latest rtt_p99 --bins 20
+qd outliers latest mbps                       # far from the median, by MAD
+qd outliers latest mbps --peers sku           # far from its own peer group's
+qd outliers firmware --categorical            # differs from its rack-mates, by value
+qd odd latest                                 # every column at once: who is unlike the rest
+qd stats latest mbps --peers sku              # per peer group (qd peers)
+qd pivot latest --rows host --cols peer --values pps
+qd trend latest load1 --by host --over ts
+qd diff latest                                # against the last run of the same thing
+qd diff monday tuesday --key host --tolerance 2
+qd export latest -o today.ndjson
+```
+
+### `--where`
+
+```text
+mbps<900                    numbers compare as numbers
+status!=ok and host~^wr01   ~ and !~ are regular expressions
+status=OK                   text compares without regard to case
+rtt_p99=                    blank: not measured
+rtt_p99!=                   measured at all
+not (loss>0 or rc!=0)
+"rtt (us)">200              quote a column name that has spaces
+```
+
+Repeat `--where` and every expression must hold. Nothing is evaluated as
+Python: the grammar above is the whole language. A blank is never less
+than a number. Columns are found by exact name, then without case, then
+as a slug (`rtt (us)` is `rtt_us`), then by a unique prefix.
+
+### `freq`: consensus, with names
+
+```text
+qd freq -- stdout in 20261029-171708-kernel (25 rows): 4 distinct values
+  22 agree on the most common; 3 do not
+
+      22   88.0%  ████████████████████   6.1.0-18-amd64
+       1    4.0%  ▉                      (blank)
+                                         wr01r04u01
+       1    4.0%  ▉                      6.1.0-13-amd64
+                                         wr01r03u07
+       1    4.0%  ▉                      6.1.0-21-amd64
+                                         wr01r01u01
+```
+
+When the values are multi-line (a config file, a command's whole
+answer), each minority group is shown as a diff against the majority,
+which is agree's trick. `--loose` squeezes whitespace and masks numbers
+before counting.
+
+### `outliers`: by the median, not the mean
+
+The robust z-score is 0.6745 × (x − median) / MAD, and past 3.5 is an
+outlier (Iglewicz and Hoaglin). The median and MAD are used because the
+outlier is the thing being looked for: one host at a tenth of the speed
+drags the mean and inflates the standard deviation until it hides inside
+both. When most of the fleet agrees exactly (MAD of 0), every value that
+differs is listed. When hosts repeat (a time series, a mesh), each host is
+reduced to its median first, so a hundred rows count as one opinion.
+`--method iqr` uses Tukey's fences instead: outside the quartiles by more
+than `--k` (1.5) interquartile ranges, scored in IQRs past the nearer
+quartile. `--peers NAME` holds each host against its own peer group
+(`qd peers`), each group with its own median and spread.
+
+### Who is odd: `qd odd`
+
+`qd outliers` asks about one column, and on a run of fifty columns a
+newcomer does not know which to ask about. `qd odd [RUN]` (default:
+latest) asks about every one, and lists the hosts unlike the rest, ranked,
+with the column, the host's value and the typical one beside it:
+
+```bash
+qd odd                          # the latest run: who stands out, and in what
+qd odd facts --peers sku        # each host against its own peer group
+qd odd latest --top 5 --format csv
+```
+
+It is the two checks above, run column by column, and computes nothing of
+its own:
+
+- **Numbers** go through `qd outliers`' median and MAD, against the whole
+  run (or, with `--peers NAME`, each host's own peer group), a host's
+  repeated rows reduced to their median first. They are ranked by how far
+  out, in robust z; where most of the run agrees exactly (MAD 0) every
+  value that differs is infinitely far, and the column fewer hosts differ
+  in comes first.
+- **Words** go through `qd outliers --categorical`, within each rack (or
+  peer group). They are ranked by **rarity**: the share of the host's group
+  that says something else, so one host in twelve on another kernel (92%)
+  comes before four in twelve on another SKU (67%).
+
+The two are **two lists**, each ranked on its own scale: a robust z has no
+ceiling and a rarity is a share, and putting them on one scale would rank
+by the choice of scale, not by how odd a host is. `--top N` (20) limits
+each list. `--format` gives one table of both, `list, group, host, column,
+value, typical, score, agree`, in rank order.
+
+What it reads: in a `qd run`, what the hosts said (the columns after
+`capture`), not the host list's attributes or qd's own bookkeeping; in a
+file or another table, every column. Either way it leaves out what is
+meant to differ (serials, UUIDs, addresses, host names, uptime, times) and
+says so. A column every host agrees in is not checked, and neither is one
+**fewer than half the rows measured**: blank is not measured, never zero,
+and a host that measured nothing is neither odd nor a vote for the
+majority. A host that did not answer the run is named apart. A column
+split with no majority has no odd one, and is named too.
+
+The exit status is 1 when any host stands out, 0 when none does, and 2 on
+a usage error, so a CI job can gate on it. WHAT TO DO NEXT gives the `qd
+outliers` command for the top column of each list, which shows the same
+finding in full, and `qd show` for the first host named.
+
+### `diff`: what changed
+
+Rows are matched on key columns, found on their own: `host` for a run,
+`test`+`target` for viewer results, `src`+`dst` for a grid,
+`source`+`target` for iperf, `host`+`dir`+`peer` for mx reports. Every
+shared column is compared, except the ones that differ on every run by
+construction (`ts`, `run`, `duration_s`, ...). Those are named rather
+than silently dropped, and `--cols` compares them anyway. A key that
+repeats is reduced first (numbers by their mean, words by the worst or
+most common), and the report says so. With one run, `qd diff` compares
+it with the previous run of the same command. `qd compare` lines up more
+than two.
+
+Changes are listed worst first: a status that got worse, then a value that
+went blank, then the biggest relative change. The exit status is 1 when
+anything differs, like `diff(1)`.
+
+### `again`: the same run once more, and what changed
+
+```bash
+qd again                 # the latest run, again, then qd diff
+qd again kernel          # RUN: any reference qd diff takes (a name, an id, latest~2, ID@STORE)
+qd again --dry-run       # what it would run, and nothing more
+```
+
+`qd again [RUN]` (default `latest`) answers "what changed since last
+time?" without retyping anything. It runs RUN's command again, on RUN's
+hosts, with RUN's `--via`, `--sudo`, `--timeout`, `--name` and passes
+(`--every`, `--count`), files the new run, then prints `qd diff RUN NEW`.
+The hosts are RUN's host file read again when it is still there (`-s
+FILE`, `QD_SERVERS`, or the `hosts.txt` it found), so a host added since
+is in the new run and shows as new in the diff. When the file has gone,
+or the hosts were named some other way (`-S`, a range, `--layout`,
+`--rerun`, this machine), they are the hosts RUN ran on, with the
+addresses and attributes they ran with.
+
+Before it runs anything it prints the command, the hosts and how they are
+reached, and the plain `qd run` it amounts to when that fits on a line.
+A `--sudo` run asks `run this as root (sudo) on N hosts? [y/N]` first
+when stdin is a terminal; with nothing attached to stdin it never asks,
+and `--yes` skips the question. The ssh options that are not part of the
+record (`--ssh`, `-u`, `-j`, `--ssh-config`, `--reuse`, `--rate`, ...),
+`--max-fail`, `--retries` and the safety flags (`--limit`, `--allow`,
+`--read-only`, `--dry-run`) are taken as `qd run` takes them. The run is
+`qd run` itself, so filing, the allow-list, the mutation guard and every
+`QD_*` variable behave as there. Its summary line is printed, the diff
+whole, then which step found what, and WHAT TO DO NEXT with the plain
+commands.
+
+The exit status is 0 when every host answered and nothing changed, 1
+when a host did not answer or the diff found a change (the summary's
+`FOUND` lines say which), and 2 when RUN cannot be run again exactly.
+That is a `qd do` run or a `qd import`, a campaign's part (`qd campaign
+retry`), a design point (`qd doe run`), a probe (`qd probe NAME` asks it
+again), a run that pushed files (`--push`, `--script`: the store does not
+keep them), and a run filed before qd 0.40.0, whose record keeps no
+`--timeout`. Each says why and what to run instead. `qd.runs` keeps what
+`qd again` reads, from 0.40.0 on: `timeout_s`, `pushed` and `host_list`
+(the host files, as absolute paths).
+
+---
+
+## In a terminal: `qd view`
+
+A full-screen explorer for when there's no browser: the same views, keyed.
+
+```bash
+qd view                # everything in the store: Enter opens, ] [ page
+qd view latest         # open on the latest run (q: the store's contents)
+qd view f.csv          # a file, without filing it
+```
+
+With no RUN it opens on the store's contents: every run, newest first,
+then every dataset provost keeps there. Nothing has to be known by name.
+Open one and `]` / `[` page to the next and previous table, a run's tables
+in turn and then the next run's, on through the datasets; `}` / `{` skip a
+whole run. `q` goes back to the contents, on the one you were looking at.
+
+| Keys | |
+|---|---|
+| arrows, `j` `k`, PgUp/PgDn, Home/End, `0` `$` | move |
+| `s` / `S` | sort by this column (again: reverse) / descending |
+| `f` | filter: an expression, as `--where` takes one (Tab completes column names) |
+| `=` / `!` | keep / drop rows with this cell's value |
+| `u` / `F` | undo the last filter / clear every filter |
+| `/`, `n`, `N` | search |
+| `d` / `D` | this column in depth / every column described |
+| `c` | counts of each value and who holds it; Enter filters to one |
+| `g` | group by this column; Enter on a group filters to it |
+| `h`, `o`, `t` | histogram, outliers, trend |
+| `p` | pivot: `rows,cols[,values]` |
+| `x` | diff against another run (default: the last of the same thing) |
+| Enter | every field of the row, and the host's raw answer |
+| `]` / `[` | the next / previous table in the store |
+| `}` / `{` | the next / previous run (or dataset) |
+| `T`, `L` | another table of this run, everything in the store |
+| `e`, `r` | export this view to a file, reload from disk |
+| `-`, `*`, `w` | hide a column, show them all, widen one |
+| `?`, `q`, `Q` | help, back (from a table: to the contents), quit |
+
+The bottom line always has the current column's figures. A blank cell
+stays out of every one.
+
+---
+
+## In a browser: `qd web`
+
+```bash
+qd web                         # http://127.0.0.1:8100/, opened for you
+qd web --layout floor.dc       # with the floor plan behind "Floor plan"
+```
+
+With more than one named store, a picker beside the title reads any of
+them (`/api/stores` lists them). The page asks for a store by name, never
+by path. The commands it shows under "same in a terminal" carry
+`--store NAME`. **Diff** can take its older side (A) from another store,
+and **Compare** can add runs from other stores beside the ones it picked:
+the API takes a store per side (`a=RUN@STORE` or `a_store=NAME` on
+`/api/diff`, `also=RUN@STORE` on `/api/compare`), so the figures are the
+engine's, as everywhere.
+
+![qd web: the table with the load1 column's figures, histogram and outliers](docs/qd-web-table.png)
+
+- **The runs in the store** on the left; the run's command, how many hosts
+  answered, and its tables at the top.
+- **Campaigns and designs** above the runs, with how far each has got
+  (muster's count of parts done, or points measured). One opens its parts
+  or points, each with its last run, and **Compare its parts** lines them
+  up.
+- **Table**: sort on any column and filter with the same `--where`
+  language. Click a row for every field and that host's raw answer.
+- **A column**: its figures, histogram, outliers and value counts (with who
+  holds each value). Click a value to keep or drop it, or a host to filter
+  to it.
+- **Group**, **Pivot** (shaded per column, or across the whole grid when
+  it's one metric), **Trend** (a line per host, with a crosshair and
+  tooltip; past eight hosts they're drawn grey and the one you point at
+  lifts), **Diff** against any other run, **About** the run.
+- **Telemetry**: `qd join` on the page. Pick telemetry the store keeps
+  (`qd import --telemetry`), a window, the figures and the metrics, and
+  every row of the run comes back with what its host's telemetry said in
+  its window. The filter bar reads the joined columns. The server only
+  joins what is in a store and never reads a file.
+- **Compare**: `qd compare` on the page. The last runs like this one, or
+  every run of its campaign or design; a row per run with where the column
+  sat and how far it moved from the baseline, then every host's value per
+  run, flagged where it drifted or its status went from ok. Click a host
+  to open the latest run filtered to it. **Peer groups** adds each group's
+  median per run; a **qualified** baseline in the Baseline list holds the
+  runs against it, with the drift, effect, p, Holm-adjusted p and verdict
+  per peer group, as `qd compare --baseline NAME` prints them.
+- **Floor plan** writes the view as an overlay and opens it in the
+  datacenter viewer, served by the same server at `/floor/` when
+  `datacenter-layout-viewer` is installed. Without `--layout`, use
+  *Build from data* in the viewer to read a floor plan out of the
+  hostnames.
+- **Export** the view, as filtered and sorted, as CSV, TSV, JSON, NDJSON,
+  Markdown or a viewer overlay.
+- Every view shows **the `qd` command that prints the same thing**, and
+  the URL holds the whole view, so a link opens what you were looking at.
+
+![qd web: load1 by host over time, dark theme](docs/qd-web-trend.png)
+
+![qd web: four runs of a bandwidth test compared, one host drifted and one unreachable](docs/qd-web-compare.png)
+
+The page does no arithmetic of its own. Every figure, group, diff,
+comparison and outlier comes from the same functions the terminal verbs
+print, so the
+browser and the terminal can't disagree about a number. There's no build
+step and no dependency, just three static files and a JSON API served by
+the standard library. It listens on 127.0.0.1 unless you pass `--host`
+(`QD_WEB_HOST`, `QD_WEB_PORT`; see *Sharing it on the network* below). It's read-only, except that "Floor plan"
+writes the overlay into qd's cache (never the store, which provost commits
+whole), as `qd floor` does.
+
+Over ssh to a jump host, forward the port. This is still the best way to
+reach it from elsewhere: nothing is exposed, and ssh does the encryption.
+
+```bash
+ssh -L 8100:127.0.0.1:8100 jumpbox qd web -n
+```
+
+### Sharing it on the network
+
+Listening anywhere but 127.0.0.1, localhost or ::1, `qd web` needs a token
+on every request, and turns away the Floor plan button's write:
+
+```bash
+qd web --host 0.0.0.0                       # makes a token and prints it once, in the link
+QD_WEB_TOKEN=... qd web --host 0.0.0.0      # or give one (16+ characters)
+qd web --host 0.0.0.0 --token-file ~/.qd-token \
+       --tls-cert cert.pem --tls-key key.pem   # https
+qd web --host 0.0.0.0 --allow-writes        # let Floor plan write into qd's cache
+```
+
+- **The token** is the printed link's `?token=...`. Opening the link stores it
+  in a cookie (HttpOnly, SameSite=Strict, Secure under https) and takes it
+  out of the address bar. A script sends `Authorization: Bearer TOKEN`. A
+  token you give (`QD_WEB_TOKEN`, or `--token-file`/`QD_WEB_TOKEN_FILE`, the
+  file's first line) is never printed, and no token is ever logged.
+- **Giving a token on 127.0.0.1 makes it required there too.** That is for
+  a login node, where 127.0.0.1 is shared by every user on it. With no token,
+  loopback works as it always has.
+- **Without `--tls-cert`** (`QD_WEB_TLS_CERT`, and `--tls-key`/`QD_WEB_TLS_KEY`
+  unless the key is in the same file) the token and the data cross the
+  network in the clear, and `qd web` says so when it starts.
+- **Read-only beyond this machine.** The overlay is the only thing the page
+  writes; `--allow-writes` lets it.
+
+---
+
+## Many runs side by side: `qd compare`
+
+```bash
+qd compare facts -c cpu.busy_pct --last 5        # the last five runs of facts
+qd compare monday tuesday latest -c mbps         # these three
+qd compare --group burnin -c temp_c              # a campaign's parts, a design's points
+qd compare --campaigns burnin-oct burnin-nov     # two whole campaigns, host by host
+qd compare kernel --last 10                      # no column: every numeric median
+```
+
+One row per run (hosts that answered, n, median, mean, min, p95, max, and
+the change from the baseline), then host by host every run's value side by
+side, flagged where a median moved more than `--drift` percent (5) from the
+baseline or the host's status was not ok. The baseline is the first run, or
+`--baseline RUN`, or a qualified baseline's name (`--baseline NAME`, next
+section), which adds a significance test. `--peers NAME` with `-c` adds a
+row per peer group: its median in each run, flagged where it moved past
+`--drift`; `--format csv` is then that table. Runs over different hosts (a
+campaign's parts) are compared as wholes. With no column, every numeric column the runs share is
+compared by its median, leaving out what the runs *were* rather than what
+they measured: a design's factors and the hosts' attributes. `--format csv`
+is the host-by-run table. The exit status is 1 when anything changed, as
+with `diff`. `qd web` shows the same comparison on its Compare tab. Runs
+from other stores go in as `RUN@STORE` (see *Runs from different stores
+side by side*); `--last N@STORE` takes the last N from that store.
+
+### Two whole campaigns: `qd compare --campaigns A B`
+
+```bash
+qd compare --campaigns burnin-oct burnin-nov            # every column, host by host
+qd compare --campaigns burnin-oct burnin-nov -c mbps --drift 3
+qd compare --campaigns burnin-oct burnin-nov --format csv -o both.csv
+```
+
+`--group` lines up one campaign's parts, and `--baseline` holds runs
+against one run. `--campaigns A B` takes two whole campaigns (or designs)
+and puts them side by side (QD-036):
+
+- **Each side** is every part of its campaign, the latest run of each
+  part (a part run again after `campaign retry` counts once, as it now
+  stands), stacked into one table. `--where` and `--table` apply to every
+  run.
+- **Key by key** (the host, or `test,target` for viewer results, as `qd
+  compare` and `qd diff` match them; `--key` to choose), each numeric
+  column's value in A and in B and the change. The value is a key's
+  median (`--agg`), computed by the same function `qd compare` uses, so
+  the two cannot disagree. With `-c`, only that column.
+- **Flagged**: a change past `--drift` percent (5); a host in only one
+  campaign (`only in A`, `only in B`); a value measured in one campaign
+  and blank in the other. The text lists the flagged rows (`--limit`,
+  30; 0 for all), then counts the hosts, tests and numeric columns that
+  are in only one campaign.
+- `--format csv`, `tsv`, `json`, `ndjson`, `md`: every key and column,
+  `host,column,A,B,change_pct,flags`.
+
+The exit status is 1 when anything moved, or is in only one campaign; 0
+when they agree, as a campaign compared with itself does. `--baseline`,
+`--group`, `--last` and `--peers` do not go with `--campaigns`.
+
+### Where a slow slide started: `qd changes`
+
+```bash
+qd changes iperf -c mbps                         # every run of iperf so far
+qd changes iperf -c mbps --last 60 --higher-is-better
+qd changes iperf -c mbps --peers sku             # one series per peer group
+qd changes --group burnin -c temp_c --format csv
+```
+
+`compare` holds runs against a fixed reference. A node whose bandwidth
+slips 2% a month never crosses a 5% drift from last week's run, and a
+baseline set last quarter shows the gap but not when it opened.
+`qd changes` finds *where* in a series each host's level moved -- "between
+run 14 and run 15" -- so it can be lined up with whatever changed then (a
+firmware update, a facts run: `qd diff` the two runs either side).
+
+It takes the runs `compare` would (one `RUN` means every run like it up to
+that one, `--last N` the last N, `--group` a campaign's or a design's), and
+reduces each the same way: a host's rows in a run to their median
+(`--agg`), and with `--peers NAME` a peer group to the median of its hosts.
+Each host (or group) then has one value per run, and a run where it was
+not measured is **left out of its series**, never counted as zero, and
+named. Fewer than five measured runs says **too few runs**, not "no
+change".
+
+The statistic is **e-divisive means** (Matteson and James, 2014) with a
+permutation test, as MongoDB runs it on its performance CI (Daly et al.,
+ICPE 2020; their `signal-processing-algorithms` 2.1.6, ported in the
+standard library, its own published test values reproduced in
+`tests/changes_unit.py`). Every split of a stretch is scored by how far
+apart the two sides' values are against how far apart each side's are
+among themselves; the best split is a change point when no more than `--p`
+(0.05) of `--permutations` (100) shuffles of that stretch score as high;
+then the stretches either side are searched again. The shuffles come from
+Python's own `random` with a fixed seed, so the same runs always give the
+same answer, on Python 3.6 as on 3.13. With no change at all, about one
+series in sixteen shows a change point by chance (p 0.05 over 100
+permutations is at most 5 of 101); the tests hold it there.
+
+What it reports, for each host:
+
+| | |
+|---|---|
+| **changes** | each step between stable stretches, by the run ids either side, with the median before and after, the step in percent of the level before, and in MADs (of the noisier stretch either side). A step smaller than `--min-change` percent (1, `QD_MIN_CHANGE`) is listed in the CSV but not reported. |
+| **stretches** | (`--format csv` or `json`, one row each) the first and last run, the count, median and MAD |
+| **slides** | asv's rule: the gap from the best stretch to the latest, and every step that explains it -- so a slide made of steps each under the floor is still reported once they add up past it. "Best" needs `--higher-is-better` or `--lower-is-better`; without, it is the stretch farthest from the latest. |
+| **outliers** | a run that jumps and comes straight back is not a step (Conbench's rule): a stretch of one run between two is dropped and the run named, and so is one run alone at either end |
+| **gaps** | the runs a host was not measured in |
+
+With a direction a step is a **regression** or an **improvement**;
+without, it **rose** or **fell**. The exit status is 1 when anything
+changed (with a direction, a regression) or slid, as with `compare`.
+
+**Lag.** The newest run can never be a change point by itself (one run is
+an outlier until a second agrees), so a change shows a run or two after it
+happens. That is the price of not crying wolf at every slow run.
+
+**Speed.** On an Apple M4, one host's series of 100 runs takes 0.02 to
+0.08 s (Python 3.9; half that on 3.13), and 500 runs 0.1 s with no change,
+0.3 s with one and 0.5 s with three, so a thousand hosts of 500 runs is a
+few minutes. (`tests/changes_unit.py` holds 100 runs under a second.)
+
+The statistic is qd's for the same reason the Mann-Whitney test is
+(*Peer groups and qualified baselines*, below): design_of_experiments needs numpy, scipy and Python 3.9.
+Not yet: marking a change point as understood, and saying which facts
+changed at it.
+
+---
+
 ## Cutting a host list: `qd split`
 
 ```bash
@@ -1464,134 +1697,6 @@ coreutils before 0.11.0 (the default on Ubuntu 25.10 and 26.04), two
 provost processes can both take it, and a part's answers can be lost. On
 such a machine, run one worker per store, or switch the machine to GNU's
 `mkdir` (Ubuntu's `coreutils-from-gnu`).
-
----
-
-## Many runs side by side: `qd compare`
-
-```bash
-qd compare facts -c cpu.busy_pct --last 5        # the last five runs of facts
-qd compare monday tuesday latest -c mbps         # these three
-qd compare --group burnin -c temp_c              # a campaign's parts, a design's points
-qd compare --campaigns burnin-oct burnin-nov     # two whole campaigns, host by host
-qd compare kernel --last 10                      # no column: every numeric median
-```
-
-One row per run (hosts that answered, n, median, mean, min, p95, max, and
-the change from the baseline), then host by host every run's value side by
-side, flagged where a median moved more than `--drift` percent (5) from the
-baseline or the host's status was not ok. The baseline is the first run, or
-`--baseline RUN`, or a qualified baseline's name (`--baseline NAME`, next
-section), which adds a significance test. `--peers NAME` with `-c` adds a
-row per peer group: its median in each run, flagged where it moved past
-`--drift`; `--format csv` is then that table. Runs over different hosts (a
-campaign's parts) are compared as wholes. With no column, every numeric column the runs share is
-compared by its median, leaving out what the runs *were* rather than what
-they measured: a design's factors and the hosts' attributes. `--format csv`
-is the host-by-run table. The exit status is 1 when anything changed, as
-with `diff`. `qd web` shows the same comparison on its Compare tab. Runs
-from other stores go in as `RUN@STORE` (see *Runs from different stores
-side by side*); `--last N@STORE` takes the last N from that store.
-
-### Two whole campaigns: `qd compare --campaigns A B`
-
-```bash
-qd compare --campaigns burnin-oct burnin-nov            # every column, host by host
-qd compare --campaigns burnin-oct burnin-nov -c mbps --drift 3
-qd compare --campaigns burnin-oct burnin-nov --format csv -o both.csv
-```
-
-`--group` lines up one campaign's parts, and `--baseline` holds runs
-against one run. `--campaigns A B` takes two whole campaigns (or designs)
-and puts them side by side (QD-036):
-
-- **Each side** is every part of its campaign, the latest run of each
-  part (a part run again after `campaign retry` counts once, as it now
-  stands), stacked into one table. `--where` and `--table` apply to every
-  run.
-- **Key by key** (the host, or `test,target` for viewer results, as `qd
-  compare` and `qd diff` match them; `--key` to choose), each numeric
-  column's value in A and in B and the change. The value is a key's
-  median (`--agg`), computed by the same function `qd compare` uses, so
-  the two cannot disagree. With `-c`, only that column.
-- **Flagged**: a change past `--drift` percent (5); a host in only one
-  campaign (`only in A`, `only in B`); a value measured in one campaign
-  and blank in the other. The text lists the flagged rows (`--limit`,
-  30; 0 for all), then counts the hosts, tests and numeric columns that
-  are in only one campaign.
-- `--format csv`, `tsv`, `json`, `ndjson`, `md`: every key and column,
-  `host,column,A,B,change_pct,flags`.
-
-The exit status is 1 when anything moved, or is in only one campaign; 0
-when they agree, as a campaign compared with itself does. `--baseline`,
-`--group`, `--last` and `--peers` do not go with `--campaigns`.
-
-### Where a slow slide started: `qd changes`
-
-```bash
-qd changes iperf -c mbps                         # every run of iperf so far
-qd changes iperf -c mbps --last 60 --higher-is-better
-qd changes iperf -c mbps --peers sku             # one series per peer group
-qd changes --group burnin -c temp_c --format csv
-```
-
-`compare` holds runs against a fixed reference. A node whose bandwidth
-slips 2% a month never crosses a 5% drift from last week's run, and a
-baseline set last quarter shows the gap but not when it opened.
-`qd changes` finds *where* in a series each host's level moved -- "between
-run 14 and run 15" -- so it can be lined up with whatever changed then (a
-firmware update, a facts run: `qd diff` the two runs either side).
-
-It takes the runs `compare` would (one `RUN` means every run like it up to
-that one, `--last N` the last N, `--group` a campaign's or a design's), and
-reduces each the same way: a host's rows in a run to their median
-(`--agg`), and with `--peers NAME` a peer group to the median of its hosts.
-Each host (or group) then has one value per run, and a run where it was
-not measured is **left out of its series**, never counted as zero, and
-named. Fewer than five measured runs says **too few runs**, not "no
-change".
-
-The statistic is **e-divisive means** (Matteson and James, 2014) with a
-permutation test, as MongoDB runs it on its performance CI (Daly et al.,
-ICPE 2020; their `signal-processing-algorithms` 2.1.6, ported in the
-standard library, its own published test values reproduced in
-`tests/changes_unit.py`). Every split of a stretch is scored by how far
-apart the two sides' values are against how far apart each side's are
-among themselves; the best split is a change point when no more than `--p`
-(0.05) of `--permutations` (100) shuffles of that stretch score as high;
-then the stretches either side are searched again. The shuffles come from
-Python's own `random` with a fixed seed, so the same runs always give the
-same answer, on Python 3.6 as on 3.13. With no change at all, about one
-series in sixteen shows a change point by chance (p 0.05 over 100
-permutations is at most 5 of 101); the tests hold it there.
-
-What it reports, for each host:
-
-| | |
-|---|---|
-| **changes** | each step between stable stretches, by the run ids either side, with the median before and after, the step in percent of the level before, and in MADs (of the noisier stretch either side). A step smaller than `--min-change` percent (1, `QD_MIN_CHANGE`) is listed in the CSV but not reported. |
-| **stretches** | (`--format csv` or `json`, one row each) the first and last run, the count, median and MAD |
-| **slides** | asv's rule: the gap from the best stretch to the latest, and every step that explains it -- so a slide made of steps each under the floor is still reported once they add up past it. "Best" needs `--higher-is-better` or `--lower-is-better`; without, it is the stretch farthest from the latest. |
-| **outliers** | a run that jumps and comes straight back is not a step (Conbench's rule): a stretch of one run between two is dropped and the run named, and so is one run alone at either end |
-| **gaps** | the runs a host was not measured in |
-
-With a direction a step is a **regression** or an **improvement**;
-without, it **rose** or **fell**. The exit status is 1 when anything
-changed (with a direction, a regression) or slid, as with `compare`.
-
-**Lag.** The newest run can never be a change point by itself (one run is
-an outlier until a second agrees), so a change shows a run or two after it
-happens. That is the price of not crying wolf at every slow run.
-
-**Speed.** On an Apple M4, one host's series of 100 runs takes 0.02 to
-0.08 s (Python 3.9; half that on 3.13), and 500 runs 0.1 s with no change,
-0.3 s with one and 0.5 s with three, so a thousand hosts of 500 runs is a
-few minutes. (`tests/changes_unit.py` holds 100 runs under a second.)
-
-The statistic is qd's for the same reason the Mann-Whitney test is
-(next section): design_of_experiments needs numpy, scipy and Python 3.9.
-Not yet: marking a change point as understood, and saying which facts
-changed at it.
 
 ---
 
@@ -2344,193 +2449,6 @@ Every reader works on what's *inside* a file, never its name:
 
 ---
 
-## Reading it back
-
-All of these take `--where` and `--format text|csv|tsv|json|ndjson|md`
-(`-o FILE`). The text is for people; the table behind it is for whatever
-comes next.
-
-```bash
-qd show latest --where 'status!=ok'           # the rows, aligned
-qd show latest --sort -mbps --limit 10 --cols host,mbps
-qd stats latest                               # every column described
-qd stats latest mbps                          # one column in depth, with a histogram
-qd stats latest mbps loss_pct --by rack       # per group (--agg mean,p95,...)
-qd freq latest A                              # who said what (A: an unnamed column)
-qd hist latest rtt_p99 --bins 20
-qd outliers latest mbps                       # far from the median, by MAD
-qd outliers latest mbps --peers sku           # far from its own peer group's
-qd outliers firmware --categorical            # differs from its rack-mates, by value
-qd odd latest                                 # every column at once: who is unlike the rest
-qd stats latest mbps --peers sku              # per peer group (qd peers)
-qd pivot latest --rows host --cols peer --values pps
-qd trend latest load1 --by host --over ts
-qd diff latest                                # against the last run of the same thing
-qd diff monday tuesday --key host --tolerance 2
-qd export latest -o today.ndjson
-```
-
-### `--where`
-
-```text
-mbps<900                    numbers compare as numbers
-status!=ok and host~^wr01   ~ and !~ are regular expressions
-status=OK                   text compares without regard to case
-rtt_p99=                    blank: not measured
-rtt_p99!=                   measured at all
-not (loss>0 or rc!=0)
-"rtt (us)">200              quote a column name that has spaces
-```
-
-Repeat `--where` and every expression must hold. Nothing is evaluated as
-Python: the grammar above is the whole language. A blank is never less
-than a number. Columns are found by exact name, then without case, then
-as a slug (`rtt (us)` is `rtt_us`), then by a unique prefix.
-
-### `freq`: consensus, with names
-
-```text
-qd freq -- stdout in 20261029-171708-kernel (25 rows): 4 distinct values
-  22 agree on the most common; 3 do not
-
-      22   88.0%  ████████████████████   6.1.0-18-amd64
-       1    4.0%  ▉                      (blank)
-                                         wr01r04u01
-       1    4.0%  ▉                      6.1.0-13-amd64
-                                         wr01r03u07
-       1    4.0%  ▉                      6.1.0-21-amd64
-                                         wr01r01u01
-```
-
-When the values are multi-line (a config file, a command's whole
-answer), each minority group is shown as a diff against the majority,
-which is agree's trick. `--loose` squeezes whitespace and masks numbers
-before counting.
-
-### `outliers`: by the median, not the mean
-
-The robust z-score is 0.6745 × (x − median) / MAD, and past 3.5 is an
-outlier (Iglewicz and Hoaglin). The median and MAD are used because the
-outlier is the thing being looked for: one host at a tenth of the speed
-drags the mean and inflates the standard deviation until it hides inside
-both. When most of the fleet agrees exactly (MAD of 0), every value that
-differs is listed. When hosts repeat (a time series, a mesh), each host is
-reduced to its median first, so a hundred rows count as one opinion.
-`--method iqr` uses Tukey's fences instead: outside the quartiles by more
-than `--k` (1.5) interquartile ranges, scored in IQRs past the nearer
-quartile. `--peers NAME` holds each host against its own peer group
-(`qd peers`), each group with its own median and spread.
-
-### Who is odd: `qd odd`
-
-`qd outliers` asks about one column, and on a run of fifty columns a
-newcomer does not know which to ask about. `qd odd [RUN]` (default:
-latest) asks about every one, and lists the hosts unlike the rest, ranked,
-with the column, the host's value and the typical one beside it:
-
-```bash
-qd odd                          # the latest run: who stands out, and in what
-qd odd facts --peers sku        # each host against its own peer group
-qd odd latest --top 5 --format csv
-```
-
-It is the two checks above, run column by column, and computes nothing of
-its own:
-
-- **Numbers** go through `qd outliers`' median and MAD, against the whole
-  run (or, with `--peers NAME`, each host's own peer group), a host's
-  repeated rows reduced to their median first. They are ranked by how far
-  out, in robust z; where most of the run agrees exactly (MAD 0) every
-  value that differs is infinitely far, and the column fewer hosts differ
-  in comes first.
-- **Words** go through `qd outliers --categorical`, within each rack (or
-  peer group). They are ranked by **rarity**: the share of the host's group
-  that says something else, so one host in twelve on another kernel (92%)
-  comes before four in twelve on another SKU (67%).
-
-The two are **two lists**, each ranked on its own scale: a robust z has no
-ceiling and a rarity is a share, and putting them on one scale would rank
-by the choice of scale, not by how odd a host is. `--top N` (20) limits
-each list. `--format` gives one table of both, `list, group, host, column,
-value, typical, score, agree`, in rank order.
-
-What it reads: in a `qd run`, what the hosts said (the columns after
-`capture`), not the host list's attributes or qd's own bookkeeping; in a
-file or another table, every column. Either way it leaves out what is
-meant to differ (serials, UUIDs, addresses, host names, uptime, times) and
-says so. A column every host agrees in is not checked, and neither is one
-**fewer than half the rows measured**: blank is not measured, never zero,
-and a host that measured nothing is neither odd nor a vote for the
-majority. A host that did not answer the run is named apart. A column
-split with no majority has no odd one, and is named too.
-
-The exit status is 1 when any host stands out, 0 when none does, and 2 on
-a usage error, so a CI job can gate on it. WHAT TO DO NEXT gives the `qd
-outliers` command for the top column of each list, which shows the same
-finding in full, and `qd show` for the first host named.
-
-### `diff`: what changed
-
-Rows are matched on key columns, found on their own: `host` for a run,
-`test`+`target` for viewer results, `src`+`dst` for a grid,
-`source`+`target` for iperf, `host`+`dir`+`peer` for mx reports. Every
-shared column is compared, except the ones that differ on every run by
-construction (`ts`, `run`, `duration_s`, ...). Those are named rather
-than silently dropped, and `--cols` compares them anyway. A key that
-repeats is reduced first (numbers by their mean, words by the worst or
-most common), and the report says so. With one run, `qd diff` compares
-it with the previous run of the same command. `qd compare` lines up more
-than two.
-
-Changes are listed worst first: a status that got worse, then a value that
-went blank, then the biggest relative change. The exit status is 1 when
-anything differs, like `diff(1)`.
-
-### `again`: the same run once more, and what changed
-
-```bash
-qd again                 # the latest run, again, then qd diff
-qd again kernel          # RUN: any reference qd diff takes (a name, an id, latest~2, ID@STORE)
-qd again --dry-run       # what it would run, and nothing more
-```
-
-`qd again [RUN]` (default `latest`) answers "what changed since last
-time?" without retyping anything. It runs RUN's command again, on RUN's
-hosts, with RUN's `--via`, `--sudo`, `--timeout`, `--name` and passes
-(`--every`, `--count`), files the new run, then prints `qd diff RUN NEW`.
-The hosts are RUN's host file read again when it is still there (`-s
-FILE`, `QD_SERVERS`, or the `hosts.txt` it found), so a host added since
-is in the new run and shows as new in the diff. When the file has gone,
-or the hosts were named some other way (`-S`, a range, `--layout`,
-`--rerun`, this machine), they are the hosts RUN ran on, with the
-addresses and attributes they ran with.
-
-Before it runs anything it prints the command, the hosts and how they are
-reached, and the plain `qd run` it amounts to when that fits on a line.
-A `--sudo` run asks `run this as root (sudo) on N hosts? [y/N]` first
-when stdin is a terminal; with nothing attached to stdin it never asks,
-and `--yes` skips the question. The ssh options that are not part of the
-record (`--ssh`, `-u`, `-j`, `--ssh-config`, `--reuse`, `--rate`, ...),
-`--max-fail`, `--retries` and the safety flags (`--limit`, `--allow`,
-`--read-only`, `--dry-run`) are taken as `qd run` takes them. The run is
-`qd run` itself, so filing, the allow-list, the mutation guard and every
-`QD_*` variable behave as there. Its summary line is printed, the diff
-whole, then which step found what, and WHAT TO DO NEXT with the plain
-commands.
-
-The exit status is 0 when every host answered and nothing changed, 1
-when a host did not answer or the diff found a change (the summary's
-`FOUND` lines say which), and 2 when RUN cannot be run again exactly.
-That is a `qd do` run or a `qd import`, a campaign's part (`qd campaign
-retry`), a design point (`qd doe run`), a probe (`qd probe NAME` asks it
-again), a run that pushed files (`--push`, `--script`: the store does not
-keep them), and a run filed before qd 0.40.0, whose record keeps no
-`--timeout`. Each says why and what to run instead. `qd.runs` keeps what
-`qd again` reads, from 0.40.0 on: `timeout_s`, `pushed` and `host_list`
-(the host files, as absolute paths).
-
----
-
 ## Beside the telemetry: `qd join`
 
 A benchmark row says what a host did. The telemetry another system kept
@@ -2684,155 +2602,6 @@ it from the store: from another one with `IMPORT@STORE`, and on the
 
 ---
 
-## In a browser: `qd web`
-
-```bash
-qd web                         # http://127.0.0.1:8100/, opened for you
-qd web --layout floor.dc       # with the floor plan behind "Floor plan"
-```
-
-With more than one named store, a picker beside the title reads any of
-them (`/api/stores` lists them). The page asks for a store by name, never
-by path. The commands it shows under "same in a terminal" carry
-`--store NAME`. **Diff** can take its older side (A) from another store,
-and **Compare** can add runs from other stores beside the ones it picked:
-the API takes a store per side (`a=RUN@STORE` or `a_store=NAME` on
-`/api/diff`, `also=RUN@STORE` on `/api/compare`), so the figures are the
-engine's, as everywhere.
-
-![qd web: the table with the load1 column's figures, histogram and outliers](docs/qd-web-table.png)
-
-- **The runs in the store** on the left; the run's command, how many hosts
-  answered, and its tables at the top.
-- **Campaigns and designs** above the runs, with how far each has got
-  (muster's count of parts done, or points measured). One opens its parts
-  or points, each with its last run, and **Compare its parts** lines them
-  up.
-- **Table**: sort on any column and filter with the same `--where`
-  language. Click a row for every field and that host's raw answer.
-- **A column**: its figures, histogram, outliers and value counts (with who
-  holds each value). Click a value to keep or drop it, or a host to filter
-  to it.
-- **Group**, **Pivot** (shaded per column, or across the whole grid when
-  it's one metric), **Trend** (a line per host, with a crosshair and
-  tooltip; past eight hosts they're drawn grey and the one you point at
-  lifts), **Diff** against any other run, **About** the run.
-- **Telemetry**: `qd join` on the page. Pick telemetry the store keeps
-  (`qd import --telemetry`), a window, the figures and the metrics, and
-  every row of the run comes back with what its host's telemetry said in
-  its window. The filter bar reads the joined columns. The server only
-  joins what is in a store and never reads a file.
-- **Compare**: `qd compare` on the page. The last runs like this one, or
-  every run of its campaign or design; a row per run with where the column
-  sat and how far it moved from the baseline, then every host's value per
-  run, flagged where it drifted or its status went from ok. Click a host
-  to open the latest run filtered to it. **Peer groups** adds each group's
-  median per run; a **qualified** baseline in the Baseline list holds the
-  runs against it, with the drift, effect, p, Holm-adjusted p and verdict
-  per peer group, as `qd compare --baseline NAME` prints them.
-- **Floor plan** writes the view as an overlay and opens it in the
-  datacenter viewer, served by the same server at `/floor/` when
-  `datacenter-layout-viewer` is installed. Without `--layout`, use
-  *Build from data* in the viewer to read a floor plan out of the
-  hostnames.
-- **Export** the view, as filtered and sorted, as CSV, TSV, JSON, NDJSON,
-  Markdown or a viewer overlay.
-- Every view shows **the `qd` command that prints the same thing**, and
-  the URL holds the whole view, so a link opens what you were looking at.
-
-![qd web: load1 by host over time, dark theme](docs/qd-web-trend.png)
-
-![qd web: four runs of a bandwidth test compared, one host drifted and one unreachable](docs/qd-web-compare.png)
-
-The page does no arithmetic of its own. Every figure, group, diff,
-comparison and outlier comes from the same functions the terminal verbs
-print, so the
-browser and the terminal can't disagree about a number. There's no build
-step and no dependency, just three static files and a JSON API served by
-the standard library. It listens on 127.0.0.1 unless you pass `--host`
-(`QD_WEB_HOST`, `QD_WEB_PORT`; see *Sharing it on the network* below). It's read-only, except that "Floor plan"
-writes the overlay into qd's cache (never the store, which provost commits
-whole), as `qd floor` does.
-
-Over ssh to a jump host, forward the port. This is still the best way to
-reach it from elsewhere: nothing is exposed, and ssh does the encryption.
-
-```bash
-ssh -L 8100:127.0.0.1:8100 jumpbox qd web -n
-```
-
-### Sharing it on the network
-
-Listening anywhere but 127.0.0.1, localhost or ::1, `qd web` needs a token
-on every request, and turns away the Floor plan button's write:
-
-```bash
-qd web --host 0.0.0.0                       # makes a token and prints it once, in the link
-QD_WEB_TOKEN=... qd web --host 0.0.0.0      # or give one (16+ characters)
-qd web --host 0.0.0.0 --token-file ~/.qd-token \
-       --tls-cert cert.pem --tls-key key.pem   # https
-qd web --host 0.0.0.0 --allow-writes        # let Floor plan write into qd's cache
-```
-
-- **The token** is the printed link's `?token=...`. Opening the link stores it
-  in a cookie (HttpOnly, SameSite=Strict, Secure under https) and takes it
-  out of the address bar. A script sends `Authorization: Bearer TOKEN`. A
-  token you give (`QD_WEB_TOKEN`, or `--token-file`/`QD_WEB_TOKEN_FILE`, the
-  file's first line) is never printed, and no token is ever logged.
-- **Giving a token on 127.0.0.1 makes it required there too.** That is for
-  a login node, where 127.0.0.1 is shared by every user on it. With no token,
-  loopback works as it always has.
-- **Without `--tls-cert`** (`QD_WEB_TLS_CERT`, and `--tls-key`/`QD_WEB_TLS_KEY`
-  unless the key is in the same file) the token and the data cross the
-  network in the clear, and `qd web` says so when it starts.
-- **Read-only beyond this machine.** The overlay is the only thing the page
-  writes; `--allow-writes` lets it.
-
----
-
-## In a terminal: `qd view`
-
-A full-screen explorer for when there's no browser: the same views, keyed.
-
-```bash
-qd view                # everything in the store: Enter opens, ] [ page
-qd view latest         # open on the latest run (q: the store's contents)
-qd view f.csv          # a file, without filing it
-```
-
-With no RUN it opens on the store's contents: every run, newest first,
-then every dataset provost keeps there. Nothing has to be known by name.
-Open one and `]` / `[` page to the next and previous table, a run's tables
-in turn and then the next run's, on through the datasets; `}` / `{` skip a
-whole run. `q` goes back to the contents, on the one you were looking at.
-
-| Keys | |
-|---|---|
-| arrows, `j` `k`, PgUp/PgDn, Home/End, `0` `$` | move |
-| `s` / `S` | sort by this column (again: reverse) / descending |
-| `f` | filter: an expression, as `--where` takes one (Tab completes column names) |
-| `=` / `!` | keep / drop rows with this cell's value |
-| `u` / `F` | undo the last filter / clear every filter |
-| `/`, `n`, `N` | search |
-| `d` / `D` | this column in depth / every column described |
-| `c` | counts of each value and who holds it; Enter filters to one |
-| `g` | group by this column; Enter on a group filters to it |
-| `h`, `o`, `t` | histogram, outliers, trend |
-| `p` | pivot: `rows,cols[,values]` |
-| `x` | diff against another run (default: the last of the same thing) |
-| Enter | every field of the row, and the host's raw answer |
-| `]` / `[` | the next / previous table in the store |
-| `}` / `{` | the next / previous run (or dataset) |
-| `T`, `L` | another table of this run, everything in the store |
-| `e`, `r` | export this view to a file, reload from disk |
-| `-`, `*`, `w` | hide a column, show them all, widen one |
-| `?`, `q`, `Q` | help, back (from a table: to the contents), quit |
-
-The bottom line always has the current column's figures. A blank cell
-stays out of every one.
-
----
-
 ## On the floor plan
 
 ```bash
@@ -2902,6 +2671,237 @@ import pandas as pd
 df = pd.read_csv("run.csv")          # qd export latest -o run.csv
 df.groupby("rack")["mbps"].describe()   # blanks read as NaN: not measured
 ```
+
+---
+
+## What it keeps: provost's store
+
+qd keeps nothing of its own. What comes back is filed by
+[provost](https://github.com/MartinGallagher-code/provost), which turns
+command output into data and keeps it in git: every host's answer is a
+**capture** of its own (`provost source N` shows it exactly as it came
+back), opening with a `#%` line that says which run and which host it is.
+Where provost has `batch`, a whole run is one commit, the answers parsed in
+parallel, and `--context-columns` puts the host (and its rack, and the
+run) on every row, so `provost show NAME` says who said what without qd.
+An older provost files one capture at a time, one after another, and qd
+puts the host back from each capture's prologue just the same.
+
+Besides the answers, a run files two tables of qd's own:
+
+| Dataset | One row per | What |
+|---|---|---|
+| `qd.runs` | run | what ran, where, when, how many hosts answered |
+| `qd.hosts` | host and pass | status, rc, duration, stderr, whether it printed anything, and what its login shell printed before the command (`preamble`) |
+
+and qd puts them back together when you read a run: each host's status
+beside the rows provost parsed out of its answer, and a row for a host
+that printed nothing. Whichever store it is, `provost ls` there lists what
+qd filed.
+
+qd reads the store's files itself, as provost's store format spec
+([`docs/store-format.md`](https://github.com/MartinGallagher-code/provost/blob/main/docs/store-format.md))
+says a reader must: it refuses a store whose `.store_format` is newer than
+the formats it knows (1 to 4), takes a row's capture from `provenance.tsv`
+below format 4, reads a quoted `#%` value (`cc="gcc 13.2"`) as provost
+does, and turns `\t` and `\n` in a `meta.tsv` value back into a tab and a
+newline. A capture whose input was over provost's size cap is shown as
+what it is: the raw answer is labelled *truncated*, with the part parsed
+and where the whole input is kept (or that it is not to be found), and
+`qd split` compares hosts by the whole input where it is kept.
+
+### Who ran it
+
+Every run says who ran it and from where, so a fan-out is attributable
+after the fact. `qd log RUN` shows it, `qd log` lists the operator beside
+each run, and `qd web` puts it in the run's header.
+
+| `qd.runs` column | What | Recorded by |
+|---|---|---|
+| `operator` | `QD_OPERATOR`, else your login user | every run |
+| `operator_host` | the machine qd ran on | every run |
+| `ssh_user` | `--user`, else what your ssh config gives each host (`ssh -G`); hosts with users of their own give each, comma-separated | a fan-out |
+| `ssh_key` | the fingerprint of each key qd offered: the `-i` keys (or `IdentityFile`) in `--ssh`, else your agent's (`ssh-add -l`). Never the key itself | a fan-out |
+| `sudo` | `yes` or `no` | a fan-out |
+| `via` | how the hosts were reached: `ssh`, `srun`, `pdsh`, `clush` or `local` | a fan-out |
+| `sched_job` | the Slurm job `--via srun` ran in (each answer carries it as `sched.job`) | `--via srun` |
+
+Anything qd cannot find out is blank, never a guess: an ssh without `-G`
+(older than OpenSSH 6.8, or a wrapper), no `ssh-add` or an empty agent,
+or a key file `ssh-keygen` cannot read. Which of several offered keys a
+host accepted is not known without connecting, so `ssh_key` lists every
+one offered. With `--via` other than ssh, `ssh_user` is the `--user`
+given (pdsh's and clush's `-l`) or blank, and `ssh_key` is blank: their
+ssh is configured apart from qd's. Runs filed before 0.8.2 have none of
+these columns, and runs before 0.13.0 no `via` or `sched_job`; they show
+blank. qd also passes the operator to provost as `PROVOST_OPERATOR` (unless
+you set it yourself), for a provost that records it (PV-027); provost
+2.3.0 does not yet.
+
+### Named stores: `qd store`
+
+```bash
+qd store new lab               # ~/.local/share/quarterdeck/stores/lab
+qd store new bench --path /data/bench
+qd store use lab               # the store commands use from now on
+qd store ls                    # every store, its runs, which is active
+qd run -s hosts.txt --store bench -- uptime
+qd store rename lab lab-2026   # a store qd made moves with its name
+qd store rm bench              # forgotten; --delete deletes its files too
+qd store clear lab --yes       # empty it: every run and dataset goes
+```
+
+Which store a command uses, the first of these that applies:
+
+1. `--store NAME` or `--store DIR`: a store's name, or a directory as
+   before, so existing scripts keep working.
+2. `QD_STORE`: a name or a directory.
+3. provost's own explicit choice: `PROVOST_WORKSPACE`, or the controlled
+   directory you are in (`provost control`). qd and provost never disagree
+   about where you are.
+4. The active store: `qd store use NAME`, kept in
+   `~/.config/quarterdeck/config.json`.
+5. provost's default, `PROVOST_HOME` or `~/.provost`, with a warning that
+   no store is active.
+
+Once provost's default store exists, qd registers it as `default`, and
+makes it the active store if none is. So a machine that used qd before
+stores had names keeps working without a step. `qd log`, `show`, `view`,
+`compare`, `diff`, `stats` and the rest all read the store chosen this way.
+`qd web` has a picker for the named stores.
+
+**Moving a store between machines**:
+
+```bash
+qd store export lab lab.tgz    # NAME is optional: the store in use
+qd store import lab.tgz --as lab-from-rig2
+```
+
+An export is one archive: the store whole, with its git history and every
+raw answer under `captures/`. First comes a manifest: qd's and provost's
+versions, the store format, the run count and a sha256 for every file. The
+export takes provost's own store lock, so it refuses while a run is filing,
+and no run starts filing until the archive is written. (A run that finishes
+during a long export waits up to provost's lock timeout, 30 s.)
+
+An input over provost's size cap (`PROVOST_MAX_INPUT`, provost 2.15.0 on)
+is filed truncated: the store holds the part provost parsed, and the whole
+input is kept outside its git history, beside it, as `STORE.artifacts/SHA256`.
+An export carries those kept inputs too, under `artifacts/` (provost's own
+`export` does not), and an import puts them beside the new store, as
+`NAME.artifacts`. An archive with any is version 2, which a qd before
+0.18.0 refuses by its version; one with none is version 1, as before.
+
+An import checks the manifest, every checksum, that nothing is missing or
+added, and that this qd reads the store format. It refuses a member that
+would land outside the store, and a link or a device. Only then is the
+store given its name. It refuses a name that is taken: it never merges
+into an existing store.
+
+**A store on another machine**:
+
+```bash
+qd store new wr01 --remote wr01:~/.provost     # [USER@]HOST:PATH, as scp takes it
+qd web --store wr01                            # or log, show, view, compare, diff
+qd log --store wr01 --no-fetch                 # the copy as it is, offline
+```
+
+A remote store is read from a copy here, in
+`~/.cache/quarterdeck/remotes/NAME`. The copy is shallow: it holds the
+store as it is now, with no history, and no read needs history. `qd store
+new` makes the copy at once, so a store that cannot be reached is reported
+straight away.
+
+- **Fetching:** before a command reads the store, qd fetches what is new
+  over the same ssh `qd run` uses (`QD_SSH`, `QD_SSH_USER` unless the spec
+  names a user, your keys, your jump hosts),
+  at most once every `QD_REMOTE_REFRESH` seconds (30). `qd web` fetches the
+  same way while the page is open, so new runs show without a restart, and
+  its store picker lists the remote store with its host.
+- **SHA-256 stores:** a store made in git's SHA-256 object format
+  (`provost init --object-format sha256`) is read the same way; its copy
+  is made in that format too, which needs git 2.29 or newer here. A store
+  remade in the other format since its copy was made gets a new copy, said
+  on stderr; the old copy is read until the new one is in place.
+- **An unreachable host:** qd reads the last copy and says how old it is.
+  It does not try that host again until `QD_REMOTE_REFRESH` has passed.
+- **Writing is refused:** nothing files into a copy, because the copy would
+  then differ from the store. `qd run`, `do`, `import`, `probe`, `rm`,
+  `store clear`, and a campaign's or design's runs are refused before they
+  contact a host, with the `ssh HOST qd ...` that does it where the store
+  is.
+- **Another user's store:** if the store belongs to another user on that
+  machine, git refuses to read it. qd says so, with the `git config
+  --global --add safe.directory PATH` to run there.
+- **Renaming and removing:** `qd store rename` moves the copy with the
+  name. `qd store rm` deletes the copy and leaves the store on the other
+  machine as it was.
+
+Every way to name a run (`latest`, `latest~1`, `prev`, an id or part of
+one, a run's name, `ds:NAME`, `RUN:TABLE`, a file, `RUN@STORE`) is set
+out, with an example each, in
+[Concepts: Naming a run](docs/concepts.md#naming-a-run).
+`qd log` lists the runs and `qd log RUN` describes one.
+
+**Runs from different stores side by side**: add `@STORE` to a reference
+and it is read in that registered store, whatever `--store` says, so two
+labs' or two machines' runs are compared without exporting one store into
+the other:
+
+```bash
+qd diff kernel@wr01 kernel@wr02          # the same probe, two machines' stores
+qd diff kernel@wr01                      # against the run before it in wr01
+qd compare facts@lab facts@bench -c cpu.busy_pct
+qd compare facts --last 5@lab            # five runs, all of them lab's
+qd show latest:hosts@wr01
+qd view latest@wr02
+```
+
+- **Which commands:** every one that reads a run -- `show`, `stats`,
+  `freq`, `hist`, `outliers`, `pivot`, `trend`, `export`, `floor`, `log
+  RUN`, `diff`, `compare`, `view` -- and the Diff and Compare tabs of `qd
+  web`. Commands that file or delete (`run`, `do`, `import`, `probe`, `rm`,
+  ...) take no `@STORE`: they use `--store`, as before.
+- **Only a registered name** (`qd store ls`), never a directory: a
+  directory is `--store`'s job. A name that is not registered is an error
+  that lists the stores, never a quiet fallback to `--store`. A file or
+  directory whose name has an `@` in it is still read as a file.
+- **Where it splits:** on the last `@`, which is in no run id or provost
+  dataset name. A table goes before it: `latest:hosts@wr01`.
+- **Remote stores** are read like any other: the copy is fetched as
+  `--store` would fetch it, and once per command however many references
+  name that store.
+- **Reports say where each side came from:** a run from a store other
+  than the command's own is shown as `RUN@STORE` in report headers and in
+  `compare`'s list of runs, since the same run id can be in two stores.
+  Paste it back and it reads the same run.
+- **Different fleets:** `compare` matches hosts by name, so a host one
+  store measured and the other did not is blank on the other side (not
+  measured), never zero.
+
+**Deleting**:
+
+```bash
+qd rm latest~1                 # says what would go, and deletes nothing
+qd rm latest~1 kernel --yes    # those runs: answers, tables, their rows
+qd rm ds:loose --yes           # a whole dataset, every run's rows in it
+qd store clear lab --yes       # everything in the store
+```
+
+`qd rm` and `qd store clear` first list what would go, and delete nothing
+without `--yes`. Then provost deletes it, as one commit, so the store's git
+history keeps what was there. A run goes whole: every host's answer and
+every table it filed, from whichever datasets they are in (other runs'
+rows in those datasets stay), and its rows in `qd.runs` and `qd.hosts`.
+qd's own records (`qd.runs`, `qd.hosts`, `qd.campaigns`, `qd.designs`,
+`qd.peers`, `qd.baselines`) are never deleted whole by `qd rm`. A run that was part of a campaign is said,
+with the `qd campaign retry` that runs that part again.
+
+Deleting one run needs `provost rm --capture`, which is newer than provost
+2.2.0. An older provost is refused with that reason, and the store is left
+as it was. `qd store clear` and `qd rm ds:NAME` work with any provost.
+`qd store clear` keeps the history; for a store with none, `qd store rm
+NAME --delete` and then `qd store new NAME`.
 
 ---
 

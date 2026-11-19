@@ -173,7 +173,7 @@ t_pointers_and_the_page() {
     assert_contains "$(sed -n '/^qd freq latest A /,/^---/p' "$readme")" \
         "provost names a field it found no"
     assert_not_contains "$(cat "$readme")" "| Reference | Means |"
-    assert_contains "$(sed -n '/^### Named stores/,/^## Running/p' "$readme")" \
+    assert_contains "$(sed -n '/^### Named stores/,/^## Conventions/p' "$readme")" \
         "(docs/concepts.md#naming-a-run)"
     [ "$(wc -l < "$PAGE")" -le 150 ] || fail "the page is over 150 lines"
     awk '/^```text/{f=1; next} /^```/{f=0} f && length($0) > 60 {

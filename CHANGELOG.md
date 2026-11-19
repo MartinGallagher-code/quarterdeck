@@ -5,6 +5,26 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.46.3 — 2026-11-19
+
+The README's everyday read commands now come right after `qd run` and
+`qd probe`, ahead of the specialist sections (QD-048). A pure move of whole
+sections: no heading or prose changed but one cross-reference.
+
+### Changed
+- **README:** the H2 sections now run: the introduction and "Thirty
+  seconds"; `qd run`, `qd ask`, `qd probe`; "Reading it back"; `qd view`,
+  `qd web`; `qd compare`; then the specialist sections in their old order
+  (`qd split`, `qd coverage`, `qd campaign`, `qd peers`/`qd baseline`,
+  `qd check`, `qd report`, `qd doe`, `qd do`, `qd join`, the floor plan,
+  Splunk/Prometheus/notebook); "What it keeps: provost's store", with Named
+  stores; Conventions, At scale, Exit status; Tests, Working on quarterdeck;
+  Related, License. The sorted lines before and after differ in one line:
+  `qd compare`'s "(next section)" for the Mann-Whitney test, now "(*Peer
+  groups and qualified baselines*, below)".
+- **tests/test_concepts.sh:** the Named stores excerpt ends at
+  "## Conventions", the section that now follows it.
+
 ## 0.46.1 — 2026-11-19
 
 Every use of column `A` in the docs and help now says what it is: provost's
