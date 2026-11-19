@@ -32,6 +32,19 @@ is not measured.  Against a qualified baseline of three runs or more, and
 three values or more for a host in the run, the Mann-Whitney U test with
 Holm's adjustment (as `qd compare --baseline NAME` makes it) must also
 find the difference significant before a crossed limit fails.
+
+`cv`, `skew`, `kurtosis` and `zmax` (QD-050) are unitless figures of the
+rows' spread and shape (stats.shape); zmax is qd outliers' robust z.  A
+limit on one takes no unit, and one that cannot be had is not measured.
+
+A `weight` column (QD-051) weighs a requirement for --rule's weighted()
+(rule.py); blank is 1.
+
+`op manual` (QD-052) is a requirement nothing measures: a person's pass or
+fail for it comes from a manual file (`qd check --manual FILE`) of `req`,
+`verdict`, `by` [`date`, `where`, `note`].  Without a result it is not
+measured; with one, its verdict is like any other, so waivers, --rule,
+--each and every format take it as they take a measured one.
 """
 
 import datetime
@@ -44,15 +57,20 @@ from .table import load_file, slug, split_unit, to_base, unit_family
 PASS, FAIL, UNMEASURED = "pass", "fail", "not measured"
 WAIVED, UNEXPECTED = "waived", "unexpected pass"
 VERDICTS = (PASS, FAIL, UNMEASURED, WAIVED, UNEXPECTED)
-OPS = ("<", "<=", ">", ">=", "==", "!=", "in", "between", "within")
+OPS = ("<", "<=", ">", ">=", "==", "!=", "in", "between", "within",
+       "manual")
 REQUIRED = ("req", "column", "op", "limit")
-OPTIONAL = ("limit2", "where", "agg", "unit", "note", "severity")
+OPTIONAL = ("limit2", "where", "agg", "unit", "note", "severity", "weight")
 # InSpec's words, least to most; its impact numbers map onto them
 SEVERITIES = ("info", "low", "medium", "high", "critical")
 WAIVER_REQUIRED = ("req", "justification")
 WAIVER_OPTIONAL = ("expires", "where", "expect", "granted_by")
+MANUAL_REQUIRED = ("req", "verdict", "by")
+MANUAL_OPTIONAL = ("date", "where", "note")
+# spread and shape (QD-050): unitless, so a limit on them takes no unit
+SHAPE_AGGS = ("cv", "skew", "kurtosis", "zmax")
 NUMERIC_AGGS = ("mean", "median", "min", "max", "sum", "stdev", "range",
-                "p05", "p25", "p75", "p95", "p99")
+                "p05", "p25", "p75", "p95", "p99") + SHAPE_AGGS
 AGGS = ("each",) + NUMERIC_AGGS
 
 
@@ -175,8 +193,9 @@ def parse_relative(text):
 
 class Check(object):
     def __init__(self, line, req, column, op, limit, limit2="", where="",
-                 agg="", unit="", note="", severity=""):
+                 agg="", unit="", note="", severity="", weight=None):
         self.line = line
+        self.weight = weight      # --rule's weighted(); None when blank
         self.req = req
         self.column = column
         self.op = op
@@ -207,6 +226,8 @@ class Check(object):
                 self.lo, self.hi, self.tol_shown = b
 
     def limit_text(self):
+        if self.op == "manual":
+            return "manual"
         if self.op == "between":
             return "between %s and %s" % (self.limit, self.limit2)
         if self.op == "within":
@@ -236,19 +257,30 @@ def read_thresholds(path):
     if extra:
         die("%s: unknown column %s (want %s)" % (
             path, ", ".join(extra), ", ".join(REQUIRED + OPTIONAL)), 2)
-    out, seen = [], {}
+    out, seen, weights = [], {}, {}
     for n, r in enumerate(t.rows, 1):
         d = dict((c, v.strip()) for c, v in zip(cols, r))
         if not any(d.values()):
             continue
         where = "%s, check %d (%s)" % (path, n, r[0].strip() or "no req")
+        manual = (d.get("op") or "").lower() == "manual"
         for c in REQUIRED:
-            if not d.get(c):
+            # a manual requirement has nothing to read and no limit
+            if not d.get(c) and not (manual and c in ("column", "limit")):
                 die("%s: %s is blank" % (where, c), 2)
         op = d["op"].lower()
         if op not in OPS:
             die("%s: unknown op %r (want %s)" % (where, d["op"],
                                                   ", ".join(OPS)), 2)
+        if manual:
+            for c in ("limit", "limit2", "unit"):
+                if d.get(c):
+                    die("%s: op manual takes no %s (%r): a person decides "
+                        "it; say what is wanted in note" % (where, c, d[c]),
+                        2)
+            if (d.get("agg") or "each").lower() != "each":
+                die("%s: op manual takes no agg (%r): a person's result "
+                    "is for each row it covers" % (where, d["agg"]), 2)
         agg = (d.get("agg") or "each").lower()
         if agg not in AGGS:
             die("%s: unknown agg %r (want %s)" % (where, d["agg"],
@@ -288,6 +320,26 @@ def read_thresholds(path):
         if agg != "each" and op in ("in",):
             die("%s: %s over hosts gives a number; `in` wants words"
                 % (where, agg), 2)
+        if agg in SHAPE_AGGS:
+            unit = _unit_on_shape(d, op, rel)
+            if unit:
+                die("%s: %s is unitless, so its limit takes no unit (%s)"
+                    % (where, agg, unit), 2)
+        weight = None
+        if d.get("weight"):
+            try:
+                weight = float(d["weight"])
+            except ValueError:
+                weight = -1.0
+            if not weight >= 0 or weight == float("inf"):
+                die("%s: weight %r is not a number 0 or more" % (
+                    where, d["weight"]), 2)
+            if d["req"] in weights and weights[d["req"]][0] != weight:
+                die("%s: weight %s, but check %d gives %s weight %s; a "
+                    "requirement has one weight" % (
+                        where, d["weight"], weights[d["req"]][1], d["req"],
+                        weights[d["req"]][2]), 2)
+            weights[d["req"]] = (weight, n, d["weight"])
         if d.get("where"):
             try:
                 query.parse(d["where"])
@@ -300,10 +352,46 @@ def read_thresholds(path):
         seen[(d["req"], d["column"], d.get("where", ""), agg)] = n
         out.append(Check(n, d["req"], d["column"], op, d["limit"],
                          d.get("limit2", ""), d.get("where", ""), agg,
-                         d.get("unit", ""), d.get("note", ""), sev))
+                         d.get("unit", ""), d.get("note", ""), sev,
+                         weight))
     if not out:
         die("%s holds no checks" % path, 2)
     return out
+
+
+def req_weights(checks):
+    """Each requirement's weight for --rule's weighted(): the one its
+    rows give (read_thresholds refuses two), 1 when every row is blank."""
+    out = {}
+    for c in checks:
+        if c.weight is not None:
+            out[c.req] = c.weight
+        else:
+            out.setdefault(c.req, 1.0)
+    return out
+
+
+def _unit_on_shape(d, op, rel):
+    """What gives a unit to a limit on cv, skew, kurtosis or zmax, or "".
+    A percentage of the baseline, or a within tolerance in percent, is
+    not a unit: it is a share of the figure."""
+    if d.get("unit"):
+        return "unit %s" % d["unit"]
+    for k in ("limit", "limit2"):
+        text = d.get(k, "")
+        if k == "limit2" and op != "between":
+            if op == "within":
+                tol = parse_tolerance(text) or ()
+                if any(part[2] for part in tol[:2]):
+                    return "limit2 %s" % text
+            continue
+        r = rel.get(k)
+        if isinstance(r, tuple):
+            if r[3]:
+                return "%s %s" % (k, text)
+        elif split_unit(text)[1]:
+            return "%s %s" % (k, text)
+    return ""
 
 
 class Waiver(object):
@@ -388,6 +476,188 @@ def read_waivers(path, checks):
     if not out:
         die("%s holds no waivers" % path, 2)
     return out
+
+
+# ---------------------------------------------------------------------------
+# A person's results, for requirements nothing measures (QD-052)
+# ---------------------------------------------------------------------------
+
+_TIME_RE = re.compile(r"^(\d{2}):(\d{2})(?::(\d{2}))?(Z|[+-]\d{2}:?\d{2})?$")
+
+
+def decided_on(text):
+    """The day of a manual result's date: YYYY-MM-DD, or that with a
+    time after T or a space (HH:MM[:SS], and Z or an offset); None when
+    it is neither."""
+    t = (text or "").strip()
+    day, rest = t[:10], t[10:]
+    d = _date(day) if len(day) == 10 else None
+    if d is None:
+        return None
+    if not rest:
+        return d
+    if rest[0] not in "T ":
+        return None
+    m = _TIME_RE.match(rest[1:])
+    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59 or \
+            int(m.group(3) or 0) > 59:
+        return None
+    return d
+
+
+class Manual(object):
+    """One line of a manual file: a person's pass or fail for a manual
+    requirement, who decided it, when, and for which rows."""
+
+    def __init__(self, line, req, verdict, by, date="", where="", note=""):
+        self.line = line
+        self.req = req
+        self.verdict = verdict
+        self.by = by
+        self.date = date
+        self.where = where
+        self.note = note
+
+    def day(self):
+        return decided_on(self.date) if self.date else None
+
+
+def read_manual(path, checks):
+    """The results in a manual file, a list in file order.  Exit 2 naming
+    the line that is wrong: a req no manual check has (a typo would
+    decide nothing, and a measured check is not a person's to decide), a
+    verdict other than pass or fail, a blank by, a date qd cannot read.
+    A `where` that is one bare word is a host: `n4` is `host=n4`."""
+    import os
+    if not os.path.isfile(path):
+        die("no such manual file: %s" % path, 2)
+    try:
+        t = load_file(path, fmt="table")[0]
+    except (IOError, OSError, UnicodeDecodeError) as exc:
+        die("cannot read %s: %s" % (path, exc), 2)
+    cols = [c.strip().lower() for c in t.columns]
+    missing = [c for c in MANUAL_REQUIRED if c not in cols]
+    if missing:
+        die("%s: the header needs %s (it has %s)" % (
+            path, ", ".join(missing), ", ".join(t.columns) or "nothing"), 2)
+    extra = [c for c in cols if c not in MANUAL_REQUIRED + MANUAL_OPTIONAL]
+    if extra:
+        die("%s: unknown column %s (want %s)" % (
+            path, ", ".join(extra),
+            ", ".join(MANUAL_REQUIRED + MANUAL_OPTIONAL)), 2)
+    manual = set(c.req for c in checks if c.op == "manual")
+    measured = set(c.req for c in checks if c.op != "manual")
+    out = []
+    for n, r in enumerate(t.rows, 1):
+        d = dict((c, v.strip()) for c, v in zip(cols, r))
+        if not any(d.values()):
+            continue
+        where = "%s, result %d (%s)" % (path, n, d.get("req") or "no req")
+        for c in MANUAL_REQUIRED:
+            if not d.get(c):
+                die("%s: %s is blank" % (where, c), 2)
+        if d["req"] not in manual:
+            if d["req"] in measured:
+                die("%s: %s is measured, not manual: a person's result "
+                    "goes to a check with op manual" % (where, d["req"]), 2)
+            die("%s: no check has req %s, so it would decide nothing" % (
+                where, d["req"]), 2)
+        verdict = d["verdict"].lower()
+        if verdict not in (PASS, FAIL):
+            die("%s: verdict %r: want pass or fail" % (where, d["verdict"]),
+                2)
+        if d.get("date") and decided_on(d["date"]) is None:
+            die("%s: date %r is not a date (YYYY-MM-DD, or with a time: "
+                "YYYY-MM-DDTHH:MM)" % (where, d["date"]), 2)
+        w = d.get("where", "")
+        if w and re.match(r"^[A-Za-z0-9_.:-]+$", w) and \
+                "=" not in w and w.lower() not in ("and", "or", "not"):
+            w = "host=" + w
+        if w:
+            try:
+                query.parse(w)
+            except QdError as exc:
+                die("%s: where %r: %s" % (where, d["where"], exc), 2)
+        out.append(Manual(n, d["req"], verdict, d["by"], d.get("date", ""),
+                          w, d.get("note", "")))
+    if not out:
+        die("%s holds no results" % path, 2)
+    return out
+
+
+def run_manual(table, chk, manual):
+    """A manual check: each row of the check is what the results that
+    cover it say (a fail among them wins), and not measured when none
+    does.  Without results, every row is not measured."""
+    rows = table.rows
+    if chk.where:
+        try:
+            rows = query.where(table, [chk.where])
+        except QdError as exc:
+            return Result(chk, note="where %s: %s" % (chk.where, exc))
+    if not rows:
+        return Result(chk, note="no rows where %s" % chk.where if
+                      chk.where else "no rows")
+    pos = dict((id(r), n) for n, r in enumerate(table.rows, 1))
+    labels = [_label(table, r, pos[id(r)]) for r in rows]
+    mine = [m for m in (manual or []) if m.req == chk.req]
+    if not mine:
+        per = [(lb, "", UNMEASURED) for lb in labels]
+        res = Result(chk, "", UNMEASURED, 0, len(per), "",
+                     "manual: no result given for it (--manual FILE)", per)
+        res.src = list(rows)
+        return res
+    notes, cover = [], []
+    for m in mine:
+        c = _covered(table, m, rows)
+        if c is None:
+            notes.append("result %d: where %s cannot be read here" % (
+                m.line, m.where))
+            continue
+        cover.append((m, c))
+    per, row_manual, split = [], {}, []
+    for i, (lb, r) in enumerate(zip(labels, rows)):
+        got = [m for m, c in cover if id(r) in c]
+        if not got:
+            per.append((lb, "", UNMEASURED))
+            continue
+        fails = [m for m in got if m.verdict == FAIL]
+        v = FAIL if fails else PASS
+        if fails and len(fails) < len(got):
+            split.append(lb)
+        row_manual[i] = fails or got
+        per.append((lb, "manual " + v, v))
+    if split:
+        notes.append("results disagree on %s: the fail stands" % _names(
+            [(x,) for x in split]))
+    measured = sum(1 for p in per if p[2] != UNMEASURED)
+    res = Result(chk, "", PASS, measured, len(per), "", "", per)
+    res.src = list(rows)
+    res.margins = [None] * len(per)
+    _each_verdict(res)
+    res.row_manual = row_manual
+    res.manual_note = "; ".join(notes)
+    return res
+
+
+def _manual_late(results, run_day):
+    """Name the results dated before the run they decide (QD-052): a
+    manual file kept from an earlier run would otherwise pass this one
+    unremarked.  They are warned of, not refused: an inspection is often
+    made the day before."""
+    for r in results:
+        late = []
+        for ms in getattr(r, "row_manual", {}).values():
+            for m in ms:
+                d = m.day()
+                if d is not None and d < run_day and m not in late:
+                    late.append(m)
+        if late:
+            r.manual_note = "; ".join(x for x in (
+                getattr(r, "manual_note", ""),
+                "decided %s, before the run (%s)" % (
+                    ", ".join(sorted(set(m.date[:10] for m in late))),
+                    run_day.isoformat())) if x)
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +819,9 @@ def _label(table, row, n):
     return "row %d" % n
 
 
-def run_check(table, chk, ref=None):
+def run_check(table, chk, ref=None, manual=None):
+    if chk.op == "manual":
+        return run_manual(table, chk, manual)
     if not table.has(chk.column):
         return Result(chk, note="no column %s" % chk.column)
     rows = table.rows
@@ -562,6 +834,8 @@ def run_check(table, chk, ref=None):
         return Result(chk, note="no rows where %s" % chk.where)
     if chk.relative:
         return run_relative(table, chk, rows, ref)
+    if chk.agg in SHAPE_AGGS:
+        return run_shape(table, chk, rows)
     scale = Scale(table, chk)
     if scale.problem:
         return Result(chk, total=len(rows), note="unit mismatch: " +
@@ -684,15 +958,184 @@ def _closest(per, margins):
     return min(pairs, key=lambda x: x[0])[1]
 
 
-def run(table, checks, waivers=None, today=None, ref=None):
+# ---------------------------------------------------------------------------
+# Spread and shape over the rows (QD-050)
+# ---------------------------------------------------------------------------
+
+class _Plain(object):
+    """The footing of a unitless figure: numbers as they are, an offset
+    from the baseline in no unit at all."""
+    own = ""
+
+    def amount(self, amount, unit):
+        return None if unit else amount
+
+    def show(self, v):
+        return stats.fmt_num(v)
+
+
+def _shape_of(sub, col, agg):
+    """(figure, why not, a note, {row index: robust z}) over the table
+    `sub`.  zmax is taken by qd outliers' own reading: outliers() with
+    its default per (each host's median when hosts repeat), so the two
+    agree on the worst host and its score."""
+    nums = sub.numbers(col)
+    if agg != "zmax":
+        fig, why = stats.shape(agg, [v for v in nums if v is not None])
+        return fig, why, "", {}
+    per = stats.default_per(sub, col)
+    hits, info = stats.outliers(sub, col, per, z=0.0)
+    need = dict(stats.SHAPE_MIN)["zmax"]
+    who = "hosts" if per else "values"
+    if info["n"] < need:
+        return None, "zmax wants %d %s or more, and has %d" % (
+            need, who, info["n"]), "", {}
+    if not info["mad"]:
+        return None, "the MAD is 0 (most %s are the same), so there is no " \
+            "robust z; qd outliers lists every one that differs" % who, \
+            "", {}
+    med, mad = info["median"], info["mad"]
+    by = {}
+    if per:
+        ki = sub.index(per)
+        for r, v in zip(sub.rows, nums):
+            if v is not None:
+                by.setdefault(r[ki], []).append(v)
+        by = dict((k, stats.quantile(sorted(xs), .5)) for k, xs in
+                  by.items())
+    zs = {}
+    for i, (r, v) in enumerate(zip(sub.rows, nums)):
+        if v is None:
+            continue
+        x = by[r[sub.index(per)]] if per else v
+        zs[i] = stats.robust_z(x, med, mad)
+    if not hits:
+        return 0.0, "", "no value off the median %s" % stats.fmt_num(med), zs
+    key, _, _, _, score, _ = hits[0]
+    note = "worst |z|: %s (robust z %s; median %s, MAD %s%s)" % (
+        key, stats.outlier_cells([hits[0]])[0][3], stats.fmt_num(med),
+        stats.fmt_num(mad), ", per %s" % per if per else "")
+    return abs(score), "", note, zs
+
+
+def _plain_limits(chk):
+    num = lambda t: split_unit(t)[0]
+    if chk.op == "between":
+        return num(chk.limit), num(chk.limit2)
+    if chk.op == "within":
+        return num(chk.lo), num(chk.hi)
+    return num(chk.limit), None
+
+
+def run_shape(table, chk, rows, ref=None, side=None):
+    """A cv, skew, kurtosis or zmax check.  They are unitless: the cells
+    are read on one scale, as qd outliers reads them, and the figure is
+    shown as it is.  With ref and side (the run's numbers on the
+    baseline's footing, the baseline's column, rows and key), the limit
+    is relative to the same figure over the baseline's rows of the same
+    hosts."""
+    from .compare import pct
+    sub = table.derive(rows=list(rows))
+    col = sub.colname(chk.column)
+    nums = sub.numbers(col)
+    pos = dict((id(r), n) for n, r in enumerate(table.rows, 1))
+    labels = [_label(table, r, pos[id(r)]) for r in rows]
+    cells = [r[table.index(chk.column)].strip() for r in rows]
+    measured = sum(1 for v in nums if v is not None)
+    blank = [lb for lb, v in zip(labels, nums) if v is None]
+    fig, why, worst, zs = _shape_of(sub, col, chk.agg)
+    foot = _Plain()
+    notes, extra = [], {}
+    lims = None
+    if fig is not None and chk.relative:
+        bnums, bcol, brows, kc = side
+        # zmax over hosts that repeat is over each host's median, on
+        # both sides, as qd outliers takes it
+        bvals, notes, missing = _baseline_values(
+            table, chk, rows, bnums, ref, bcol, brows, kc,
+            chk.agg == "zmax" and stats.default_per(sub, col) is not None)
+        bfig = None
+        if missing:
+            why = missing
+        elif not bvals:
+            why = "%s measured no %s" % (ref.describe(), chk.column)
+        else:
+            bfig, bwhy = stats.shape(chk.agg, bvals)
+            if bfig is None:
+                why = "in %s: %s" % (ref.describe(), bwhy)
+        if bfig is not None:
+            lims = resolve(chk, bfig, foot)
+            if lims is None:
+                why = "the limit's unit does not fit %s" % chk.agg
+            else:
+                extra = dict(base_shown=foot.show(bfig),
+                             drift=_pct_text(pct(bfig, fig)),
+                             limit_shown=_resolved_text(chk, lims, foot))
+        if ref.bl is None:
+            notes.append(_how(ref, 0, 0))
+        if why:
+            fig = None
+    elif fig is not None:
+        lims = _plain_limits(chk)
+
+    def obs_of(i):
+        if chk.agg == "zmax" and i in zs and fig is not None:
+            return stats.fmt_num(zs[i])
+        return cells[i]
+
+    if fig is None:
+        per = [(lb, obs_of(i), UNMEASURED) for i, lb in enumerate(labels)]
+        note = why + ("; not measured: %s" % ", ".join(blank[:5])
+                      if blank else "")
+        res = Result(chk, "", UNMEASURED, measured, len(per), "",
+                     "; ".join(x for x in [note] + notes if x), per)
+        for k, v in extra.items():
+            setattr(res, k, v)
+        return res
+    ok = compare(chk.op, fig, lims[0], lims[1])
+    per = []
+    for i, (lb, v) in enumerate(zip(labels, nums)):
+        if v is None:
+            per.append((lb, cells[i], UNMEASURED))
+        elif chk.agg == "zmax":
+            per.append((lb, obs_of(i), PASS if compare(
+                chk.op, abs(zs[i]), lims[0], lims[1]) else FAIL))
+        else:
+            per.append((lb, cells[i], PASS if ok else FAIL))
+    if measured < len(per):
+        res = Result(chk, foot.show(fig), UNMEASURED, measured, len(per), "",
+                     "%s over %d of %d (%s would %s); not measured: %s" % (
+                         chk.agg, measured, len(per), chk.agg,
+                         "pass" if ok else "fail", ", ".join(blank[:5])),
+                     per)
+    else:
+        res = Result(chk, foot.show(fig), PASS if ok else FAIL, measured,
+                     len(per), "", "", per)
+        res.src = list(rows)
+    res.note = "; ".join(x for x in [res.note, worst] + notes if x)
+    for k, v in extra.items():
+        setattr(res, k, v)
+    return res
+
+
+def run(table, checks, waivers=None, today=None, ref=None, manual=None,
+        run_day=None):
     """Every check's Result.  ref (a Reference) is what limits relative to
-    the baseline are held to; without one they are not measured."""
-    out = [run_check(table, c, ref) for c in checks]
+    the baseline are held to; without one they are not measured.  manual
+    is the people's results for the manual checks, folded in before the
+    waivers are, so a waiver excuses a manual fail as any other; run_day
+    (a date) names the results dated before it."""
+    out = [run_check(table, c, ref, manual) for c in checks]
+    if run_day is not None:
+        _manual_late(out, run_day)
     if waivers:
         for r in out:
             mine = [w for w in waivers if w.req == r.chk.req]
             if mine:
                 apply_waivers(table, r, mine, today)
+    for r in out:
+        if getattr(r, "manual_note", ""):
+            r.note = "; ".join(x for x in (r.note, r.manual_note) if x)
     return out
 
 
@@ -1029,6 +1472,8 @@ def run_relative(table, chk, rows, ref):
     if chk.agg == "each":
         return _relative_each(table, chk, rows, nums, ref, col, brows, kc,
                               foot, pct)
+    if chk.agg in SHAPE_AGGS:
+        return run_shape(table, chk, rows, ref, (nums, col, brows, kc))
     return _relative_agg(table, chk, rows, nums, ref, col, brows, kc, foot,
                          pct)
 
@@ -1115,8 +1560,41 @@ def _relative_each(table, chk, rows, nums, ref, col, brows, kc, foot, pct):
     return res
 
 
-def _relative_agg(table, chk, rows, nums, ref, col, brows, kc, foot, pct):
+def _baseline_values(table, chk, rows, nums, ref, col, brows, kc,
+                     per_host=False):
+    """(the baseline's values a figure over the run's rows is held to,
+    notes, why not): the baseline's rows of the same hosts (each host's
+    median of them, with per_host), or each host's median over a
+    qualified baseline's runs.  `why not` is set when the baseline lacks
+    some of the hosts."""
     from . import baseline as blmod
+    notes = []
+    if isinstance(kc, str):
+        bvals = [v for _, v in brows if v is not None]
+        notes.append("the baseline's rows are not matched host by host: "
+                     + kc)
+        return bvals, notes, ""
+    keys = set(k for k, _, _ in _keyed(table, rows, kc, nums))
+    base = _ref_by_key(ref, col, brows, kc)
+    missing = sorted(",".join(k) for k in keys if k not in base)
+    if missing:
+        return [], notes, "%d not in %s, so the %s would be over other " \
+            "hosts: %s" % (len(missing), ref.describe(), chk.agg,
+                           _names([(x,) for x in missing]))
+    if ref.bl is not None:
+        bvals = [blmod.median(base[k]) for k in keys]
+        notes.append("the %s of each host's median over the baseline's "
+                     "runs; no rank test for a figure over hosts" % chk.agg)
+    elif per_host:
+        bvals = [base[k][0] for k in keys]
+    else:
+        bki = [ref.table.index(k) for k in kc]
+        bvals = [v for r, v in brows if v is not None and
+                 tuple(r[i].strip() for i in bki) in keys]
+    return bvals, notes, ""
+
+
+def _relative_agg(table, chk, rows, nums, ref, col, brows, kc, foot, pct):
     # each row's verdict is against the limit the aggregate is held to,
     # once that is known; until then none is measured
     per = [(_label(table, r, n), foot.show(v) if v is not None else "",
@@ -1126,30 +1604,11 @@ def _relative_agg(table, chk, rows, nums, ref, col, brows, kc, foot, pct):
         return Result(chk, "", UNMEASURED, 0, len(per), foot.own,
                       "nothing numeric to take the %s of" % chk.agg, per)
     agg = stats.AGGS[chk.agg]([repr(v) for v in vals])
-    notes = []
-    if isinstance(kc, str):
-        bvals = [v for _, v in brows if v is not None]
-        notes.append("the baseline's rows are not matched host by host: "
-                     + kc)
-    else:
-        keys = set(k for k, _, _ in _keyed(table, rows, kc, nums))
-        base = _ref_by_key(ref, col, brows, kc)
-        missing = sorted(",".join(k) for k in keys if k not in base)
-        if missing:
-            return Result(chk, foot.show(agg), UNMEASURED, len(vals),
-                          len(per), foot.own, "%d not in %s, so the %s "
-                          "would be over other hosts: %s" % (
-                              len(missing), ref.describe(), chk.agg,
-                              _names([(x,) for x in missing])), per)
-        if ref.bl is not None:
-            bvals = [blmod.median(base[k]) for k in keys]
-            notes.append("the %s of each host's median over the baseline's "
-                         "runs; no rank test for a figure over hosts"
-                         % chk.agg)
-        else:
-            bki = [ref.table.index(k) for k in kc]
-            bvals = [v for r, v in brows if v is not None and
-                     tuple(r[i].strip() for i in bki) in keys]
+    bvals, notes, missing = _baseline_values(table, chk, rows, nums, ref,
+                                             col, brows, kc)
+    if missing:
+        return Result(chk, foot.show(agg), UNMEASURED, len(vals), len(per),
+                      foot.own, missing, per)
     if not bvals:
         return Result(chk, foot.show(agg), UNMEASURED, len(vals), len(per),
                       foot.own, "%s measured no %s" % (ref.describe(),
@@ -1221,13 +1680,16 @@ EACH_COLUMNS = ["req", "row", "column", "observed", "limit", "unit",
 SEVERITY_COLUMNS = ["severity"]
 WAIVER_COLUMNS = ["justification", "expires", "granted_by"]
 BASELINE_COLUMNS = ["baseline", "drift_pct"]
+MANUAL_COLUMNS = ["decided_by", "decided", "decision_note"]
 
 
-def columns(base, checks, waivers, ref=None):
+def columns(base, checks, waivers, ref=None, manual=None):
     """A verdict table's header: the columns of old, then severity when
     the thresholds file has one, then the waiver's when there are
     waivers, then the baseline's value and the drift from it when there
-    is a baseline.  With none of them it is what it always was."""
+    is a baseline, then who decided a manual result, when, and their
+    note, when there is a manual file.  With none of them it is what it
+    always was."""
     out = list(base)
     if any(c.severity for c in checks):
         out += SEVERITY_COLUMNS
@@ -1235,7 +1697,32 @@ def columns(base, checks, waivers, ref=None):
         out += WAIVER_COLUMNS
     if ref is not None:
         out += BASELINE_COLUMNS
+    if manual is not None:
+        out += MANUAL_COLUMNS
     return out
+
+
+def _uniq(xs):
+    out = []
+    for x in xs:
+        if x and x not in out:
+            out.append(x)
+    return out
+
+
+def _manual_cells(ms):
+    """decided_by, decided and decision_note of the results `ms`."""
+    return ["; ".join(_uniq(m.by for m in ms)),
+            "; ".join(_uniq(m.date for m in ms)),
+            "; ".join(_uniq(m.note for m in ms))]
+
+
+def _check_manual(r):
+    """Every result that decided a row of r, in file order."""
+    ms = []
+    for i in sorted(getattr(r, "row_manual", {})):
+        ms += r.row_manual[i]
+    return sorted(set(ms), key=lambda m: m.line)
 
 
 def _waiver_cells(ws, today=None):
@@ -1246,7 +1733,7 @@ def _waiver_cells(ws, today=None):
             "; ".join(w.granted_by for w in ws if w.granted_by)]
 
 
-def _extra(r, cols, ws, today=None, base=("", "")):
+def _extra(r, cols, ws, today=None, base=("", ""), ms=None):
     out = []
     if "severity" in cols:
         out.append(r.chk.severity)
@@ -1254,6 +1741,8 @@ def _extra(r, cols, ws, today=None, base=("", "")):
         out += _waiver_cells(ws, today)
     if "baseline" in cols:
         out += list(base)
+    if "decided_by" in cols:
+        out += _manual_cells(_check_manual(r) if ms is None else ms)
     return out
 
 
@@ -1307,7 +1796,8 @@ def each_rows(results, cols=None, today=None):
                 if getattr(r, "limit_shown", ""):
                     lim = "%s (%s)" % (lim, r.limit_shown)
             out.append([c.req, label, c.column, obs, lim, r.unit,
-                        v] + _extra(r, cols, ws, today, base))
+                        v] + _extra(r, cols, ws, today, base,
+                                    getattr(r, "row_manual", {}).get(i, [])))
     return out
 
 

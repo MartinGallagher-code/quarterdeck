@@ -888,8 +888,10 @@ def check_tables(rep, e, checks, against):
     vt = k.load()
     n = dict((v, 0) for v in checkmod.VERDICTS)
     if vt.has("verdict"):
-        for v in vt.values("verdict"):
-            if v in n:
+        reqs = vt.values("req") if vt.has("req") else [""] * len(vt.rows)
+        for req, v in zip(reqs, vt.values("verdict")):
+            # --rule's overall verdict is not a check (QD-051)
+            if v in n and req != "(rule)":
                 n[v] += 1
     return vt, n, rep.qd("show %s" % rep.ref(k), [k]), k
 
