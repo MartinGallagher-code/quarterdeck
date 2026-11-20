@@ -5,7 +5,7 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
-## 0.50.0 — 2026-11-19
+## 0.50.0 — 2026-11-20
 
 A response surface fitted to a central composite or Box-Behnken
 follow-up, with its maximum or minimum and whether that is inside the
@@ -63,6 +63,12 @@ design region or on its edge, and contour charts of it in `qd web`
   study, every run of it", and the `qd doe` command block names
   `qd doe surface`; `docs/reading.md`'s `qd web` list names the
   response surface card.
+- **CI gives each share of the suite 30 minutes, not 15** (the `test`,
+  Python 3.6, provost 2.1.0 and store check jobs). A share usually takes
+  7 to 10 minutes and up to 15 on the slowest runners, and this pull
+  request's shares, and QD-070's, were cancelled at 15 with every suite
+  passed. 30 is about three times the usual time again, as the
+  workflow's header says each job's timeout should be.
 
 ## 0.49.0 — 2026-11-19
 
