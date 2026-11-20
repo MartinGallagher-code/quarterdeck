@@ -21,14 +21,17 @@ concurrency:
 # one share, and the longest in parts, each part on a different runner
 # (tests/check_shards.sh, in the shellcheck job, fails CI if a suite is in
 # none or in two, or a matrix leaves a share out).  Every job has a
-# timeout of about three times its usual time.  QD-024.
+# timeout of about three times its usual time.  QD-024.  A share of the
+# suite usually takes 7 to 9 minutes now, and a slow runner twice that, so
+# its jobs have 25 (15 stopped five of QD-071's shares part-way, and
+# main's own came within half a minute of it).  QD-070.
 
 jobs:
   test:
     # ubuntu-latest became 26.04 in November 2026, and setup-python has no
     # 3.9 for it; 24.04 still has every version in the matrix (QD-014)
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     strategy:
       fail-fast: false
@@ -75,7 +78,7 @@ jobs:
   python-floor:
     name: Python 3.6 compatibility (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     strategy:
       fail-fast: false
@@ -125,7 +128,7 @@ jobs:
     # one keeps the oldest qd supports under the whole suite.
     name: test (provost 2.1.0, one capture at a time, ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     strategy:
       fail-fast: false
@@ -163,7 +166,7 @@ jobs:
     # (QD_TEST_SHA256=require, QD-032): an old git fails them, saying so.
     name: store check (provost 2.19.0, ${{ matrix.shard }}/3)
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     strategy:
       fail-fast: false

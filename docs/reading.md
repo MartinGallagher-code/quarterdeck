@@ -265,6 +265,16 @@ engine's, as everywhere.
   up. A design's page also charts its effects on a column: a Pareto of
   effect sizes, main effects and interactions, and a link to doe's report
   (see [Designed experiments](larger-jobs.md#designed-experiments-qd-doe)).
+  A central composite or Box-Behnken design's page has a **Response
+  surface** card: doe's fitted model, its stationary point and best point,
+  whether the optimum is inside the region or on its edge, and a contour
+  chart for each pair of factors (see
+  [The response surface](larger-jobs.md#the-response-surface-qd-doe-surface)).
+- **Studies** (a screen and the designs that follow it, QD-070), above
+  the campaigns and designs: every run of the study in one sortable,
+  filterable table, and a response charted against a factor across the
+  designs (see
+  [A study, every run of it](larger-jobs.md#a-study-every-run-of-it-qd-compare---study-and-qd-web)).
 - **Table**: sort on any column and filter with the same `--where`
   language. Click a row for every field and that host's raw answer.
 - **A column**: its figures, histogram, outliers and value counts (with who

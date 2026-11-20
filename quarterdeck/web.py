@@ -11,7 +11,10 @@ cannot disagree about a number.  Campaigns and designs are listed as
 `qd campaign status` and `qd doe status` list them, a design with its
 main-effect, interaction and Pareto figures (doe.effects) and a link to
 doe's own report where `qd doe analyze --report` kept one, served from
-qd's cache at /doe/.
+qd's cache at /doe/, doe's response surface (doe.surface: its model,
+stationary point and optimum, and contours of each factor pair), and a
+study's runs (a screen and its follow-ups) as `qd compare --study` lines
+them up.
 
 When datacenter_visualization is installed its viewer is served beside it at
 /floor/, with qd's overlays at /floor/files/, so "Floor plan" on any dataset
@@ -47,7 +50,7 @@ from urllib.parse import parse_qs, parse_qsl, quote, unquote, \
 from . import VERSION
 from . import baseline as blmod, campaign as camp, compare as comparemod, \
     diff as diffmod, doe as doemod, peers as peersmod, query, stats, \
-    table as tablemod, tools
+    study as studymod, table as tablemod, tools
 from .common import PROG, QdError, die, env_float, write_text
 from . import store as storemod
 from .store import cache_root, describe_entry, operator_shown, \
@@ -613,7 +616,45 @@ class Api(object):
                         % (done, len(rows)),
                         "done": str(done), "total": str(len(rows)),
                         "columns": doemod.STATUS_COLUMNS, "rows": rows})
-        return {"groups": out}
+        # a study of two designs or more (QD-070): its runs side by side
+        studies = []
+        for name, names in studymod.studies(self.book):
+            if len(names) < 2:
+                continue
+            ds = [studymod.Design(self.book, n) for n in names]
+            studies.append({
+                "name": name, "designs": names,
+                "progress": "%d designs, %d of %d points measured" % (
+                    len(ds), sum(d.measured for d in ds),
+                    sum(len(d.points) for d in ds))})
+        return {"groups": out, "studies": studies}
+
+    def study(self, q):
+        """Every run of every design of a study, as `qd compare --study`
+        lines them up -- filtered (where) and sorted (sort) here -- and a
+        response against a factor across the designs (factor, response),
+        each design a series with its median at each level."""
+        cols = [c.strip() for c in (one(q, "c") or "").split(",")
+                if c.strip()]
+        # configs that name no response's column: the runs still, and the
+        # page asks which column
+        s = studymod.build(self.book, one(q, "study") or "", cols,
+                           one(q, "agg") or "median", required=False)
+        t, sub = self.subset(q, s.table)
+        out = s.json()
+        out.update({"columns": t.columns,
+                    "kinds": dict((c, t.kind(c)) for c in t.columns),
+                    "total": len(t.rows), "matched": len(sub.rows),
+                    "rows": sub.rows})
+        # by default the factor the latest design varied first: what the
+        # study narrowed down to
+        last = [f for f in s.designs[-1].varied if f in s.factors]
+        factor = one(q, "factor") or (last or s.factors or [None])[0]
+        response = one(q, "response") or \
+            (s.responses[0][0] if s.responses else None)
+        out["chart"] = studymod.chart(s, sub, factor, response) \
+            if factor and response else None
+        return out
 
     def design(self, q):
         """A design's figures for one response column, as charts want
@@ -638,6 +679,11 @@ class Api(object):
         if not column:
             return out
         out.update(doemod.effects(self.book, name, column, agg))
+        op = (cfg.get("settings") or {}).get("operation") or ""
+        code = doemod.coding(cfg, out["factors"])
+        out["surface"] = {
+            "operation": op, "fit": op in doemod.SURFACES,
+            "numeric": [f for f in out["factors"] if code[f][2] is None]}
         path = doemod.report_path(self.book, name, column)
         html, plots = doemod.report_files(path)
         if html or plots:
@@ -648,6 +694,18 @@ class Api(object):
                 "plots": [{"name": p, "url": base + "/" + quote(p)}
                           for p in plots]}
         return out
+
+    def surface(self, q):
+        """doe's response surface for one response of a design: its model
+        and fit, the stationary point and its kind, the best point inside
+        the design region and whether it is on the edge, and each factor
+        pair's contours of doe's model -- doemod.surface, every number the
+        page draws (QD-071)."""
+        name = one(q, "name")
+        if not name or name not in doemod.names(self.book):
+            die("no design %r in this store" % (name or ""))
+        return doemod.surface(self.book, name, one(q, "c") or None,
+                              one(q, "agg") or "median")
 
     def raw(self, q):
         t = self.table(one(q, "e"), one(q, "t"))
@@ -827,7 +885,8 @@ ROUTES = {"/api/entries": "entries", "/api/entry": "entry_info",
           "/api/trend": "trend", "/api/diff": "diff", "/api/raw": "raw",
           "/api/overlay": "overlay", "/api/compare": "compare",
           "/api/groups": "groups", "/api/join": "join",
-          "/api/design": "design"}
+          "/api/design": "design", "/api/surface": "surface",
+          "/api/study": "study"}
 
 
 LOOPBACK = ("127.0.0.1", "localhost", "::1")

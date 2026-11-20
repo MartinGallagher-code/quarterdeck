@@ -17,6 +17,7 @@ qd compare monday tuesday latest -c mbps         # these three
 qd compare --group burnin -c temp_c              # a campaign's parts, a design's points
 qd compare --campaigns burnin-oct burnin-nov     # two whole campaigns, host by host
 qd compare kernel --last 10                      # no column: every numeric median
+qd compare --study fio-screen -c read_iops        # every run of a study's designs (qd doe)
 ```
 
 One row per run (hosts that answered, n, median, mean, min, p95, max, and

@@ -5,6 +5,133 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.50.0 — 2026-11-20
+
+A response surface fitted to a central composite or Box-Behnken
+follow-up, with its maximum or minimum and whether that is inside the
+design region or on its edge, and contour charts of it in `qd web`
+(QD-071, step 6 of QD-066).
+
+### Added
+- **`qd doe surface NAME [-c RESPONSE]`** runs `doe analyze` (with its
+  `--csv` tables) and `doe optimize` for one response and reports what
+  doe found: its fitted model (the quadratic, or linear with too few
+  points, in doe's coding), the fit (R², adjusted and predicted R², the
+  lack-of-fit test of doe's ANOVA where points repeat), the stationary
+  point with its kind (maximum, minimum, saddle, ridge), its settings in
+  the factors' own units and coded, and doe's predicted response there
+  with doe's cross-validated error, and doe optimize's best point inside
+  the design region. It then says plainly whether the optimum is inside
+  the region (confirm it) or on its edge, naming the factor and the end
+  (another round is needed). With no `-c` a follow-up's own response
+  (`metadata.qd_follows`) is used. `--report [DIR]` keeps doe's report
+  and its response-surface plots (`rsm_*.png`) as `qd doe analyze
+  --report` does; `--json` prints the figures and qd web's contours
+  (`quarterdeck/doe.py`: `surface`, `verdict`, `surface_grids`,
+  `optimize_text`, `lack_of_fit`, `read_tables`; `quarterdeck/cli.py`:
+  `doe_surface`).
+- **`/api/surface?name=NAME&c=COL&agg=AGG`** in `qd web`, and a
+  "Response surface" card on a central composite or Box-Behnken
+  design's page (a button on any other design's): doe's figures and the
+  verdict, and a contour chart for each pair of numeric factors, the
+  others held at doe's best point. The grid is doe's own fitted
+  polynomial evaluated by the engine, which also places the contour
+  levels, lines and shading; the page only draws them, with the design
+  region, the design's points (hollow where not measured), the
+  stationary point and the best point marked (`quarterdeck/web.py`:
+  `surface`; `quarterdeck/web/app.js`: `surfaceCard`, `contourChart`).
+  `/api/design` says whether a design is a surface design and which of
+  its factors are numeric.
+- Tests: `tests/test_doe_surface.sh` (new) runs a central composite on a
+  stand-in fio whose read IOPS is a known hill and read latency a known
+  bowl (`FIO_PEAK`): the stationary point is found within tolerance and
+  called a maximum (and a minimum), an optimum beyond iodepth's high
+  level is reported on the edge, a point fio failed is left out (never
+  0), `--report` keeps the surface plots, `--json`'s grid is doe's
+  model, and a two-level design has no surface; with the real doe where
+  it is installed. `tests/test_web.sh` checks `/api/surface`. The
+  suite's stand-in doe now fits the quadratic as doe does (least
+  squares in coded units), writes doe's model-adequacy, cross-validation
+  and stationary-point tables, a lack-of-fit row and surface plots, and
+  prints `doe optimize`'s models and surface optimum.
+
+### Changed
+- `qd --help`'s doe line names `surface`, `qd hints` has a surface
+  line, and docs/getting-started.md's map names it.
+- **The manual:** `docs/larger-jobs.md` has a new section, "The response
+  surface: `qd doe surface`", after the doe follow-up and before "A
+  study, every run of it", and the `qd doe` command block names
+  `qd doe surface`; `docs/reading.md`'s `qd web` list names the
+  response surface card.
+
+## 0.49.1 — 2026-11-20
+
+CI's suite jobs have 25 minutes, not 15 (QD-070). 0.49.0 and 0.49.1 share
+one pull request, so 0.49.0 is not published on its own.
+
+### Changed
+- **`.github/workflows/ci.yml`:** the four jobs that run a share of the
+  suite (Python 3.9 to 3.13, Python 3.6, provost 2.1.0 and the store
+  check) time out at 25 minutes. A share usually takes 7 to 9 minutes,
+  and a slow runner runs every suite about twice as long: on `main`'s own
+  run for 0.48.0, Python 3.10's first share took 14.6 minutes and
+  provost 2.1.0's second 14.7, against a limit of 15. 0.49.0's run lost
+  Python 3.10's first share to it, and QD-071's run lost five shares, each
+  stopped at 15 minutes with every case that had finished passing. 25 is
+  still about three times a share's usual time, as QD-024 set out.
+
+## 0.49.0 — 2026-11-19
+
+Every run of a study -- a screen, its follow-up and every later round --
+side by side, in `qd compare --study` and in `qd web` (QD-070, step 5 of
+QD-066's fio tuning study).
+
+### Added
+- **`qd compare --study STUDY`** lines up every run of every design of a
+  study: a row per run and host, with the design, the point, each
+  response (`-c COL,COL`, a column or a config's response by name; by
+  default every response the configs name a column for, each one number
+  from the host's ok rows: the median, or `--agg`), every factor as a
+  column, the host's status and the run. Where a design varied a factor
+  the cell is the point's level; where it held it, the level it held (a
+  follow-up's `rw=rw`, which the screen varied). A factor every design
+  held at one level is said once above the table; one a design neither
+  varied nor held is blank on its rows, and said. A host that failed a
+  point has a blank response, never 0. `--where`, `--sort` (new, for
+  `--study` only) and `--format` as elsewhere; `--group`, `--last`,
+  `--baseline`, `--peers`, `--key` and `--table` are refused beside it
+  (`quarterdeck/study.py`, new: `studies`, `members`, `build`,
+  `run_cells`, `chart`; `quarterdeck/cli.py`: `compare_study`).
+- **`qd doe status`** lists a study's designs (type, points measured,
+  runs, what each follows and varies) under the screen's own points once
+  the study has two, and `qd doe status STUDY` for a study named for no
+  design lists them alone; a follow-up's status points at its study
+  (`study_lines`, `doe_study_status`).
+- **qd web's study view**: a study of two designs or more is listed above
+  the campaigns and designs (`/api/groups`' `studies`). Its page lists the
+  designs, then every run in one table, sorted by a column's heading and
+  filtered by the filter bar, a held factor's level in grey italics, a row
+  opening its run; and a chart of a response against a chosen factor,
+  each design a colour, a dot per run and host and a line through the
+  design's median at each level. `/api/study` (new) gives the rows, the
+  filter and sort, the points and the medians, from the same engine as
+  `qd compare --study`: the page computes nothing.
+- `tests/test_study.sh` (new suite, in `TIMES` and `PARTS`): a study of
+  two designs with different factors, every run once with the right
+  varied and held levels, blank staying blank, the refusals, `qd doe
+  status`, and the web API's rows, filter, sort and chart.
+
+### Changed
+- Nothing is filed for a study: a design's study is its config's
+  `metadata.qd_study` (QD-069), else its own name, so `qd.designs` keeps
+  its columns and a store written before reads as one study per design.
+- `qd --help`'s compare line names `--study`; qd web's sidebar heading
+  is "Studies, campaigns and designs".
+- **The manual:** `docs/larger-jobs.md` has a new section, "A study,
+  every run of it", after the doe follow-up; `docs/over-time.md`'s
+  `qd compare` examples carry `--study`, and `docs/reading.md`'s `qd web`
+  list names the study view.
+
 ## 0.48.0 — 2026-11-19
 
 A design's main effects, interactions and a Pareto of effect sizes as

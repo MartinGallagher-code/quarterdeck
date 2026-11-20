@@ -15,7 +15,7 @@ Read it back
   qd view [RUN] | web                  full-screen; in a browser
 Over time
   qd diff [OLD] NEW | again [RUN]      what changed; a run once more
-  qd compare RUN --last N -c COL       N runs side by side
+  qd compare RUN --last N -c COL       N runs side by side; a study: --study S
   qd changes RUN -c COL [--last N]     where each host's level moved
 Judge and report
   qd check RUN --against F [--rule R]  pass/fail by requirement, one verdict
@@ -25,7 +25,7 @@ Judge and report
 Larger jobs
   qd split [HOSTS] --by rack|--into N  one host list into several
   qd campaign new|run|status|retry|ls  a system in parts, progress kept
-  qd doe plan|run|status|analyze|next  designed experiments; init fio
+  qd doe init|plan|run|status|analyze|next|surface  experiments
   qd join RUN TELEMETRY                beside Splunk/Prometheus samples
 Stores and output
   qd store new|ls|use|rename|rm|clear|export|import    named stores
@@ -3345,6 +3345,10 @@ def cmd_compare(args):
     from . import compare as comparemod
     if args.campaigns:
         return compare_campaigns(args)
+    if args.study:
+        return compare_study(args)
+    if args.sort:
+        die("--sort orders a study's runs: it goes with --study")
     refs, last, st = list(args.refs), args.last, None
     if last is not None:
         m = re.match(r"^([0-9]+)(?:@(.+))?$", last)
@@ -3375,6 +3379,84 @@ def cmd_compare(args):
          else comparemod.wide_table(res), lines)
     return 1 if any(flags for _, _, flags in res.keys) or \
         any(flags for _, _, flags in res.peer_rows) else 0
+
+
+def compare_study(args):
+    """compare --study STUDY: every run of every design of a study, a row
+    per run and host, with every factor's level as a column (QD-070)."""
+    from . import study as studymod
+    for flag, v in (("--baseline", args.baseline), ("--group", args.group),
+                    ("--last", args.last), ("--peers", args.peers),
+                    ("--key", args.key), ("--campaigns", args.campaigns),
+                    ("--table", args.table)):
+        if v:
+            die("--study lines up every run of a study's designs: leave %s "
+                "out" % flag)
+    if args.refs:
+        die("--study STUDY names what is compared: no RUN as well")
+    st = home_store(args)
+    cols = [c.strip() for c in (args.column or "").split(",") if c.strip()]
+    s = studymod.build(st, args.study, cols, args.agg)
+    t = s.table
+    rows = query.where(t, args.where or [])
+    if args.sort:
+        rows = query.sort_rows(t, rows, args.sort)
+    shown = t.derive(rows=rows)
+    w = width_of(args)
+    lines = ["%s compare --study %s -- %s, %s (a run on one host each)%s; "
+             "each response the %s of the host's rows, blank where not "
+             "measured" % (
+                 PROG, s.name, plural(len(s.designs), "design"),
+                 plural(len(t.rows), "row"),
+                 (", %d shown" % len(rows)) if len(rows) != len(t.rows)
+                 else "", s.agg)]
+    import textwrap
+    wrap = max(40, (w or 80) - 2)
+
+    def said(text):
+        lines.extend(textwrap.wrap(text, wrap, initial_indent="  ",
+                                   subsequent_indent="      ",
+                                   break_on_hyphens=False))
+    for d in s.designs:
+        how = d.operation.replace("_", " ") or "a design"
+        if d.follows.get("design"):
+            how += ", following %s for %s" % (d.follows["design"],
+                                             d.follows.get("response", ""))
+        holds = " ".join("%s=%s" % kv for kv in d.held
+                         if kv[0] in s.factors)
+        said("%s: %s, %d of %s measured; varies %s%s" % (
+            d.name, how, d.measured, plural(len(d.points), "point"),
+            " ".join(d.varied) or "nothing",
+            ("; holds " + holds) if holds else ""))
+    if s.constant:
+        said("held by every design: " + " ".join("%s=%s" % kv
+                                                 for kv in s.constant))
+    named = ", ".join("%s=%s" % (n, c) for n, c in s.responses if n != c)
+    if named:
+        said("the responses: %s" % named)
+    for n in s.notes:
+        said("note: %s" % n)
+    lines.append("")
+    nr = len(s.responses)
+    nums = [1] + list(range(3, 3 + nr)) + [
+        i for i, c in enumerate(t.columns)
+        if c in s.factors and all(tablemod.to_num(v) is not None
+                                  for v in t.values(c) if v.strip())]
+    tl = render.render_rows(t.columns, rows, numeric=nums, width=w,
+                            indent="  ")
+    if tl[-1].endswith("-- use --cols or --width)"):
+        # compare has no --cols: say what does narrow it
+        tl[-1] = tl[-1][:-len("-- use --cols or --width)")] + \
+            "-- -c fewer responses, --width, or --format csv)"
+    lines.extend(tl)
+    tips = [("%s compare --study %s --sort -%s" % (
+        PROG, s.name, s.responses[0][0]), "the best runs first"),
+        ("%s compare --study %s --format csv" % (PROG, s.name),
+         "every run, every factor, for a spreadsheet"),
+        ("%s web" % PROG, "the study in a browser: sort, filter, chart")]
+    lines.extend(next_steps(tips))
+    emit(args, shown, lines)
+    return 0
 
 
 def compare_campaigns(args):
@@ -5339,6 +5421,10 @@ def cmd_doe(args):
     if what == "run":
         return doe_run(args, st, doemod)
     if what == "status":
+        from . import study as studymod
+        names = studymod.members(st, args.target)
+        if names and not doemod.exists(st, args.target):
+            return doe_study_status(args, st, studymod, names)
         row, rows, done = doemod.status_rows(st, args.target)
         lines = ["%s doe -- %s: %d of %s measured" % (
             PROG, args.target, done, plural(len(rows), "point")),
@@ -5359,6 +5445,19 @@ def cmd_doe(args):
             doemod.STATUS_COLUMNS, rows,
             numeric=[0, 1, 3], width=width_of(args), indent="  "))
         tips = []
+        if len(names) > 1:
+            # the screen's name is its study's: the study's designs too
+            tl, sm, stot = study_lines(args, st, studymod, names)
+            lines.append("")
+            lines.append("  the study %s: %s, %d of %s measured" % (
+                args.target, plural(len(names), "design"), sm,
+                plural(stot, "point")))
+            lines.extend(tl)
+            tips.extend(study_tips(args.target))
+        elif isinstance(meta, dict) and meta.get("qd_study") and \
+                meta["qd_study"] != args.target:
+            tips.append(("%s doe status %s" % (PROG, meta["qd_study"]),
+                         "every design of its study"))
         if done < len(rows):
             tips.append(("%s doe run CONFIG ... --name %s" % (
                 PROG, args.target), "measure the rest (measured points "
@@ -5434,8 +5533,53 @@ def cmd_doe(args):
         return 0
     if what == "next":
         return doe_next(args, st, doemod)
-    die("unknown doe action %r (init, plan, run, status, analyze, next)"
-        % what)
+    if what == "surface":
+        return doe_surface(args, st, doemod)
+    die("unknown doe action %r (init, plan, run, status, analyze, next, "
+        "surface)" % what)
+
+
+def study_lines(args, st, studymod, names, indent="  "):
+    """The designs of a study (QD-070) -- the screen, its follow-ups,
+    every later round -- and how far each has got: (lines, measured,
+    points)."""
+    rows, total, measured = [], 0, 0
+    for n in names:
+        d = studymod.Design(st, n)
+        total += len(d.points)
+        measured += d.measured
+        rows.append([n, d.operation.replace("_", "-"),
+                     "%d/%d" % (d.measured, len(d.points)),
+                     str(sum(len(rs) for rs in d.runs.values())),
+                     d.follows.get("design", "") +
+                     (" (%s)" % d.follows["response"]
+                      if d.follows.get("design") and
+                      d.follows.get("response") else ""),
+                     " ".join(d.varied)])
+    return render.render_rows(
+        ["design", "type", "measured", "runs", "follows", "varies"],
+        rows, numeric=[3], width=width_of(args), indent=indent), \
+        measured, total
+
+
+def study_tips(study):
+    return [("%s compare --study %s" % (PROG, study),
+             "every run of every design, each factor a column"),
+            ("%s web" % PROG, "the study in a browser: sort, filter, chart")]
+
+
+def doe_study_status(args, st, studymod, names):
+    """qd doe status STUDY, when STUDY is no design's own name."""
+    tl, measured, total = study_lines(args, st, studymod, names)
+    lines = ["%s doe -- the study %s: %s, %d of %s measured" % (
+        PROG, args.target, plural(len(names), "design"), measured,
+        plural(total, "point"))]
+    lines.extend(tl)
+    lines.extend(next_steps([("%s doe status %s" % (PROG, names[-1]),
+                              "one design's points")] +
+                            study_tips(args.target)))
+    sys.stdout.write(render.page(lines))
+    return 0
 
 
 def doe_next(args, st, doemod):
@@ -5530,6 +5674,110 @@ def doe_next(args, st, doemod):
         ("%s doe plan %s" % (PROG, path), "the points doe lays out"),
         ("%s doe run %s --like %s" % (PROG, path, screen),
          "measure them on the host and target %s ran on" % screen)]))
+    sys.stdout.write(render.page(lines))
+    return 0
+
+
+def doe_surface(args, st, doemod):
+    """qd doe surface NAME -c RESPONSE (QD-071): doe's response surface for
+    a central composite or Box-Behnken design -- its quadratic model and
+    fit, the stationary point and its kind, the best point inside the
+    design region -- and whether that optimum is inside the region (confirm
+    it) or on its edge (another round)."""
+    import textwrap
+    _, cfg, _ = doemod.load(st, args.target)
+    cols = [c.strip() for c in (args.column or "").split(",") if c.strip()]
+    if len(cols) > 1:
+        die("a surface is of one response: -c COLUMN")
+    rname, col, _ = doemod.surface_spec(cfg, cols[0] if cols else None)
+    report = None
+    if args.report is not None:
+        report = doemod.report_dir(st, args.target, col, args.report or None)
+    s = doemod.surface(st, args.target, col, args.agg, report=report,
+                       grid=args.json)
+    if args.json:
+        import json
+        sys.stdout.write(json.dumps(s, indent=1, sort_keys=True) + "\n")
+        return 0
+    wrap = max(40, min(width_of(args) or 80, 100) - 2)
+    lines = ["%s doe surface -- %s: %s (%s, %s), %d of %d points measured" % (
+        PROG, s["design"], rname, col,
+        "maximise" if s["optimize"] != "minimize" else "minimise",
+        s["measured"], s["total"])]
+
+    def para(head, text, first=None):
+        lines.extend(textwrap.wrap(
+            text, wrap, initial_indent=first or "  %-10s " % head,
+            subsequent_indent=" " * 13, break_on_hyphens=False))
+
+    def num(v):
+        return stats.fmt_num(v) if v is not None else "?"
+
+    fit, m = s["fit"], s["model"]
+    if m["terms"]:
+        eq = []
+        for t, b in m["terms"]:
+            term = "" if t == "intercept" else " " + t
+            eq.append(("%s %s%s" % ("-" if b < 0 else "+", num(abs(b)), term))
+                      if eq else "%s%s" % (num(b), term))
+        para("model", "doe's %s fit, each factor coded -1 to +1 over its "
+             "levels: %s = %s" % (m["kind"], rname, " ".join(eq)))
+    figs = []
+    if fit["r_squared"] is not None:
+        figs.append("R2 %.4f" % fit["r_squared"])
+    if fit["adj_r_squared"] is not None:
+        figs.append("adjusted %.4f" % fit["adj_r_squared"])
+    if fit["predicted_r_squared"] is not None:
+        figs.append("predicted %.4f" % fit["predicted_r_squared"])
+    lof = fit["lack_of_fit"]
+    if lof and lof["p"] is not None:
+        figs.append("lack of fit p=%.4f (%s)" % (
+            lof["p"], "the model misses structure" if lof["p"] < 0.05 else
+            "none detected"))
+    else:
+        figs.append("lack of fit: doe gave none (no repeated points)")
+    if fit["model"]:
+        para("fit", "%s: %s" % (fit["model"], "; ".join(figs)))
+    sp = s["stationary"]
+    if sp:
+        para("stationary", "a %s, %s design region: %s = %s%s" % (
+            sp["kind"].replace("_", " "),
+            "inside the" if sp["inside"] else "outside the",
+            rname, num(sp["predicted"]),
+            (", give or take %s (doe's cross-validated error; it gives no "
+             "prediction interval)" % num(fit["rmse_cv"]))
+            if fit["rmse_cv"] is not None else ""))
+        rows = [[f, sp["settings"].get(f, ""),
+                 "%+.3f" % sp["coded"][f] if sp["coded"].get(f) is not None
+                 else ""] for f in s["factors"]]
+        best = s["optimum"]
+        if best:
+            for r in rows:
+                r.append(best["settings"].get(r[0], ""))
+                c = best["coded"].get(r[0])
+                r.append("%+.3f" % c if c is not None else "")
+        lines.extend(render.render_rows(
+            ["factor", "stationary", "coded"] +
+            (["best inside", "coded"] if best else []), rows,
+            numeric=[1, 2, 3, 4], width=width_of(args), indent="    "))
+    best = s["optimum"]
+    if best and best["predicted"] is not None:
+        para("best", "inside the design region (doe optimize): %s = %s at "
+             "%s" % (rname, num(best["predicted"]), " ".join(
+                 "%s=%s" % kv for kv in sorted(
+                     best["settings"].items(),
+                     key=lambda kv: s["factors"].index(kv[0])
+                     if kv[0] in s["factors"] else 0))))
+    para("so", s["verdict"]["text"])
+    if report is not None:
+        lines.extend(doe_report_lines(doemod, report, args, col))
+    tips = []
+    if report is None:
+        tips.append(("%s doe surface %s -c %s --report" % (
+            PROG, args.target, shlex.quote(rname)),
+            "doe's surface plots, and its report, kept for qd web"))
+    tips.append(("%s web" % PROG, "the contours, on the design's page"))
+    lines.extend(next_steps(tips))
     sys.stdout.write(render.page(lines))
     return 0
 
@@ -6101,6 +6349,8 @@ HINTS = [
     ("Larger jobs", "Which of fio's settings matter on this drive?",
      "qd doe init fio; qd doe run fio-screen.json -s hosts.txt; "
      "qd doe analyze fio-screen"),
+    ("Larger jobs", "Where is the best setting, and is it inside the region?",
+     "qd doe surface FOLLOWUP -c read_iops --report; qd web"),
     ("Larger jobs", "Half the fleet against the other half",
      "qd split -s hosts.txt --ab --out ab/"),
     ("Larger jobs", "What were temperature and power doing meanwhile?",
@@ -6842,6 +7092,12 @@ def build_parser():
                     help="two whole campaigns (or designs) side by side: "
                     "every part of each, host by host, each column's value "
                     "in A and in B and the change")
+    sp.add_argument("--study", metavar="STUDY",
+                    help="every run of every design of a study (a screen "
+                    "and its follow-ups), each factor's level a column; "
+                    "-c the responses (default the configs')")
+    sp.add_argument("--sort", metavar="COLS",
+                    help="--study: order the runs (-COL descending)")
     sp.add_argument("--baseline", metavar="RUN|NAME",
                     help="what the others are measured against: a run (the "
                     "first), or a qualified baseline's NAME (qd baseline "
@@ -7089,10 +7345,11 @@ def build_parser():
               "analyses")
     sp.add_argument("action",
                     choices=["init", "plan", "run", "status", "analyze",
-                             "next"])
+                             "next", "surface"])
     sp.add_argument("target", metavar="CONFIG|NAME",
                     help="init: a starting config (fio); plan/run: a doe "
-                    "config; status/analyze/next: the design's name")
+                    "config; status: a design's or a study's name; "
+                    "analyze/next/surface: the design's name")
     add_fleet(sp, preview=0)
     sp.add_argument("--name", help="the design's name (default the "
                     "config's)")
@@ -7103,15 +7360,12 @@ def build_parser():
                     help="measure points that are measured already")
     sp.add_argument("-c", "--column", metavar="COL[,COL]",
                     help="analyze: the response columns (default: the "
-                    "config's responses that name one)")
+                    "config's responses that name one); surface: one")
     sp.add_argument("--agg", default="median",
                     help="analyze: one number per point from its hosts "
                     "(median)")
     sp.add_argument("--optimize", action="store_true",
                     help="analyze: doe optimize's recommendation too")
-    sp.add_argument("--report", nargs="?", const="", metavar="DIR",
-                    help="analyze: keep doe's HTML report and plots, in DIR "
-                    "or qd's cache (which qd web links)")
     sp.add_argument("--factors", metavar="A,B",
                     help="next: the factors to vary (default: the big "
                     "numeric ones, 2 to 4)")
@@ -7122,6 +7376,12 @@ def build_parser():
     sp.add_argument("--like", metavar="DESIGN",
                     help="run: on the hosts DESIGN ran on, holding what it "
                     "held")
+    sp.add_argument("--json", action="store_true",
+                    help="surface: doe's figures, and qd web's contours, "
+                    "as JSON")
+    sp.add_argument("--report", nargs="?", const="", metavar="DIR",
+                    help="analyze/surface: keep doe's HTML report and "
+                    "plots, in DIR or qd's cache (which qd web links)")
     sp.set_defaults(fn=cmd_doe, command=[])
 
     sp = verb("export", "write a dataset out: csv, tsv, json, ndjson, md, "
