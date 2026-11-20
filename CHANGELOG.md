@@ -24,7 +24,11 @@ QD-072 built, joined up, written down and tested as one.
   on what the one before it filed, from `qd doe init fio` to the
   confirmed settings and their command line, and qd web's views of the
   screen's effects, the study and the region's surface; and again with
-  the real doe where it is installed.
+  the real doe where it is installed. With the real doe, the case checks
+  only what does not turn on whether scipy says doe's search for a
+  region's best point converged, which differs between machines for the
+  same fit (doe 0.5.0): on CI's runners doe printed no best point where it
+  did here. The stand-in doe's case checks every step exactly.
 - `stand_in_fio`'s `FIO_PEAK` takes `scale=S`, which flattens its hill so
   read IOPS stays above 0 over a whole screen (the default, 1, leaves
   every other suite's numbers as they were).

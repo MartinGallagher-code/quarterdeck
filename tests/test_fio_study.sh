@@ -30,7 +30,11 @@ cfg() { "$PY" -c 'import json,sys; c = json.load(open(sys.argv[1])); exec("print
 FU=fio-screen-read-iops-ccd
 
 # steps 1 to 7, in order, on host a; with $1=web, qd web's views of each
-# step as well
+# step as well.  With $1=real, the real doe: whether it prints its best
+# point inside a region (doe optimize's "Surface optimum") turns on
+# scipy's L-BFGS-B saying it converged, which differs from one machine to
+# the next for the same fit (doe 0.5.0, on CI's runners and not here), so
+# steps 6 and 7 check only what does not turn on it.
 the_study() {
     stand_in_fio
     install_fake_ssh
@@ -69,6 +73,10 @@ the_study() {
     # 6. the surface: a maximum beyond the region, so another round
     qd doe surface $FU > surf.out
     assert_contains "$(flat surf.out)" "a maximum, outside the design region"
+    if [ "${1:-}" = real ]; then
+        real_optimize
+        return 0
+    fi
     assert_contains "$(flat surf.out)" "on its edge (iodepth at its high level)"
 
     # 7. qd runs the rounds itself, to the settings to use
@@ -142,6 +150,28 @@ print(json.dumps(eval(expr, {"d": d}), sort_keys=True))
 EOF
 }
 
+# step 7 with the real doe: within its budget, every round filed in the
+# study, and the settings it recommends (confirmed, or the best measured
+# where doe gave no best point to confirm) at the hill's top
+real_optimize() {
+    qdf_rc doe optimize fio-screen -c read_iops --budget 80 -q > opt.out 2> err
+    case "$QD_RC" in 0|1) ;; *) cat opt.out err; fail "qd doe optimize exited $QD_RC" ;; esac
+    qdf_rc doe optimize fio-screen -c read_iops --budget 80 --json > rep.json
+    "$PY" - rep.json <<'PYEOF'
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert r["spent"] <= r["budget"] == 80, (r["spent"], r["budget"])
+assert r["stop"]["reason"] in ("converged", "stalled"), r["stop"]
+kinds = [x["kind"] for x in r["rounds"]]
+assert kinds[:2] == ["start", "path"], kinds
+s = r["recommended"]["settings"]
+assert 50 <= float(s["iodepth"]) <= 70 and 5 <= float(s["numjobs"]) <= 7, s
+assert "--iodepth=%s " % s["iodepth"] in r["recommended"]["command"] + " ", r["recommended"]
+PYEOF
+    qd compare --study fio-screen -c read_iops --format csv > all.csv
+    assert_eq "$(($(wc -l < all.csv) - 1))" "$(calls)"
+}
+
 t_the_whole_study() {
     stand_in_doe
     the_study web
@@ -153,7 +183,7 @@ t_with_the_real_doe() {
         return 0
     fi
     unset QD_DOE
-    the_study
+    the_study real
     # doe's own report, with the screen's plots, kept for qd web
     qd doe analyze fio-screen -c read_iops --report rep > /dev/null
     assert_file_exists rep/report.html
