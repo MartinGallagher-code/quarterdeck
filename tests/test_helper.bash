@@ -1154,7 +1154,9 @@ EOF
 # FIO_PEAK=iodepth=D,numjobs=J: read IOPS 90000 - 50 (iodepth-D)^2 -
 # 1500 (numjobs-J)^2, a maximum at (D, J), and read clat's mean 100us +
 # 0.5 (iodepth-D)^2 + 20 (numjobs-J)^2, a minimum there: a known surface,
-# give or take a little noise.
+# give or take a little noise.  FIO_PEAK=...,scale=S multiplies the
+# squares by S: 0.2 keeps read IOPS above 0 over a whole fio screen
+# (iodepth 1, numjobs 1), as a real drive's is (test_fio_study.sh).
 # FIO_FAIL=TEXT: a job error (err=22) and exit 1 when the arguments contain
 # TEXT, its JSON printed all the same, every figure 0 -- as fio does.
 # FIO_INTERRUPT=N:PIDFILE (with FIO_PEAK): the Nth call sends SIGINT to
@@ -1199,8 +1201,9 @@ if peak:
         import signal
         os.kill(int(open(stop.split(":", 1)[1]).read()), signal.SIGINT)
     dd, jj = depth - float(peak["iodepth"]), jobs - float(peak["numjobs"])
-    r_iops = 90000 - 50 * dd ** 2 - 1500 * jj ** 2 + 20 * (k % 5 - 2)
-    r_mean = 100 + 0.5 * dd ** 2 + 20 * jj ** 2 + 0.2 * (k % 5 - 2)
+    sc = float(peak.get("scale", "1"))
+    r_iops = 90000 - sc * (50 * dd ** 2 + 1500 * jj ** 2) + 20 * (k % 5 - 2)
+    r_mean = 100 + sc * (0.5 * dd ** 2 + 20 * jj ** 2) + 0.2 * (k % 5 - 2)
 def side(iops, mean_us, p99_us):
     if err:
         iops = mean_us = p99_us = 0
