@@ -24,10 +24,10 @@ calls() { wc -c < "$FAKE_BIN/fio-calls" | tr -d ' '; }
 
 PEAK="iodepth=60,numjobs=6"
 
-# the central composite on host a, its best point on its edge; optimize
-# runs against the same hill
+# the central composite on host a, its best point on its edge (in the
+# study $1, when given); optimize runs against the same hill
 start() {
-    surface_design "$PEAK"
+    surface_design "$PEAK" "${1:-}"
     export FIO_PEAK="$PEAK"
 }
 
@@ -35,7 +35,7 @@ start() {
 # more, interrupted), the budget kept, the spend the runs of the rounds --
 # and what a check in $1 says on top
 report_holds() {
-    qdf_rc doe optimize ccd -c "${2:-read_iops}" --budget "${3:-60}" --json > rep.json
+    qdf_rc doe optimize "${TARGET:-ccd}" -c "${2:-read_iops}" --budget "${3:-60}" --json > rep.json
     "$PY" - rep.json "$1" <<'PYEOF'
 import json, os, sys
 r = json.load(open(sys.argv[1]))
@@ -142,46 +142,58 @@ assert r["change"] > 0, r["change"]
 # cannot finish is not begun, and a larger budget carries on from there
 t_the_budget_exactly_and_carrying_on() {
     stand_in_doe
-    start
-    # what optimize refuses, before it runs anything
+    # the central composite is the follow-up of a screen, scr, whose name
+    # is the study's; another design, two, is in a study with none.  Each
+    # is filed by --dry-run, which runs nothing
+    start scr
     "$PY" - <<'PYEOF'
 import json
 c = json.load(open("ccd.json"))
-c["metadata"] = {"name": "two", "qd_command": c["metadata"]["qd_command"]}
-c["settings"]["operation"] = "full_factorial"
-json.dump(c, open("two.json", "w"))
+for name, study in (("scr", None), ("two", "other")):
+    c["metadata"] = {"name": name, "qd_command": c["metadata"]["qd_command"]}
+    if study:
+        c["metadata"]["qd_study"] = study
+    c["settings"]["operation"] = "full_factorial"
+    json.dump(c, open(name + ".json", "w"))
 PYEOF
-    qdf doe run two.json -s hosts.txt -q > /dev/null
+    qdf doe run scr.json -s hosts.txt --dry-run > /dev/null 2>&1
+    qdf doe run two.json -s hosts.txt --dry-run > /dev/null 2>&1
     base="$(calls)"
-    qd_rc doe optimize ccd -c read_iops 2> err
+    # what optimize refuses, before it runs anything
+    qd_rc doe optimize scr -c read_iops 2> err
     assert_status "$QD_RC" 2
     assert_contains "$(cat err)" "how many runs may it make? --budget N"
-    qd_rc doe optimize ccd --budget 0 2> err
+    qd_rc doe optimize scr --budget 0 2> err
     assert_contains "$(cat err)" "--budget wants a number of runs above 0"
-    qd_rc doe optimize ccd -c read_iops,read_lat_mean --budget 9 2> err
+    qd_rc doe optimize scr -c read_iops,read_lat_mean --budget 9 2> err
     assert_contains "$(cat err)" "optimize is for one response"
-    qd_rc doe optimize ccd --budget 9 --blocks-by rack 2> err
+    qd_rc doe optimize scr --budget 9 --blocks-by rack 2> err
     assert_contains "$(cat err)" "it takes no --blocks-by"
-    qd_rc doe optimize ccd --budget 9 -s hosts.txt 2> err
+    qd_rc doe optimize scr --budget 9 -s hosts.txt 2> err
     assert_contains "$(cat err)" "so it takes no -s"
     qd_rc doe optimize two --budget 9 2> err
     assert_contains "$(cat err)" "two is a full factorial: optimize starts from a central composite or Box-Behnken"
+    qd_rc doe optimize other --budget 9 2> err
+    assert_contains "$(cat err)" "the study other has no central composite or Box-Behnken design to start from"
     qd_rc doe optimize nothing --budget 9 2> err
     assert_contains "$(cat err)" "no study 'nothing'"
     assert_eq "$(calls)" "$base"
-    # four runs: the first four steps of the path, and not one more
-    qdf_rc doe optimize ccd -c read_iops --budget 4 -q > out
+    # four runs: the first four steps of the path, and not one more; the
+    # study named, its follow-up is where it starts
+    qdf_rc doe optimize scr -c read_iops --budget 4 -q > out
     assert_status "$QD_RC" 1
     f="$(flat out)"
-    assert_contains "$f" "ccd: read_iops, stopped: the budget"
+    assert_contains "$f" "qd doe optimize -- scr: read_iops (jobs.0.read.iops, maximise) from ccd, on a"
+    assert_contains "$f" "(scr-read-iops-path1)"
+    assert_contains "$f" "scr: read_iops, stopped: the budget"
     assert_contains "$f" "the budget of 4 runs is spent"
     assert_contains "$f" "4 of 4 runs made (4 in this run)"
     assert_contains "$f" "the best settings measured (not confirmed)"
-    assert_contains "$f" "qd doe optimize ccd -c read_iops --budget 14"
+    assert_contains "$f" "qd doe optimize scr -c read_iops --budget 14"
     assert_eq "$(calls)" "$((base + 4))"
     # 21: the path's last two steps, and then the next region would need
     # 16 runs where 15 are left, so it is not begun
-    qdf_rc doe optimize ccd -c read_iops --budget 21 -q > out
+    qdf_rc doe optimize scr -c read_iops --budget 21 -q > out
     assert_status "$QD_RC" 1
     f="$(flat out)"
     assert_contains "$f" "the next region, a central composite of 16 points around iodepth=60 numjobs=7, needs 16 runs, and 15 of the budget of 21 runs are left"
@@ -189,8 +201,9 @@ PYEOF
     assert_eq "$(calls)" "$((base + 6))"
     # and a budget that is enough finds the optimum, nothing run twice;
     # with --json, what it runs is said on stderr and stdout is the report
-    report_holds '
+    TARGET=scr report_holds '
 assert r["stop"]["reason"] == "converged", r["stop"]
+assert r["study"] == "scr" and r["start"] == "ccd", r
 assert r["ran"] > 10, r["ran"]
 open("spent", "w").write(str(r["spent"]))
 '

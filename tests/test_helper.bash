@@ -1247,7 +1247,8 @@ EOF
 # a face-centred central composite named ccd on iodepth 4..36 and numjobs
 # 1..9 (the centre 20, 5), its points run on host a by stand_in_fio with
 # FIO_PEAK=$1: a known surface for doe to fit (test_doe_surface.sh, and
-# test_web.sh's /api/surface)
+# test_web.sh's /api/surface); with $2, a design of the study $2
+# (metadata.qd_study), as a screen's follow-up is
 surface_design() {
     stand_in_fio
     install_fake_ssh
@@ -1273,6 +1274,14 @@ surface_design() {
   "settings": {"operation": "central_composite", "block_count": 1}
 }
 JSON
+    if [ -n "${2:-}" ]; then
+        "$PY" - "$2" <<'PYEOF'
+import json, sys
+c = json.load(open("ccd.json"))
+c["metadata"]["qd_study"] = sys.argv[1]
+json.dump(c, open("ccd.json", "w"), indent=2)
+PYEOF
+    fi
     # FIO_FAIL (stand_in_fio) fails a point: its run exits 1, and it stays
     # not measured
     FIO_PEAK="$1" qdf_rc doe run ccd.json -s hosts.txt -q > /dev/null

@@ -5797,13 +5797,15 @@ def optimize_start(st, doemod, studymod, target, column):
         rd = meta.get("qd_round") if isinstance(meta, dict) else None
         if isinstance(rd, dict) and rd.get("start"):
             return rd["start"]
-        if (matrix.get("operation") or "") not in doemod.SURFACES:
+        if (matrix.get("operation") or "") in doemod.SURFACES:
+            return target
+        # a screen's name is its study's: its follow-ups are there
+        if not studymod.members(st, target):
             die("%s is a %s: optimize starts from a central composite or "
                 "Box-Behnken follow-up (%s doe next %s -c RESPONSE writes "
                 "one)" % (target, (matrix.get("operation") or "design")
                           .replace("_", " "), PROG,
                           doemod.study_of(cfg, target)))
-        return target
     names = studymod.study_or_die(st, target)
     for n in names:
         _, cfg, _ = doemod.load(st, n)
