@@ -5,6 +5,28 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.51.2 — 2026-11-20
+
+Every way to name a run is one click from where readers start (QD-049).
+QD-042 had already moved the table out of "Named stores" into
+`docs/concepts.md`, "Naming a run"; this points at it from the places
+people look first. Nothing else moves, and no table is copied.
+
+### Documentation
+- `qd --help`'s RUN paragraph ends with `docs/concepts.md: "Naming a
+  run"`, in place of a bare `See docs/concepts.md` that hung off the
+  "Stored by provost" sentence, which now comes first. The card is still
+  50 lines of at most 80 columns, so the RUN lines are shorter: "a run
+  id" is "an id", and "@STORE a registered store" is "@STORE a store".
+- README, "Thirty seconds": what `latest`, `latest~1` and `facts` mean in
+  the commands above, and a link to Concepts: Naming a run.
+- `docs/reading.md`, "Reading it back", opens with the same link and the
+  forms a RUN can take.
+
+### Tests
+- `tests/test_help.sh` checks that the card's RUN paragraph ends with
+  the pointer; `tests/check_readme_pointers.py` checks that it lands.
+
 ## 0.51.1 — 2026-11-20
 
 A test fix in the same pull request as 0.51.0 (QD-072), which is not

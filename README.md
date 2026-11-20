@@ -99,6 +99,10 @@ qd compare facts -c cpu.busy_pct --last 5    # the last five runs, host by host
 qd web                                   # all of it, in a browser
 ```
 
+`latest` is the newest run, `latest~1` the one before it, and `facts`
+the newest run of that name. Every way to name a run, an example each,
+is in [Concepts: Naming a run](https://github.com/MartinGallagher-code/quarterdeck/blob/main/docs/concepts.md#naming-a-run).
+
 `A` is the column `uname -r` fills: provost names a field it found no
 name for `A`, `B`, ... as a spreadsheet does (see
 [Concepts](https://github.com/MartinGallagher-code/quarterdeck/blob/main/docs/concepts.md#the-objects)); `qd show latest` shows them.
