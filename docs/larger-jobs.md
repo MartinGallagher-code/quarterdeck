@@ -223,6 +223,7 @@ qd doe analyze iperf -c mbps --report       # and keep doe's plots and HTML repo
 qd doe init fio                             # a starting config: a screen of fio's settings
 qd doe next fio-screen -c read_iops         # a CCD/Box-Behnken follow-up on its big factors
 qd doe run fio-screen-read-iops-ccd.json --like fio-screen   # where the screen ran
+qd doe surface fio-screen-read-iops-ccd      # doe's response surface: where the best is
 ```
 
 The design is
@@ -446,6 +447,94 @@ the follow-up's points is named at the end (`b answered at none of the
 gone?`), and the run exits 1: its points there are not measured, never
 skipped in silence. `qd doe status` shows the study a follow-up belongs
 to.
+
+### The response surface: `qd doe surface`
+
+Once the follow-up is measured, doe fits a response surface to it and
+finds where the best settings are (QD-071, step 6 of a tuning study):
+
+```bash
+qd doe surface fio-screen-read-iops-ccd                 # the follow-up's own response
+qd doe surface fio-screen-read-iops-ccd -c read_lat_p99 # another one
+qd doe surface fio-screen-read-iops-ccd --report        # and keep doe's surface plots
+```
+
+For a central composite on `iodepth` (4 to 36) and `numjobs` (1 to 9),
+with the test suite's stand-in fio, whose read IOPS peaks at iodepth 24
+and 6 jobs, the real doe gives:
+
+```
+qd doe surface -- ccd: read_iops (jobs.0.read.iops, maximise), 16 of 16 points measured
+  model      doe's quadratic fit, each factor coded -1 to +1 over its levels:
+             read_iops = 87697 + 6393 iodepth + 12023 numjobs + 15
+             iodepth*numjobs - 12814 iodepth^2 - 23984 numjobs^2
+  fit        quadratic: R2 1.0000; adjusted 1.0000; predicted 1.0000; lack of
+             fit p=1.0000 (none detected)
+  stationary a maximum, inside the design region: read_iops = 90002, give or
+             take 56.35 (doe's cross-validated error; it gives no prediction
+             interval)
+    factor   stationary  coded   best inside  coded
+    iodepth     23.9938  +0.250      23.9938  +0.250
+    numjobs     6.00292  +0.251      6.00292  +0.251
+  best       inside the design region (doe optimize): read_iops = 90002 at
+             iodepth=23.9938 numjobs=6.00292
+  so         the maximum is inside the design region: confirm it with a run at
+             these settings
+```
+
+Every statistic is doe's. qd hands it the points' responses as `qd doe
+analyze` does (blank, never 0, for a point not measured) and reads back
+what doe found:
+
+- **The model** is doe optimize's: the quadratic (or, with too few points
+  for one, linear) polynomial it fitted, in doe's coding, each factor -1
+  at its low level and +1 at its high one. doe prints the coefficients to
+  four decimals.
+- **The fit**: R², adjusted and predicted R² (doe's model adequacy), and
+  the lack-of-fit test of doe's ANOVA where the design repeats points
+  (its centre points). A small p means the model misses structure.
+- **The stationary point**, where the surface is flat: what kind it is
+  (a maximum, a minimum, a saddle, or a ridge, from the signs of doe's
+  eigenvalues), where it is, in each factor's units and coded, whether
+  it lies inside the design region (every factor between its two
+  levels), and doe's predicted response there. doe gives no prediction
+  interval; its cross-validated error (RMSE) is shown as how far off a
+  prediction typically is.
+- **The best point inside the region**, doe optimize's search of the
+  fitted surface within the levels.
+- **What it means**, said plainly. The optimum is *inside* when the
+  stationary point is the kind wanted (a maximum for a response to
+  maximise, a minimum for one to minimise) and lies inside the region:
+  confirm it with a run there. It is *on the edge* when the best point
+  inside the region sits at a factor's low or high level (`the best
+  point inside the design region is on its edge (iodepth at its high
+  level)`): the optimum is beyond the region, and another round, moved
+  that way, is needed. Moving the region is still yours to do (edit the
+  levels in the config); qd running the rounds itself is QD-072.
+
+A count such as `iodepth` or `numjobs` takes whole numbers; doe rounds a
+factor whose config says `"dtype": "int"`, and reports any other to six
+figures.
+
+`-c` takes one response, by name or column; with none, a follow-up's own
+response (`metadata.qd_follows`), or the config's only one. `--agg`
+reduces each point over its hosts as `analyze` does. `--report [DIR]`
+keeps doe's report and plots as `qd doe analyze --report` does, its
+response-surface plots (`rsm_RESPONSE_A_vs_B.png`, one per pair of
+factors) among them, where `qd web` links them. `--json` prints the
+figures, and the contours `qd web` draws, as JSON.
+
+**In `qd web`**, a central composite or Box-Behnken design's page has a
+"Response surface" card for the column it shows (any other design has a
+button to fit one anyway): the same figures and verdict, and a contour
+chart for each pair of numeric factors, picked from a list when there
+are more than two. The contours are doe's fitted model evaluated by qd's
+engine on a 25 by 25 grid over the design region (and its star points),
+the other factors held at doe's best point; the engine also places the
+contour levels and lines, so the page draws and computes nothing. The
+dashed box is the design region, dots are the design's points (hollow
+where a point is not measured), + is the stationary point and the
+diamond the best point inside the region.
 
 ### A study, every run of it: `qd compare --study` and `qd web`
 

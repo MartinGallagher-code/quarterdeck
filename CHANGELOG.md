@@ -5,12 +5,10 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
-## 0.49.2 — 2026-11-20
+## 0.50.1 — 2026-11-20
 
 The slowest suites make their costly setup once, not once a case (QD-074,
-the owner's "it should be much faster"). 0.49.0, 0.49.1 and 0.49.2 share
-one pull request's line of work; this one is a pull request of its own,
-built on 0.49.1.
+the owner's "it should be much faster"). Patch: the tests only.
 
 ### Tests
 - **Where the time goes:** in `tests/test_doe_next.sh`, 320 of 338
@@ -34,6 +32,65 @@ built on 0.49.1.
   case is the same case; only where its setup comes from changed. `TIMES`
   in `tests/run_tests.sh` has their new seconds, so the three shares stay
   even.
+
+## 0.50.0 — 2026-11-20
+
+A response surface fitted to a central composite or Box-Behnken
+follow-up, with its maximum or minimum and whether that is inside the
+design region or on its edge, and contour charts of it in `qd web`
+(QD-071, step 6 of QD-066).
+
+### Added
+- **`qd doe surface NAME [-c RESPONSE]`** runs `doe analyze` (with its
+  `--csv` tables) and `doe optimize` for one response and reports what
+  doe found: its fitted model (the quadratic, or linear with too few
+  points, in doe's coding), the fit (R², adjusted and predicted R², the
+  lack-of-fit test of doe's ANOVA where points repeat), the stationary
+  point with its kind (maximum, minimum, saddle, ridge), its settings in
+  the factors' own units and coded, and doe's predicted response there
+  with doe's cross-validated error, and doe optimize's best point inside
+  the design region. It then says plainly whether the optimum is inside
+  the region (confirm it) or on its edge, naming the factor and the end
+  (another round is needed). With no `-c` a follow-up's own response
+  (`metadata.qd_follows`) is used. `--report [DIR]` keeps doe's report
+  and its response-surface plots (`rsm_*.png`) as `qd doe analyze
+  --report` does; `--json` prints the figures and qd web's contours
+  (`quarterdeck/doe.py`: `surface`, `verdict`, `surface_grids`,
+  `optimize_text`, `lack_of_fit`, `read_tables`; `quarterdeck/cli.py`:
+  `doe_surface`).
+- **`/api/surface?name=NAME&c=COL&agg=AGG`** in `qd web`, and a
+  "Response surface" card on a central composite or Box-Behnken
+  design's page (a button on any other design's): doe's figures and the
+  verdict, and a contour chart for each pair of numeric factors, the
+  others held at doe's best point. The grid is doe's own fitted
+  polynomial evaluated by the engine, which also places the contour
+  levels, lines and shading; the page only draws them, with the design
+  region, the design's points (hollow where not measured), the
+  stationary point and the best point marked (`quarterdeck/web.py`:
+  `surface`; `quarterdeck/web/app.js`: `surfaceCard`, `contourChart`).
+  `/api/design` says whether a design is a surface design and which of
+  its factors are numeric.
+- Tests: `tests/test_doe_surface.sh` (new) runs a central composite on a
+  stand-in fio whose read IOPS is a known hill and read latency a known
+  bowl (`FIO_PEAK`): the stationary point is found within tolerance and
+  called a maximum (and a minimum), an optimum beyond iodepth's high
+  level is reported on the edge, a point fio failed is left out (never
+  0), `--report` keeps the surface plots, `--json`'s grid is doe's
+  model, and a two-level design has no surface; with the real doe where
+  it is installed. `tests/test_web.sh` checks `/api/surface`. The
+  suite's stand-in doe now fits the quadratic as doe does (least
+  squares in coded units), writes doe's model-adequacy, cross-validation
+  and stationary-point tables, a lack-of-fit row and surface plots, and
+  prints `doe optimize`'s models and surface optimum.
+
+### Changed
+- `qd --help`'s doe line names `surface`, `qd hints` has a surface
+  line, and docs/getting-started.md's map names it.
+- **The manual:** `docs/larger-jobs.md` has a new section, "The response
+  surface: `qd doe surface`", after the doe follow-up and before "A
+  study, every run of it", and the `qd doe` command block names
+  `qd doe surface`; `docs/reading.md`'s `qd web` list names the
+  response surface card.
 
 ## 0.49.1 — 2026-11-20
 

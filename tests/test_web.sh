@@ -372,6 +372,46 @@ t_a_designs_blank_points() {
     assert_eq "$(echo "$out" | design_json '[p["value"] for p in d["points"] if p["levels"] == {"streams": "4", "window": "1024"}]')" "[None]"
 }
 
+# a response surface design's page: doe's fit, its stationary point and
+# optimum, and the contours of doe's model on the engine's grid -- every
+# figure /api/surface's (QD-071)
+t_a_designs_surface() {
+    stand_in_doe
+    surface_design "iodepth=24,numjobs=6"
+    design_config
+    # shellcheck disable=SC2016  # expanded on the far side, not here
+    qdf doe run bench.json -s hosts.txt -q -- 'echo "mbps: $(( 100 * {streams} ))"' > /dev/null
+    start_web
+    out="$(get '/api/design?name=ccd')"
+    assert_eq "$(echo "$out" | design_json 'd["surface"]')" \
+        "{'operation': 'central_composite', 'fit': True, 'numeric': ['iodepth', 'numjobs']}"
+    assert_eq "$(get '/api/design?name=stream-test' | design_json 'd["surface"]["fit"]')" "False"
+    # the follow-up's own response by default
+    out="$(get '/api/surface?name=ccd')"
+    assert_contains "$out" "200"
+    assert_eq "$(echo "$out" | design_json 'd["response"], d["column"], d["measured"], d["total"]')" \
+        "('read_iops', 'jobs.0.read.iops', 16, 16)"
+    assert_eq "$(echo "$out" | design_json 'd["stationary"]["kind"], d["stationary"]["inside"], d["verdict"]["where"]')" \
+        "('maximum', True, 'inside')"
+    assert_eq "$(echo "$out" | design_json 'abs(float(d["stationary"]["settings"]["iodepth"]) - 24) < 1')" "True"
+    # one pair, its grid, levels, lines and bands the engine's
+    assert_eq "$(echo "$out" | design_json '[(p["a"], p["b"], len(p["x"]), len(p["z"]), len(p["bands"])) for p in d["pairs"]]')" \
+        "[('iodepth', 'numjobs', 25, 25, 25)]"
+    assert_eq "$(echo "$out" | design_json 'all(l["segments"] for l in d["pairs"][0]["lines"])')" "True"
+    # the column the page picked, or a response by name
+    out="$(get '/api/surface?name=ccd&c=jobs.0.read.clat_ns.mean')"
+    assert_eq "$(echo "$out" | design_json 'd["response"], d["optimize"], d["stationary"]["kind"]')" \
+        "('read_lat_mean', 'minimize', 'minimum')"
+    # two levels a factor: no quadratic and no stationary point; the
+    # contours are of doe's plane
+    out="$(get '/api/surface?name=stream-test&c=mbps')"
+    assert_eq "$(echo "$out" | design_json 'd["stationary"], d["verdict"]["where"], d["model"]["kind"], len(d["pairs"])')" \
+        "(None, 'none', 'linear', 1)"
+    out="$(get '/api/surface?name=nope')"
+    assert_contains "$out" "400"
+    assert_contains "$out" "no design 'nope'"
+}
+
 t_raw_export_and_overlay() {
     fixture seed seed
     start_web
@@ -655,6 +695,7 @@ run_test "compare: a qualified baseline, peer groups" t_compare_against_a_qualif
 run_test "campaigns and designs, and their runs"     t_campaigns_and_designs_are_listed
 run_test "a design's charts: the engine's figures"   t_a_designs_charts
 run_test "a design's charts: blank is left out"      t_a_designs_blank_points
+run_test "a design's response surface"              t_a_designs_surface
 run_test "telemetry joined as the terminal joins it" t_join_is_the_terminal_s
 run_test "raw answers, export, overlay"             t_raw_export_and_overlay
 run_test "static page; nothing escapes its root"    t_static_page_and_no_escape

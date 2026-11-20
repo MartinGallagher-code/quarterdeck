@@ -775,6 +775,103 @@ def pbdesign(k):
     rows = [[g[(j - i) % (n - 1)] == "+" for j in range(n - 1)]
             for i in range(n - 1)] + [[False] * (n - 1)]
     return [r[:k] for r in rows]
+def solve(A, y):
+    # Gaussian elimination, partial pivoting: A x = y, or None if singular
+    n = len(A)
+    M = [list(map(float, A[i])) + [float(y[i])] for i in range(n)]
+    for c in range(n):
+        p = max(range(c, n), key=lambda r: abs(M[r][c]))
+        if abs(M[p][c]) < 1e-12:
+            return None
+        M[c], M[p] = M[p], M[c]
+        for r in range(n):
+            if r != c:
+                k = M[r][c] / M[c][c]
+                M[r] = [x - k * z for x, z in zip(M[r], M[c])]
+    return [M[i][n] / M[i][i] for i in range(n)]
+def coding(f):
+    lv = [float(x) for x in f["levels"]]
+    return (min(lv) + max(lv)) / 2.0, (max(lv) - min(lv)) / 2.0
+def quad(m, cfg, vals, linear=False):
+    # doe's rsm.fit_rsm, least squares in coded units, or None where the
+    # model cannot be fitted (a quadratic wants a middle level)
+    fs = m["factor_names"]
+    facs = dict((f["name"], f) for f in cfg["factors"])
+    try:
+        codes = dict((f, coding(facs[f])) for f in fs)
+    except (KeyError, ValueError):
+        return None
+    rows = [r for r in m["runs"] if r["run_id"] in vals]
+    x = [dict((f, (float(r["factor_values"][f]) - codes[f][0]) /
+               (codes[f][1] or 1.0)) for f in fs) for r in rows]
+    terms = ["intercept"] + fs
+    if not linear:
+        terms += ["%s*%s" % (p, q) for p, q in itertools.combinations(fs, 2)]
+        terms += ["%s^2" % f for f in fs]
+        if any(len(set(round(c[f], 9) for c in x)) < 3 for f in fs):
+            return None
+    if len(rows) < len(terms) + 1:
+        return None
+    def row(c):
+        out = [1.0] + [c[f] for f in fs]
+        if not linear:
+            out += [c[p] * c[q] for p, q in itertools.combinations(fs, 2)]
+            out += [c[f] ** 2 for f in fs]
+        return out
+    X = [row(c) for c in x]
+    y = [float(vals[r["run_id"]]) for r in rows]
+    k = len(terms)
+    XtX = [[sum(X[n][i] * X[n][j] for n in range(len(X))) for j in range(k)]
+           for i in range(k)]
+    beta = solve(XtX, [sum(X[n][i] * y[n] for n in range(len(X)))
+                       for i in range(k)])
+    if beta is None:
+        return None
+    fit = [sum(b * v for b, v in zip(beta, xr)) for xr in X]
+    mean = sum(y) / len(y)
+    ss_res = sum((a - b) ** 2 for a, b in zip(y, fit))
+    ss_tot = sum((a - mean) ** 2 for a in y)
+    r2 = 1 - ss_res / ss_tot if ss_tot else 0.0
+    n, p = len(y), k - 1
+    adj = 1 - (ss_res / (n - p - 1)) / (ss_tot / (n - 1)) if ss_tot else r2
+    inv = [solve(XtX, [1.0 if i == j else 0.0 for i in range(k)])
+           for j in range(k)]
+    h = [sum(X[r][i] * inv[i][j] * X[r][j] for i in range(k)
+             for j in range(k)) for r in range(n)]
+    press = sum(((a - b) / (1 - hh + 1e-12)) ** 2
+                for a, b, hh in zip(y, fit, h))
+    return dict(terms=terms, beta=beta, r2=r2, adj=adj, rows=rows, y=y,
+                codes=codes, fs=fs, ss_res=ss_res, ss_tot=ss_tot,
+                press=press, predict=lambda c: sum(
+                    b * v for b, v in zip(beta, row(c))))
+def stationary(q):
+    # where the quadratic's gradient is 0, and its kind by the Hessian
+    fs, b = q["fs"], dict(zip(q["terms"], q["beta"]))
+    k = len(fs)
+    H = [[2 * b["%s^2" % fs[i]] if i == j else
+          b["%s*%s" % (fs[min(i, j)], fs[max(i, j)])] for j in range(k)]
+         for i in range(k)]
+    xs = solve(H, [-b[f] for f in fs])
+    if xs is None:
+        return None
+    def det(M):
+        if len(M) == 1:
+            return M[0][0]
+        return sum((-1) ** c * M[0][c] * det([r[:c] + r[c + 1:] for r in M[1:]])
+                   for c in range(len(M)))
+    # Sylvester: the leading minors' signs say definite, or neither
+    minors = [det([r[:i] for r in H[:i]]) for i in range(1, k + 1)]
+    if all(d > 0 for d in minors):
+        kind = "minimum"
+    elif all((d < 0) if i % 2 == 0 else (d > 0) for i, d in enumerate(minors)):
+        kind = "maximum"
+    else:
+        kind = "saddle"
+    c = dict(zip(fs, xs))
+    return dict(kind=kind, coded=c, value=q["predict"](c),
+                inside=all(abs(v) <= 1 + 1e-9 for v in xs))
+def natural(q, f, c):
+    return "%.6g" % (q["codes"][f][0] + c * q["codes"][f][1])
 if a[0] == "suggest":
     # doe's response_surface rule (doe/suggest.py), in doe's words
     k, budget = int(opt("--factors")), int(opt("--budget"))
@@ -872,6 +969,7 @@ elif a[0] == "analyze":
         print("Partial mode: analyzing %d/%d completed runs"
               % (len(got), len(m["runs"])))
     log = open(os.path.join(os.path.dirname(sys.argv[0]), "doe-values"), "a")
+    surfaced = []
     for resp in [r["name"] for r in cfg["responses"]]:
         vals = {}
         for r in got:
@@ -902,6 +1000,58 @@ elif a[0] == "analyze":
                         "pct_contribution", "ci_low", "ci_high"])
             for f, e in eff:
                 w.writerow([f, e, 0.0, abs(e) / total * 100, 0.0, 0.0])
+        # a design with a middle level gets doe's quadratic surface: its
+        # lack of fit (where points repeat), adequacy, stationary point
+        q = quad(m, cfg, vals)
+        if q is None:
+            continue
+        surfaced.append(resp)
+        groups = {}
+        for r, yv in zip(q["rows"], q["y"]):
+            groups.setdefault(tuple(sorted(r["factor_values"].items())),
+                              []).append(yv)
+        pe = sum(sum((v - sum(g) / len(g)) ** 2 for v in g)
+                 for g in groups.values())
+        df_pe = len(q["y"]) - len(groups)
+        df_lof = len(groups) - len(q["terms"])
+        print("\n=== ANOVA Table: %s ===" % resp)
+        if df_pe > 0 and df_lof > 0 and pe > 0:
+            f_lof = ((q["ss_res"] - pe) / df_lof) / (pe / df_pe)
+            # not doe's F test: a p that falls as F grows, for the suite
+            print("%-25s %4d %12.4f %12.4f %10.3f %10.4f" % (
+                "Lack of Fit", df_lof, q["ss_res"] - pe,
+                (q["ss_res"] - pe) / df_lof, f_lof, 2.718281828 ** -f_lof))
+        sp = stationary(q)
+        if not opt("--csv"):
+            continue
+        n = len(q["y"])
+        w = csv.writer(open(os.path.join(
+            opt("--csv"), "model_adequacy_%s.csv" % resp), "w"))
+        w.writerow(["metric", "value"])
+        for k_, v_ in (("model_type", "quadratic"), ("n_observations", n),
+                       ("n_parameters", len(q["terms"])),
+                       ("r_squared", q["r2"]), ("adj_r_squared", q["adj"]),
+                       ("predicted_r_squared",
+                        1 - q["press"] / q["ss_tot"] if q["ss_tot"] else 0),
+                       ("press", q["press"])):
+            w.writerow([k_, v_])
+        w = csv.writer(open(os.path.join(
+            opt("--csv"), "cross_validation_%s.csv" % resp), "w"))
+        w.writerow(["scope", "fold", "run_id", "predicted", "actual",
+                    "absolute_error"])
+        w.writerow(["rmse_cv", "", "", (q["press"] / n) ** 0.5, "", ""])
+        if sp is None:
+            continue
+        w = csv.writer(open(os.path.join(
+            opt("--csv"), "stationary_point_%s.csv" % resp), "w"))
+        w.writerow(["metric", "value"])
+        w.writerow(["nature", sp["kind"]])
+        w.writerow(["predicted_value", sp["value"]])
+        w.writerow(["inside_design_region", sp["inside"]])
+        w.writerow(["eigenvalues", ""])
+        for f in q["fs"]:
+            w.writerow(["coded[%s]" % f, sp["coded"][f]])
+            w.writerow(["natural[%s]" % f, natural(q, f, sp["coded"][f])])
     # its plots and HTML report, unless told not to, where the real one
     # puts them: settings.processed_directory, else the results
     keep = cfg["settings"].get("processed_directory") or d
@@ -910,11 +1060,54 @@ elif a[0] == "analyze":
         for resp in names_:
             open(os.path.join(keep, "main_effects_%s.png" % resp),
                  "wb").write(b"\x89PNG\r\n\x1a\n")
+        # and a surface plot of each pair, where it fitted a quadratic
+        for resp in surfaced:
+            for p_, q_ in itertools.combinations(m["factor_names"], 2):
+                open(os.path.join(keep, "rsm_%s_%s_vs_%s.png" % (resp, p_, q_)),
+                     "wb").write(b"\x89PNG\r\n\x1a\n")
     if "--no-report" not in a:
         open(os.path.join(keep, "report.html"), "w").write(
             "<html><body><h1>DOE report: %s</h1></body></html>\n"
             % ", ".join(names_))
         print("\nHTML report: %s" % os.path.join(keep, "report.html"))
+elif a[0] == "optimize":
+    # doe optimize's text: the linear and quadratic models' coefficients,
+    # and the best point inside the region (a fine grid, where doe uses
+    # L-BFGS-B)
+    d = opt("--results-dir")
+    m = json.load(open(os.path.join(d, "design_matrix.json")))
+    for r in cfg["responses"]:
+        vals = {}
+        for run in m["runs"]:
+            p = os.path.join(d, "run_%d.json" % run["run_id"])
+            if os.path.exists(p) and r["name"] in json.load(open(p)):
+                vals[run["run_id"]] = json.load(open(p))[r["name"]]
+        print("=== Optimization: %s ===" % r["name"])
+        print("Direction: %s\n" % r.get("optimize", "maximize"))
+        lin, q = quad(m, cfg, vals, linear=True), quad(m, cfg, vals)
+        for label, mod in (("linear", lin), ("quadratic", q)):
+            if mod is None:
+                continue
+            print("RSM Model (%s, R² = %.4f, Adj R² = %.4f):"
+                  % (label, mod["r2"], mod["adj"]))
+            print("  Coefficients:")
+            for t, b in zip(mod["terms"], mod["beta"]):
+                print("    %-30s %s%.4f" % (t, "+" if b >= 0 else "", b))
+            print()
+        best = q if q and (lin is None or q["adj"] > lin["adj"]) else lin
+        if best is None:
+            continue
+        fs = best["fs"]
+        n = {1: 400, 2: 100, 3: 20}.get(len(fs), 8)
+        grid = [-1 + 2.0 * i / n for i in range(n + 1)]
+        sign = -1 if r.get("optimize") == "minimize" else 1
+        top = max((dict(zip(fs, c)) for c in itertools.product(
+            grid, repeat=len(fs))), key=lambda c: sign * best["predict"](c))
+        print("  Surface optimum (via L-BFGS-B, %s model):"
+              % ("quadratic" if best is q else "linear"))
+        for f in fs:
+            print("    %s = %s" % (f, natural(best, f, top[f])))
+        print("    Predicted value: %.4f\n" % best["predict"](top))
 EOF
     chmod +x "$FAKE_BIN/doe"
     export QD_DOE="$FAKE_BIN/doe"
@@ -932,6 +1125,10 @@ EOF
 #               p99 200us + 3000 for randrw + 1200 with libaio
 #   write clat  mean 80us + 500 at numjobs 8;
 #               p99 300us + 2500 buffered (direct=0) + 900 for randrw
+# FIO_PEAK=iodepth=D,numjobs=J: read IOPS 90000 - 50 (iodepth-D)^2 -
+# 1500 (numjobs-J)^2, a maximum at (D, J), and read clat's mean 100us +
+# 0.5 (iodepth-D)^2 + 20 (numjobs-J)^2, a minimum there: a known surface,
+# give or take a little noise.
 # FIO_FAIL=TEXT: a job error (err=22) and exit 1 when the arguments contain
 # TEXT, its JSON printed all the same, every figure 0 -- as fio does.
 stand_in_fio() {
@@ -951,11 +1148,25 @@ mix = num("rwmixread", "50")
 fail = os.environ.get("FIO_FAIL")
 err = 22 if fail and fail in " ".join(sys.argv[1:]) else 0
 r_iops = 20000 + 30000 * (depth >= 32) - 15000 * (bs >= 128)
+peak = dict(kv.split("=") for kv in os.environ.get("FIO_PEAK", "").split(",")
+            if "=" in kv)
 w_iops = 8000 + 12000 * (jobs >= 8) - 5000 * (mix >= 70)
 r_mean = 50 + 400 * (depth >= 32) + 100 * (jobs >= 8)
 r_p99 = 200 + 3000 * (o.get("rw") == "randrw") + 1200 * (o.get("ioengine") == "libaio")
 w_mean = 80 + 500 * (jobs >= 8)
 w_p99 = 300 + 2500 * (o.get("direct") == "0") + 900 * (o.get("rw") == "randrw")
+if peak:
+    # FIO_PEAK=iodepth=D,numjobs=J: read IOPS a smooth hill whose top is at
+    # (D, J), read clat's mean a bowl whose bottom is there; each run's
+    # noise -40..+40 IO/s and -0.4..+0.4us, in turn, so repeated points
+    # differ as real ones do
+    calls = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])),
+                         "fio-calls")
+    k = len(open(calls).read()) if os.path.exists(calls) else 0
+    open(calls, "a").write(".")
+    dd, jj = depth - float(peak["iodepth"]), jobs - float(peak["numjobs"])
+    r_iops = 90000 - 50 * dd ** 2 - 1500 * jj ** 2 + 20 * (k % 5 - 2)
+    r_mean = 100 + 0.5 * dd ** 2 + 20 * jj ** 2 + 0.2 * (k % 5 - 2)
 def side(iops, mean_us, p99_us):
     if err:
         iops = mean_us = p99_us = 0
@@ -995,4 +1206,40 @@ if err:
 EOF
     chmod +x "$FAKE_BIN/fio"
     export PATH="$FAKE_BIN:$PATH"
+}
+
+# -- a response surface design -----------------------------------------------
+
+# a face-centred central composite named ccd on iodepth 4..36 and numjobs
+# 1..9 (the centre 20, 5), its points run on host a by stand_in_fio with
+# FIO_PEAK=$1: a known surface for doe to fit (test_doe_surface.sh, and
+# test_web.sh's /api/surface)
+surface_design() {
+    stand_in_fio
+    install_fake_ssh
+    fake_host a
+    echo a > hosts.txt
+    cat > ccd.json <<'JSON'
+{
+  "metadata": {
+    "name": "ccd",
+    "qd_command": "fio --name=qd --filename={filename} --size=1G --time_based --runtime=5 --group_reporting --output-format=json --rw=randrw --rwmixread=50 --bs=4k --iodepth={iodepth} --numjobs={numjobs} --ioengine=libaio --direct=1",
+    "qd_follows": {"design": "screen", "response": "read_iops",
+                   "column": "jobs.0.read.iops", "optimize": "maximize"}
+  },
+  "factors": [
+    {"name": "iodepth", "levels": ["4", "36"], "type": "continuous"},
+    {"name": "numjobs", "levels": ["1", "9"], "type": "continuous"}
+  ],
+  "fixed_factors": {"filename": "/srv/scratch/qd-fio.dat"},
+  "responses": [
+    {"name": "read_iops", "column": "jobs.0.read.iops", "optimize": "maximize"},
+    {"name": "read_lat_mean", "column": "jobs.0.read.clat_ns.mean", "optimize": "minimize"}
+  ],
+  "settings": {"operation": "central_composite", "block_count": 1}
+}
+JSON
+    # FIO_FAIL (stand_in_fio) fails a point: its run exits 1, and it stays
+    # not measured
+    FIO_PEAK="$1" qdf_rc doe run ccd.json -s hosts.txt -q > /dev/null
 }

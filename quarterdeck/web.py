@@ -11,8 +11,10 @@ cannot disagree about a number.  Campaigns and designs are listed as
 `qd campaign status` and `qd doe status` list them, a design with its
 main-effect, interaction and Pareto figures (doe.effects) and a link to
 doe's own report where `qd doe analyze --report` kept one, served from
-qd's cache at /doe/, and a study's runs (a screen and its follow-ups) as
-`qd compare --study` lines them up.
+qd's cache at /doe/, doe's response surface (doe.surface: its model,
+stationary point and optimum, and contours of each factor pair), and a
+study's runs (a screen and its follow-ups) as `qd compare --study` lines
+them up.
 
 When datacenter_visualization is installed its viewer is served beside it at
 /floor/, with qd's overlays at /floor/files/, so "Floor plan" on any dataset
@@ -677,6 +679,11 @@ class Api(object):
         if not column:
             return out
         out.update(doemod.effects(self.book, name, column, agg))
+        op = (cfg.get("settings") or {}).get("operation") or ""
+        code = doemod.coding(cfg, out["factors"])
+        out["surface"] = {
+            "operation": op, "fit": op in doemod.SURFACES,
+            "numeric": [f for f in out["factors"] if code[f][2] is None]}
         path = doemod.report_path(self.book, name, column)
         html, plots = doemod.report_files(path)
         if html or plots:
@@ -687,6 +694,18 @@ class Api(object):
                 "plots": [{"name": p, "url": base + "/" + quote(p)}
                           for p in plots]}
         return out
+
+    def surface(self, q):
+        """doe's response surface for one response of a design: its model
+        and fit, the stationary point and its kind, the best point inside
+        the design region and whether it is on the edge, and each factor
+        pair's contours of doe's model -- doemod.surface, every number the
+        page draws (QD-071)."""
+        name = one(q, "name")
+        if not name or name not in doemod.names(self.book):
+            die("no design %r in this store" % (name or ""))
+        return doemod.surface(self.book, name, one(q, "c") or None,
+                              one(q, "agg") or "median")
 
     def raw(self, q):
         t = self.table(one(q, "e"), one(q, "t"))
@@ -866,7 +885,8 @@ ROUTES = {"/api/entries": "entries", "/api/entry": "entry_info",
           "/api/trend": "trend", "/api/diff": "diff", "/api/raw": "raw",
           "/api/overlay": "overlay", "/api/compare": "compare",
           "/api/groups": "groups", "/api/join": "join",
-          "/api/design": "design", "/api/study": "study"}
+          "/api/design": "design", "/api/surface": "surface",
+          "/api/study": "study"}
 
 
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
