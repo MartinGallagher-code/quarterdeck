@@ -5,6 +5,20 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.51.1 — 2026-11-20
+
+A test fix in the same pull request as 0.51.0 (QD-072), which is not
+published on its own.
+
+### Tests
+- `tests/test_doe_optimize.sh`'s interrupted optimize starts qd with
+  SIGINT set back to its default, as `test_run.sh`'s `interrupt_when`
+  does. A suite run in the background starts with SIGINT ignored, so on
+  CI's provost 2.1.0 job the Ctrl-C the stand-in fio sends never reached
+  qd, which ran on to the end and exited 0. The suite's figure in
+  `TIMES` is now CI's measured one (1200 s over its three parts, not
+  600).
+
 ## 0.51.0 — 2026-11-20
 
 qd runs the rounds of a tuning study itself until it finds an optimum,

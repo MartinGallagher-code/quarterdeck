@@ -216,17 +216,20 @@ open("spent", "w").write(str(r["spent"]))
 t_an_interrupted_optimize_carries_on() {
     stand_in_doe
     start
-    # fio's 19th call is the third step of the path; job control on, so
-    # the run in the background takes SIGINT as Ctrl-C (a script's
-    # background jobs ignore it otherwise)
-    set -m
-    FIO_INTERRUPT="19:$PWD/pid" "$PY" "$QD_DIR/qd" doe optimize ccd \
+    # fio's 19th call is the third step of the path: it sends SIGINT to
+    # qd alone.  A suite run in the background (run_tests.sh) starts with
+    # SIGINT ignored, and a python that starts so never hears it, so qd is
+    # started with it back (test_run.sh's interrupt_when does the same)
+    set +e
+    FIO_INTERRUPT="19:$PWD/pid" "$PY" -c 'import signal, subprocess, sys
+p = subprocess.Popen(sys.argv[2:], preexec_fn=lambda: signal.signal(
+    signal.SIGINT, signal.SIG_DFL))
+open(sys.argv[1], "w").write(str(p.pid))
+sys.exit(p.wait())' "$PWD/pid" "$PY" "$QD_DIR/qd" doe optimize ccd \
         --ssh "$FAKE_BIN/ssh" --scp "$FAKE_BIN/scp" -c read_iops \
-        --budget 60 -q > out 2> err &
-    echo "$!" > pid
-    rc=0
-    wait "$!" || rc=$?
-    set +m
+        --budget 60 -q > out 2> err
+    rc=$?
+    set -e
     assert_eq "$rc" "130"
     assert_contains "$(cat err)" "interrupted (Ctrl-C) at ccd-read-iops-path1 point 3, which is kept as not measured"
     assert_eq "$(calls)" "19"
