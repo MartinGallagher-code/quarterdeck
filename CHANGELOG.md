@@ -8,7 +8,9 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 ## 0.50.1 — 2026-11-20
 
 The slowest suites make their costly setup once, not once a case (QD-074,
-the owner's "it should be much faster"). Patch: the tests only.
+the owner's "it should be much faster"), and CI's store-check job takes
+provost 2.28.0, which files a run in a fraction of the time. Patch: tests
+and CI only.
 
 ### Tests
 - **Where the time goes:** in `tests/test_doe_next.sh`, 320 of 338
@@ -33,6 +35,18 @@ the owner's "it should be much faster"). Patch: the tests only.
   case is the same case; only where its setup comes from changed. `TIMES`
   in `tests/run_tests.sh` has their new seconds, so the three shares stay
   even.
+
+### Changed
+- **CI's store-check job takes provost 2.28.0** (`PROVOST_REF` at provost's
+  main, d7ce5ea; the job and `docs/contributing.md` say so), not 2.19.0.
+  2.28.0 reads a capture into a dataset the store already has with that
+  dataset's last strategy first, and scans its strategy ceilings once
+  (provost QD-056): a filing takes a fraction of the time. The whole suite
+  here on 2.28.0, every store checked: 784 s, four at a time, against 1522
+  s on 2.24.0 before this release's fixtures (one case fails here, as on
+  `main`: `ssh`'s klist case, which needs ssh and klist this machine has
+  not). The other suite jobs take PyPI's newest provost, still 2.24.0:
+  they gain this when 2.28.0 is published there.
 
 ## 0.50.0 — 2026-11-20
 

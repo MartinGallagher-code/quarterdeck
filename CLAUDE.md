@@ -68,7 +68,7 @@ bash tests/run_tests.sh --shard 2/3    # one of CI's three shares of the suites
 
 CI (`.github/workflows/ci.yml`) runs the whole suite on every pull request
 and every push to `main`, eight ways: Python 3.9 to 3.13, a real 3.6 in a
-container, PyPI's provost 2.1.0, and provost 2.19.0 from its repository
+container, PyPI's provost 2.1.0, and provost 2.28.0 from its repository
 with every store a case leaves checked by `provost store check`
 (`QD_STORE_CHECK=require`, QD-031; a case that makes a store by hand
 names it to `no_store_check`). Each of the seven is split over three
