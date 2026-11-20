@@ -5,6 +5,34 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.51.2 — 2026-11-20
+
+A fio tuning study, start to finish (QD-066): the seven steps QD-067 to
+QD-072 built, joined up, written down and tested as one.
+
+### Documentation
+- `docs/fio-study.md`, a new chapter: one drive's best fio settings in
+  seven `qd doe` steps (the screen, its effects, the follow-up, run
+  `--like` the screen, the study compared, the response surface, the
+  rounds to the command line to use), with what to decide and what to
+  read at each, the real doe's output for each, what the study costs
+  the drive, and what to do when `qd doe optimize` stops short. Linked
+  from the README, the manual's contents and "Designed experiments".
+
+### Tests
+- `tests/test_fio_study.sh`: the whole study in one case, every step run
+  on what the one before it filed, from `qd doe init fio` to the
+  confirmed settings and their command line, and qd web's views of the
+  screen's effects, the study and the region's surface; and again with
+  the real doe where it is installed. With the real doe, the case checks
+  only what does not turn on whether scipy says doe's search for a
+  region's best point converged, which differs between machines for the
+  same fit (doe 0.5.0): on CI's runners doe printed no best point where it
+  did here. The stand-in doe's case checks every step exactly.
+- `stand_in_fio`'s `FIO_PEAK` takes `scale=S`, which flattens its hill so
+  read IOPS stays above 0 over a whole screen (the default, 1, leaves
+  every other suite's numbers as they were).
+
 ## 0.51.1 — 2026-11-20
 
 A test fix in the same pull request as 0.51.0 (QD-072), which is not

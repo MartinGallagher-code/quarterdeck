@@ -227,6 +227,10 @@ qd doe surface fio-screen-read-iops-ccd      # doe's response surface: where the
 qd doe optimize fio-screen -c read_iops --budget 60   # rounds until the optimum: the settings to use
 ```
 
+The last six are the steps of a fio tuning study, which
+[A fio tuning study, start to finish](fio-study.md) takes in order on
+one drive, with what to read in each answer.
+
 The design is
 [design_of_experiments](https://github.com/MartinGallagher-code/design_of_experiments)'
 (`doe`, `pip install doehelper`): its config names the factors and their

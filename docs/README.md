@@ -34,6 +34,7 @@ The front page is [the README](../README.md).
   - [Which hosts have had it: `qd coverage`](larger-jobs.md#which-hosts-have-had-it-qd-coverage)
   - [A system in parts: `qd campaign`](larger-jobs.md#a-system-in-parts-qd-campaign)
   - [Designed experiments: `qd doe`](larger-jobs.md#designed-experiments-qd-doe)
+- **[A fio tuning study, start to finish](fio-study.md)**: a drive's best fio settings in seven `qd doe` steps.
 - **[Telemetry, the floor plan and export](telemetry-and-export.md)**
   - [Beside the telemetry: `qd join`](telemetry-and-export.md#beside-the-telemetry-qd-join)
   - [On the floor plan](telemetry-and-export.md#on-the-floor-plan)
