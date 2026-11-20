@@ -1008,6 +1008,94 @@ elif a[0] == "analyze":
             "<html><body><h1>DOE report: %s</h1></body></html>\n"
             % ", ".join(names_))
         print("\nHTML report: %s" % os.path.join(keep, "report.html"))
+elif a[0] == "optimize" and "--steepest" in a:
+    # doe optimize --steepest (doe/rsm.py steepest_ascent): the linear
+    # model's gradient in coded units, scaled so the factor that moves most
+    # moves half a unit a step, ten steps, each decoded to six figures
+    d = opt("--results-dir")
+    m = json.load(open(os.path.join(d, "design_matrix.json")))
+    for r in cfg["responses"]:
+        vals = {}
+        for run in m["runs"]:
+            p = os.path.join(d, "run_%d.json" % run["run_id"])
+            if os.path.exists(p) and r["name"] in json.load(open(p)):
+                vals[run["run_id"]] = json.load(open(p))[r["name"]]
+        if not vals:
+            continue
+        lin = quad(m, cfg, vals, linear=True)
+        if lin is None:
+            continue
+        b = dict(zip(lin["terms"], lin["beta"]))
+        fs = m["factor_names"]
+        g = [b.get(f, 0.0) for f in fs]
+        if r.get("optimize") == "minimize":
+            g = [-x for x in g]
+        top = max(abs(x) for x in g)
+        print("\n=== Steepest %s: %s ===" % (
+            "Ascent" if r.get("optimize", "maximize") == "maximize"
+            else "Descent", r["name"]))
+        print("%-6s" % "Step" + "".join("%14s" % f for f in fs)
+              + "%14s" % "Predicted")
+        print("-" * (6 + 14 * (len(fs) + 1)))
+        if top == 0:
+            continue
+        for step in range(11):
+            c = [x / top * step * 0.5 for x in g]
+            pv = b["intercept"] + sum(b.get(f, 0.0) * x for f, x in zip(fs, c))
+            print("%-6d" % step + "".join(
+                "%14s" % natural(lin, f, x) for f, x in zip(fs, c))
+                + "%14.4f" % pv)
+elif a[0] == "next-batch":
+    # doe next-batch: refine perturbs the largest value seen (whatever the
+    # response's direction, as doe/adaptive.py does) within a quarter of
+    # each factor's range; model_guided (and bayesian, here) puts the
+    # model's best point inside the region first, then points spread over
+    # it.  The runs are appended to the design matrix, as doe does.
+    import random
+    d = opt("--results-dir")
+    m = json.load(open(os.path.join(d, "design_matrix.json")))
+    r = cfg["responses"][0]
+    vals = {}
+    for run in m["runs"]:
+        p = os.path.join(d, "run_%d.json" % run["run_id"])
+        if os.path.exists(p) and r["name"] in json.load(open(p)):
+            vals[run["run_id"]] = json.load(open(p))[r["name"]]
+    rnd = random.Random(int(opt("--seed") or 0))
+    n = int(opt("--batch-size") or 4)
+    facs = dict((f["name"], f) for f in cfg["factors"])
+    fs = m["factor_names"]
+    def span(f):
+        lv = [float(x) for x in facs[f]["levels"]]
+        return lv[0], lv[1]
+    new = []
+    if (opt("--strategy") or "refine") == "refine":
+        best = max(vals, key=lambda k: vals[k])
+        brun = [x for x in m["runs"] if x["run_id"] == best][0]
+        for _ in range(n):
+            fv = {}
+            for f in fs:
+                lo, hi = span(f)
+                c, h = float(brun["factor_values"][f]), (hi - lo) * 0.25
+                fv[f] = "%.6g" % rnd.uniform(max(lo, c - h), min(hi, c + h))
+            new.append(fv)
+    else:
+        q = quad(m, cfg, vals) or quad(m, cfg, vals, linear=True)
+        sign = -1 if r.get("optimize") == "minimize" else 1
+        grid = [-1 + 2.0 * i / 40 for i in range(41)]
+        top = max((dict(zip(fs, c)) for c in itertools.product(
+            grid, repeat=len(fs))), key=lambda c: sign * q["predict"](c))
+        new.append(dict((f, natural(q, f, top[f])) for f in fs))
+        while len(new) < n:
+            new.append(dict((f, "%.6g" % rnd.uniform(*span(f))) for f in fs))
+    k = max(x["run_id"] for x in m["runs"])
+    for i, fv in enumerate(new):
+        m["runs"].append({"run_id": k + 1 + i, "block_id": 1,
+                          "factor_values": fv, "whole_plot_id": 0})
+    json.dump(m, open(os.path.join(cfg["settings"]["out_directory"],
+                                   "design_matrix.json"), "w"))
+    open(opt("--output"), "w").write("#!/bin/sh\n")
+    print("Phase 1: generated %d new runs -> %s" % (len(new), opt("--output")))
+    print("Design matrix updated: %d total runs" % len(m["runs"]))
 elif a[0] == "optimize":
     # doe optimize's text: the linear and quadratic models' coefficients,
     # and the best point inside the region (a fine grid, where doe uses
@@ -1069,6 +1157,8 @@ EOF
 # give or take a little noise.
 # FIO_FAIL=TEXT: a job error (err=22) and exit 1 when the arguments contain
 # TEXT, its JSON printed all the same, every figure 0 -- as fio does.
+# FIO_INTERRUPT=N:PIDFILE (with FIO_PEAK): the Nth call sends SIGINT to
+# the process whose id is in PIDFILE, as Ctrl-C would.
 stand_in_fio() {
     cat > "$FAKE_BIN/fio" <<'EOF'
 #!/usr/bin/env python3
@@ -1102,6 +1192,12 @@ if peak:
                          "fio-calls")
     k = len(open(calls).read()) if os.path.exists(calls) else 0
     open(calls, "a").write(".")
+    # FIO_INTERRUPT=N:PIDFILE: the Nth call sends SIGINT to the process
+    # whose id PIDFILE holds (qd, interrupted mid-run as Ctrl-C would)
+    stop = os.environ.get("FIO_INTERRUPT", "")
+    if stop and k + 1 == int(stop.split(":", 1)[0]):
+        import signal
+        os.kill(int(open(stop.split(":", 1)[1]).read()), signal.SIGINT)
     dd, jj = depth - float(peak["iodepth"]), jobs - float(peak["numjobs"])
     r_iops = 90000 - 50 * dd ** 2 - 1500 * jj ** 2 + 20 * (k % 5 - 2)
     r_mean = 100 + 0.5 * dd ** 2 + 20 * jj ** 2 + 0.2 * (k % 5 - 2)
