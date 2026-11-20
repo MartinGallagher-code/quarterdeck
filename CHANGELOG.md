@@ -63,12 +63,22 @@ design region or on its edge, and contour charts of it in `qd web`
   study, every run of it", and the `qd doe` command block names
   `qd doe surface`; `docs/reading.md`'s `qd web` list names the
   response surface card.
-- **CI gives each share of the suite 30 minutes, not 15** (the `test`,
-  Python 3.6, provost 2.1.0 and store check jobs). A share usually takes
-  7 to 10 minutes and up to 15 on the slowest runners, and this pull
-  request's shares, and QD-070's, were cancelled at 15 with every suite
-  passed. 30 is about three times the usual time again, as the
-  workflow's header says each job's timeout should be.
+
+## 0.49.1 — 2026-11-20
+
+CI's suite jobs have 25 minutes, not 15 (QD-070). 0.49.0 and 0.49.1 share
+one pull request, so 0.49.0 is not published on its own.
+
+### Changed
+- **`.github/workflows/ci.yml`:** the four jobs that run a share of the
+  suite (Python 3.9 to 3.13, Python 3.6, provost 2.1.0 and the store
+  check) time out at 25 minutes. A share usually takes 7 to 9 minutes,
+  and a slow runner runs every suite about twice as long: on `main`'s own
+  run for 0.48.0, Python 3.10's first share took 14.6 minutes and
+  provost 2.1.0's second 14.7, against a limit of 15. 0.49.0's run lost
+  Python 3.10's first share to it, and QD-071's run lost five shares, each
+  stopped at 15 minutes with every case that had finished passing. 25 is
+  still about three times a share's usual time, as QD-024 set out.
 
 ## 0.49.0 — 2026-11-19
 
