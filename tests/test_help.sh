@@ -48,6 +48,9 @@ t_card_lists_every_verb() {
         "docs/getting-started.md" "Full manual: " "qd hints | doctor"; do
         assert_contains "$(cat card.txt)" "$want"
     done
+    # the RUN paragraph ends with where every form is set out (QD-049)
+    assert_contains "$(sed -n '/^RUN: /,/^$/p' card.txt | grep . | tail -n 1 |
+        grep 'docs/concepts.md: "Naming a run"$')" "Naming a run"
 }
 
 t_card_fits_a_screen() {
