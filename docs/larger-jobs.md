@@ -224,6 +224,7 @@ qd doe init fio                             # a starting config: a screen of fio
 qd doe next fio-screen -c read_iops         # a CCD/Box-Behnken follow-up on its big factors
 qd doe run fio-screen-read-iops-ccd.json --like fio-screen   # where the screen ran
 qd doe surface fio-screen-read-iops-ccd      # doe's response surface: where the best is
+qd doe optimize fio-screen -c read_iops --budget 60   # rounds until the optimum: the settings to use
 ```
 
 The design is
@@ -509,8 +510,9 @@ what doe found:
   inside the region sits at a factor's low or high level (`the best
   point inside the design region is on its edge (iodepth at its high
   level)`): the optimum is beyond the region, and another round, moved
-  that way, is needed. Moving the region is still yours to do (edit the
-  levels in the config); qd running the rounds itself is QD-072.
+  that way, is needed. `qd doe optimize` (below) moves it, round after
+  round, until the optimum is inside and confirmed; or edit the levels
+  in the config and run it yourself.
 
 A count such as `iodepth` or `numjobs` takes whole numbers; doe rounds a
 factor whose config says `"dtype": "int"`, and reports any other to six
@@ -590,3 +592,165 @@ design varied first), each design a colour: a dot per run and host, and
 a line through the design's median at each level. The server works out
 the rows, their order, the filter, the points and the medians
 (`/api/study`), with the same code as `qd compare --study`.
+
+### Rounds until an optimum: `qd doe optimize`
+
+The last step of a tuning study (QD-072): qd runs the rounds itself,
+straight through, until it finds the best settings, and ends with the
+command line that uses them.
+
+```bash
+qd doe optimize fio-screen -c read_iops --budget 60        # from the study's follow-up, every round
+qd doe optimize fio-screen -c read_iops --budget 90        # out of budget, or interrupted: carry on
+qd doe optimize fio-screen -c read_iops --budget 60 --json # the report as JSON
+```
+
+It starts from the study's central composite or Box-Behnken follow-up
+(the latest one, or the design named instead of the study), measured as
+`qd doe run --like` measures it, and runs every round on the hosts and
+the target that design ran on, holding what it held. qd decides the
+rounds and runs them; doe decides the points:
+
+- **On the edge.** While doe's surface puts the best point inside the
+  region on its edge (`qd doe surface` says so), qd walks doe's
+  **steepest path** (`doe optimize --steepest`: ascent, or descent for a
+  response to minimise) from the design's centre. doe's linear model
+  gives ten steps, the factor that moves most moving a quarter of the
+  region's width each; qd measures them one at a time and stops at the
+  first that is no better than the best before it (the centre, at
+  first). Then a new design of the same kind and size (doe generate),
+  centred on the best point measured on the path or in the design, and
+  the loop starts again from that.
+- **Inside.** Once the optimum is inside the region (or the region
+  cannot move: see the limits below), `doe next-batch` adds points near
+  it (`--batch 4`, `--strategy refine`; for a response to minimise
+  doe's `model_guided`, since doe's refine centres on the largest value
+  seen), as more points of the same design, and doe fits the surface
+  again. Then **confirmation runs** (`--confirm-runs 3`) at doe's best
+  point inside the region (`doe optimize`), where qd evaluates doe's
+  model for the prediction.
+- **It stops** on the owner's rule: the confirmation runs' mean lies
+  within doe's prediction, give or take twice doe's cross-validated
+  error (doe gives no prediction interval), **and** that round improved
+  the best response measured by under 2% (`--min-gain PCT`). Or when
+  the budget is spent. Or when it cannot go on: a design whose points
+  do not measure enough for a quadratic surface (the host answered
+  none), no confirmation run measured, doe proposing nothing new. It
+  says which, and why. The exit status is 0 when it found an optimum,
+  1 when it stopped short of one, 130 when interrupted.
+
+**The budget** (`--budget N`, which it needs) is every run the optimize
+makes, each point of every round one run (`--count` measures a point
+more times in the one run). It never passes it: a path stops when the
+budget is spent, and a round it could not finish is not begun (a
+region of 16 points when 15 runs are left). The runs of an earlier
+`qd doe optimize` of the same study and response count, so the same
+command with a larger budget carries on where the last stopped. fio's
+writes count against a drive's endurance: the budget is the bound on
+them, and `qd doe status STUDY` says what was spent where.
+
+**Interrupted, it carries on.** Everything the loop decides it decides
+again from the store, so the same command again carries on from where
+it stopped: a point measured is never measured again, a round filed is
+never filed again. A point Ctrl-C stopped is kept as not measured (and
+its run counts against the budget) and is run again.
+
+**Every round is a design of the study**, filed as `qd doe run` files
+one: `STUDY-RESPONSE-path1`, `-region1`, `-confirm1`, ... with
+`metadata.qd_round` saying what each was and what it follows; a
+refinement adds points to the design it refines (`metadata.qd_refines`
+says which). So `qd doe status STUDY`, `qd compare --study STUDY` and
+qd web's study view show every run of every round, and a region's page
+in qd web has its response surface like any central composite. The
+design an optimize starts from keeps the response it is optimised for
+(`metadata.qd_optimize`): one optimize a design, and another response
+starts from its own follow-up (`qd doe next`).
+
+**What a factor can be set to.** A count (both levels whole numbers:
+`iodepth`, `numjobs`, `bs` in KiB) is rounded to a whole number and kept
+at 1 or more; any other factor whose levels are not negative is kept at
+0 or more; a factor's `qd_min` and `qd_max` in the config set its limits
+(doe ignores them; fio's screen gives `rwmixread` 1 to 99, so every point
+reads and writes). A path step is rounded and kept inside them, and a
+step that comes to the same settings as the one before is dropped. A new
+region keeps its size and is moved, not cut, to stay inside them, a
+count's two levels summing to an even number so the middle is a whole
+number. A region that would be one searched already is not laid again:
+the optimum is at a limit, or between two regions, and the loop refines
+and confirms where it is.
+
+For the central composite of the response surface section above, but
+with the stand-in fio's hill moved out to iodepth 60 and 6 jobs, the real
+doe and the suite's stand-in fio give (each point's own line left out):
+
+```
+qd doe optimize -- ccd: read_iops (jobs.0.read.iops, maximise) from ccd, on a; 0 of a budget of 60 runs spent
+qd doe optimize -- the best point inside ccd is on its edge (iodepth at its high level): doe's steepest ascent from its centre, 10 steps, walked until a step is no better (ccd-read-iops-path1)
+  step 1: read_iops = 37280 (doe's line said 27824), better: on
+  step 2: read_iops = 61200 (doe's line said 60950), better: on
+  step 3: read_iops = 77220 (doe's line said 94076), better: on
+  step 4: read_iops = 85340 (doe's line said 127202), better: on
+  step 5: read_iops = 88460 (doe's line said 160328), better: on
+  step 6: read_iops = 85280 (doe's line said 193454), no better than 88460: the path ends here
+qd doe optimize -- a central composite around the best point measured, iodepth=60 numjobs=7 (read_iops = 88460, ccd-read-iops-path1 point 5): ccd-read-iops-region1, iodepth 44..76 numjobs 3..11
+qd doe optimize -- the maximum is inside ccd-read-iops-region1: doe next-batch (refine) adds 4 points near it, points 17 to 20
+qd doe optimize -- confirmation: 3 runs at iodepth=60 numjobs=6, where doe predicts read_iops = 89995 +/- 59.39 (ccd-read-iops-confirm1)
+
+qd doe optimize -- ccd: read_iops, an optimum found
+  why        the confirmation runs measured read_iops = 90020 (mean of 3),
+             inside doe's prediction 89995 +/- 59.39, and the round improved
+             the best measured by 1.7% (under 2%)
+  budget     29 of 60 runs made (29 in this run)
+  round  design                  kind     measured  runs  best   what
+      0  ccd                     start    16/16       16  59680  central composite
+      1  ccd-read-iops-path1     path     6/10         6  88460  doe's steepest path from ccd
+      2  ccd-read-iops-region1   region   16/16       16  88520  central composite around iodepth=60 num…
+      3  ccd-read-iops-region1   refine   4/4          4  86680  doe next-batch (refine)
+      4  ccd-read-iops-confirm1  confirm  3/3          3  90040  doe predicts 89995 +/- 59.39
+
+  recommend  the settings confirmed at doe's predicted maximum
+    factor   starting  recommended
+    iodepth        20           60
+    numjobs         5            6
+  held       filename=/srv/scratch/qd-fio.dat
+  measured   read_iops = 90020, mean of 3 runs (90000 to 90040, sd 20)
+  predicted  89995 +/- 59.39 (doe's model; the spread is twice its
+             cross-validated error, as doe gives no prediction interval)
+  starting   read_iops = 8500 at the centre of ccd: the recommendation is
+             959.1% better
+  optimum    a local maximum, the best of the region searched (iodepth 4 to
+             76, numjobs 1 to 11), and the best the study has measured
+             anywhere (45 points); a region not searched may still hold a
+             better one
+  command    fio --name=qd --filename=/srv/scratch/qd-fio.dat --size=1G
+             --time_based --runtime=5 --group_reporting --output-format=json
+             --rw=randrw --rwmixread=50 --bs=4k --iodepth=60 --numjobs=6
+             --ioengine=libaio --direct=1
+```
+
+(The stand-in's start is far down its hill, hence 959%.)
+
+**The report.** Why it stopped; every round in order (the start, each
+path, region, refinement and confirmation), how many of its points were
+measured, its runs and its best response; then the recommendation:
+
+- **the settings**, beside the starting ones: those confirmed when the
+  rule was met, else the best measured, said to be not confirmed, and
+  every factor held;
+- **measured**: the mean of its runs, their range and standard deviation;
+- **predicted**: doe's model there, and twice its cross-validated error;
+- **starting**: the start design's centre, as measured, and how much
+  better (or worse) the recommendation is;
+- **optimum**: local, the best of the region searched (each factor's
+  lowest to highest point measured), and whether it is also the best the
+  study has measured anywhere, the screen included, or where the study
+  measured better (other held factors, say);
+- **command**: the design's command with the recommended settings and
+  every held factor, ready to run.
+
+`--json` prints all of it as JSON (`stop`, `rounds`, `recommended`,
+`starting`, `region`, `overall`). `-c` takes one response, by name or
+column (by default the follow-up's own), and `--agg` reduces each point
+over its hosts as `analyze` does. `--yes` lets a target that guard
+refuses through (a `/dev` path), as `qd doe run` does. It takes no `-s`:
+the hosts are the study's.

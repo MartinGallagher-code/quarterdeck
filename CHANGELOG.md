@@ -5,6 +5,76 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.51.1 — 2026-11-20
+
+A test fix in the same pull request as 0.51.0 (QD-072), which is not
+published on its own.
+
+### Tests
+- `tests/test_doe_optimize.sh`'s interrupted optimize starts qd with
+  SIGINT set back to its default, as `test_run.sh`'s `interrupt_when`
+  does. A suite run in the background starts with SIGINT ignored, so on
+  CI's provost 2.1.0 job the Ctrl-C the stand-in fio sends never reached
+  qd, which ran on to the end and exited 0. The suite's figure in
+  `TIMES` is now CI's measured one (1200 s over its three parts, not
+  600).
+
+## 0.51.0 — 2026-11-20
+
+qd runs the rounds of a tuning study itself until it finds an optimum,
+and ends with the settings to use and the command line that uses them
+(QD-072, step 7 of QD-066). Built on 0.50.0 (QD-071, quarterdeck#72),
+which is not merged yet: the two go to `main` together, or 0.50.0
+first.
+
+### Added
+- **`qd doe optimize STUDY -c RESPONSE --budget N`** starts from the
+  study's central composite or Box-Behnken follow-up and runs every
+  round on the hosts and target it ran on, straight through. While doe's
+  surface puts the best point on the region's edge it walks doe's
+  steepest path (`doe optimize --steepest`) a step at a time until a
+  step is no better, then lays a design of the same kind and size
+  around the best point measured (doe generate). Once the optimum is
+  inside, `doe next-batch` adds points near it (`--batch`, `--strategy`;
+  `model_guided` for a response to minimise, since doe's refine centres
+  on the largest value) and qd runs confirmation runs
+  (`--confirm-runs`) at doe's best point inside the region. It stops on
+  the owner's rule (the confirmation mean within doe's prediction, give
+  or take twice doe's cross-validated error, and that round's gain in
+  the best measured under 2%, `--min-gain`), when the budget is spent
+  (never passed: a round it cannot finish is not begun), or when it
+  cannot go on, and says which. The report gives every round, the
+  recommended settings beside the starting ones, the measured response
+  (mean, range, sd) and doe's prediction, the change from the start,
+  whether it is only the best of the region searched or the best the
+  study has measured anywhere, and the command line with every held
+  factor. `--json` prints it as JSON. Exit status 0 for an optimum, 1
+  for a stop short of one, 130 for Ctrl-C (`quarterdeck/optimize.py`;
+  `quarterdeck/doe.py`: `steepest`, `next_batch`, `one_response`;
+  `quarterdeck/cli.py`: `doe_optimize`, `optimize_start`,
+  `optimize_lines`).
+- Every round is a design of the study (`STUDY-RESPONSE-path1`,
+  `-region1`, `-confirm1`, with `metadata.qd_round`; a refinement adds
+  points to the design it refines, `metadata.qd_refines`), so `qd doe
+  status`, `qd compare --study` and qd web's study view show them.
+  Everything is decided again from the store, so an interrupted
+  optimize, or one out of budget, carries on when run again, nothing
+  measured twice; the budget counts the runs it made before.
+- A factor's `qd_min` and `qd_max` in a doe config (doe ignores them)
+  limit what later rounds set it to; a count is rounded and kept at 1 or
+  more. `qd doe init fio` gives `rwmixread` 1 to 99.
+- `qd hints`: "Run the rounds until the best fio settings are found".
+
+### Tests
+- `tests/test_doe_optimize.sh`: a hill and a bowl whose top is outside
+  the first region, walked to and confirmed (maximise and minimise), the
+  recommended command run through the stand-in giving what was
+  measured, the budget kept to the run and carried on, an optimize
+  interrupted by Ctrl-C carrying on, the stop when nothing measures, the
+  factors' limits, and the real doe where installed. The stand-in doe
+  gains `optimize --steepest` and `next-batch`, the stand-in fio
+  `FIO_INTERRUPT`.
+
 ## 0.50.0 — 2026-11-20
 
 A response surface fitted to a central composite or Box-Behnken

@@ -10,6 +10,8 @@
     qd doe analyze NAME -c COLUMN --report   and doe's plots and HTML report
     qd doe next NAME -c RESPONSE             a CCD/Box-Behnken follow-up
     qd doe run FOLLOWUP.json --like NAME     where NAME ran, as it held
+    qd doe surface NAME -c RESPONSE          doe's response surface
+    qd doe optimize STUDY -c RESPONSE --budget N   rounds until an optimum
 
 The design is design_of_experiments' (`doe`, pip install doehelper): its
 config file (factors, levels, the design to use -- full or fractional
@@ -52,6 +54,10 @@ choice, the study the screen's (metadata.qd_study).  `qd doe run --like`
 runs it on the hosts the screen ran on, holding what the screen held.
 The screen and its follow-ups are a study; quarterdeck/study.py lines up
 every run of it (`qd compare --study`, qd web's study view, QD-070).
+
+`qd doe optimize` (QD-072, quarterdeck/optimize.py) runs further rounds
+until an optimum is found, with doe's steepest path and next batch (the
+last section here) choosing the points.
 
 With --report doe's plots and HTML report are kept (in qd's cache unless a
 directory is named), where qd web links them.  qd web's charts of a design
@@ -803,12 +809,13 @@ FIO_SCREEN = {
                         "a server's core count."},
         {"name": "rwmixread", "label": "share of reads",
          "levels": ["30", "70"], "type": "continuous",
-         "unit": "% reads",
+         "unit": "% reads", "qd_min": 1, "qd_max": 99,
          "description": "Share of reads. Kept off 0 and 100 so every point "
                         "does reads and writes, and every response is "
                         "measured at every point: fio reports 0 for a "
                         "direction that did no I/O, which would read as a "
-                        "measurement."},
+                        "measurement. qd_min and qd_max keep qd doe "
+                        "optimize's later rounds inside 1 to 99."},
         {"name": "rw", "label": "sequential or random",
          "levels": ["rw", "randrw"], "type": "categorical",
          "description": "Access pattern, sequential (rw) or random "
@@ -1465,3 +1472,116 @@ def surface_grids(s, code, terms, matrix, resp):
                                      key=lambda p: (p["a"], p["b"])),
                     "marks": mark})
     return out
+
+
+# ---------------------------------------------------------------------------
+# Further rounds: doe's steepest path and next batch (QD-072)
+# ---------------------------------------------------------------------------
+#
+# `qd doe optimize` (quarterdeck/optimize.py) decides the rounds and runs
+# them; doe decides the points.  These hand one design's responses to doe
+# the way analyze() does and read back the points doe proposes: the steps
+# of `doe optimize --steepest` (its linear model's path, half a coded unit
+# a step for the factor that moves most) and the runs `doe next-batch`
+# appends to the design.
+
+def one_response(st, name, column, agg, work):
+    """The design's points and one response, as doe reads them, in work:
+    (config path, results directory, the response [(run_id, value or
+    None, n)], (name, column, optimize)).  A point not measured is no
+    run_<id>.json at all: blank, never 0."""
+    _, cfg, matrix = load(st, name)
+    rname, col, optimize = surface_spec(cfg, column)
+    resp = responses(st, name, col, agg)
+    out_dir = os.path.join(work, "results")
+    os.makedirs(out_dir)
+    write_text(os.path.join(out_dir, "design_matrix.json"),
+               json.dumps(matrix, indent=2))
+    for rid, v, _ in resp:
+        if v is not None:
+            write_text(os.path.join(out_dir, "run_%d.json" % rid),
+                       json.dumps({rname: v}))
+    cfg = json.loads(json.dumps(cfg))
+    cfg["responses"] = [{"name": rname, "optimize": optimize}]
+    settings = cfg.setdefault("settings", {})
+    settings["out_directory"] = out_dir
+    settings.setdefault("test_script", "true")
+    conf = os.path.join(work, "config.json")
+    write_text(conf, json.dumps(cfg, indent=2))
+    return conf, out_dir, resp, (rname, col, optimize)
+
+
+def steepest_table(text, rname, factors):
+    """doe optimize --steepest's table for one response: [(step,
+    {factor: setting}, predicted or None)], step 0 the design's centre;
+    [] when doe printed none (no gradient: every main effect 0)."""
+    m = re.search(r"=== Steepest (?:Ascent|Descent): %s ===\n" %
+                  re.escape(rname), text)
+    if not m:
+        return []
+    out = []
+    for ln in text[m.end():].splitlines():
+        if not ln.strip():
+            if out:
+                break
+            continue
+        if ln.startswith("==="):
+            break
+        cells = ln.split()
+        if not cells[0].isdigit() or len(cells) != len(factors) + 2:
+            continue
+        out.append((int(cells[0]), dict(zip(factors, cells[1:-1])),
+                    _num(cells[-1])))
+    return out
+
+
+def steepest(st, name, column=None, agg="median"):
+    """doe's steepest ascent (or, for a response to minimise, descent) from
+    a design's points: [(step, {factor: setting}, predicted)], and doe's
+    text.  The path is doe's linear model's, so its predictions past the
+    region are a straight line's: qd measures each step to see."""
+    work = tempfile.mkdtemp(prefix="qd-doe-")
+    try:
+        conf, out_dir, _, (rname, _, _) = one_response(st, name, column,
+                                                         agg, work)
+        rc, text = run_doe(["optimize", "--config", conf, "--results-dir",
+                            out_dir, "--partial", "--steepest"], cwd=work)
+        if rc != 0:
+            die("doe optimize --steepest failed (exit %d):\n%s"
+                % (rc, text[-2000:]))
+        _, _, matrix = load(st, name)
+        return steepest_table(text, rname,
+                              matrix.get("factor_names") or []), clean(text)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def next_batch(st, name, column=None, agg="median", strategy="refine",
+               size=4, seed=None):
+    """doe next-batch on a design's points: the runs doe appends to its
+    matrix, [{factor: setting}] in doe's order, and doe's text.  qd files
+    them as more points of the same design, so a point measured already
+    is not run again."""
+    work = tempfile.mkdtemp(prefix="qd-doe-")
+    try:
+        conf, out_dir, _, _ = one_response(st, name, column, agg, work)
+        _, _, matrix = load(st, name)
+        known = set(int(r["run_id"]) for r in matrix.get("runs") or [])
+        args = ["next-batch", "--config", conf, "--results-dir", out_dir,
+                "--strategy", strategy, "--batch-size", str(size),
+                "--output", os.path.join(work, "next.sh"), "--partial"]
+        if seed is not None:
+            args += ["--seed", str(seed)]
+        rc, text = run_doe(args, cwd=work)
+        path = os.path.join(out_dir, "design_matrix.json")
+        if rc != 0 or not os.path.isfile(path):
+            die("doe next-batch failed (exit %d):\n%s"
+                % (rc, text.strip()[-2000:]))
+        grown = json.loads(read_text(path))
+        new = [dict((k, str(v)) for k, v in
+                    (r.get("factor_values") or {}).items())
+               for r in grown.get("runs") or []
+               if int(r["run_id"]) not in known]
+        return new, clean(text)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)

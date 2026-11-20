@@ -136,7 +136,8 @@ def out(text=""):
 # the verbs that file into the store, or delete from it; and the actions
 # that do, of the verbs that only sometimes do
 WRITES = ("run", "probe", "do", "import", "rm", "again")
-WRITE_ACTIONS = {"campaign": ("new", "run", "retry"), "doe": ("run",),
+WRITE_ACTIONS = {"campaign": ("new", "run", "retry"),
+                 "doe": ("run", "optimize"),
                  "peers": ("define", "rm"), "baseline": ("set", "rm")}
 
 
@@ -5535,8 +5536,10 @@ def cmd_doe(args):
         return doe_next(args, st, doemod)
     if what == "surface":
         return doe_surface(args, st, doemod)
+    if what == "optimize":
+        return doe_optimize(args, st, doemod)
     die("unknown doe action %r (init, plan, run, status, analyze, next, "
-        "surface)" % what)
+        "surface, optimize)" % what)
 
 
 def study_lines(args, st, studymod, names, indent="  "):
@@ -5613,14 +5616,15 @@ def doe_next(args, st, doemod):
             "or Box-Behnken varies numbers (--factors names numeric ones)"
             % (rname, "chosen factors are" if picked else
                "big factors are", ", ".join(said) or "not numeric"))
-    if args.budget < 1:
+    budget = 30 if args.budget is None else args.budget
+    if budget < 1:
         die("--budget wants a number of runs above 0")
-    op, est, why, text = doemod.suggest(len(varied), args.budget)
+    op, est, why, text = doemod.suggest(len(varied), budget)
     if op not in doemod.SURFACES:
         die("doe suggest, for %s with a budget of %d runs, chose %s, not a "
             "central composite or Box-Behnken:\n  %s\n(a larger --budget "
             "gives it room for one)" % (
-                plural(len(varied), "numeric factor"), args.budget, op,
+                plural(len(varied), "numeric factor"), budget, op,
                 "\n  ".join(why)))
     name, new = doemod.follow_up(screen, row, cfg, rname, column, optimize,
                                  varied, held, op)
@@ -5780,6 +5784,260 @@ def doe_surface(args, st, doemod):
     lines.extend(next_steps(tips))
     sys.stdout.write(render.page(lines))
     return 0
+
+
+def optimize_start(st, doemod, studymod, target, column):
+    """The design `qd doe optimize TARGET` starts from: TARGET itself when
+    it names a design (a round's: the design its optimize started from);
+    in a study, the design an optimize of this response began from, else
+    the latest central composite or Box-Behnken that is no round."""
+    if doemod.exists(st, target):
+        _, cfg, matrix = doemod.load(st, target)
+        meta = cfg.get("metadata") or {}
+        rd = meta.get("qd_round") if isinstance(meta, dict) else None
+        if isinstance(rd, dict) and rd.get("start"):
+            return rd["start"]
+        if (matrix.get("operation") or "") in doemod.SURFACES:
+            return target
+        # a screen's name is its study's: its follow-ups are there
+        if not studymod.members(st, target):
+            die("%s is a %s: optimize starts from a central composite or "
+                "Box-Behnken follow-up (%s doe next %s -c RESPONSE writes "
+                "one)" % (target, (matrix.get("operation") or "design")
+                          .replace("_", " "), PROG,
+                          doemod.study_of(cfg, target)))
+    names = studymod.study_or_die(st, target)
+    for n in names:
+        _, cfg, _ = doemod.load(st, n)
+        meta = cfg.get("metadata") or {}
+        mark = meta.get("qd_optimize") if isinstance(meta, dict) else None
+        if isinstance(mark, dict):
+            sp = doemod.specs(cfg, [column] if column else None)
+            if column is None and mark.get("response"):
+                return n
+            if sp and sp[0][0] == mark.get("response"):
+                return n
+    starts = []
+    for n in names:
+        _, cfg, matrix = doemod.load(st, n)
+        meta = cfg.get("metadata") or {}
+        if isinstance(meta, dict) and meta.get("qd_round"):
+            continue
+        if (matrix.get("operation") or "") in doemod.SURFACES:
+            starts.append(n)
+    if not starts:
+        die("the study %s has no central composite or Box-Behnken design "
+            "to start from: %s doe next %s -c RESPONSE writes one, and %s "
+            "doe run FOLLOWUP.json --like %s measures it"
+            % (target, PROG, names[0], PROG, names[0]))
+    return starts[-1]
+
+
+def doe_optimize(args, st, doemod):
+    """qd doe optimize STUDY -c RESPONSE --budget N (QD-072): further
+    rounds, run by qd on the study's host and target until an optimum is
+    found -- doe's steepest path while the best point is on the region's
+    edge, a design around the best point measured, doe next-batch inside
+    it, confirmation runs at doe's predicted optimum -- then the
+    recommendation."""
+    from . import optimize as optmod, study as studymod
+    if args.budget is None:
+        die("how many runs may it make? --budget N: every round's points "
+            "count, it never makes more, and the runs an interrupted "
+            "optimize made count too (%s doe optimize %s --budget 60)"
+            % (PROG, args.target))
+    if args.budget < 1:
+        die("--budget wants a number of runs above 0")
+    if args.min_gain < 0:
+        die("--min-gain wants a percentage, 0 or more")
+    for on, flag in ((args.every, "--every"), (args.dry_run, "--dry-run"),
+                     (args.no_store, "--no-store"),
+                     (args.blocks_by, "--blocks-by"), (args.redo, "--redo"),
+                     (getattr(args, "like", None), "--like")):
+        if on:
+            die("optimize runs every round itself, on the hosts its study "
+                "ran on, and files each one: it takes no %s" % flag)
+    if args.servers or args.server or args.layout or args.select or \
+            getattr(args, "rerun", None):
+        die("optimize runs on the hosts its study ran on, so it takes no -s, "
+            "-S, --layout, --select or --rerun")
+    cols = [c.strip() for c in (args.column or "").split(",") if c.strip()]
+    if len(cols) > 1:
+        die("optimize is for one response: -c COLUMN")
+    start = optimize_start(st, doemod, studymod, args.target,
+                           cols[0] if cols else None)
+    row, cfg, matrix = doemod.load(st, start)
+    if row.get("blocks_by"):
+        die("%s ran its blocks by %s, and optimize runs every point on the "
+            "same hosts: start from a design run without --blocks-by"
+            % (start, row["blocks_by"]))
+    hs = like_hosts(args, st, doemod, start)
+    check_limit(args, hs)
+    need = doemod.timeout_of(cfg)
+    if need and need > args.timeout:
+        warn("%s: --timeout %gs, as the config's metadata.qd_timeout asks "
+             "(a point runs longer than %gs)" % (start, need, args.timeout))
+        args.timeout = need
+    prov = filing.Provost(st)
+    prov.require("keep the measurements")
+    template = row.get("command") or doemod.command_of(cfg)
+    fixed = doemod.fixed_of(cfg)
+    pts = doemod.points(matrix)
+    # the guard before anything runs: the target is the study's own (its
+    # fixed factors), and every round keeps it
+    check_danger(doemod.substitute(template, pts[0][2] if pts else [],
+                                   fixed), args.yes, "doe optimize")
+
+    def say(text):
+        # with --json, stdout is the report alone: the rounds go to stderr
+        (sys.stderr if args.json else sys.stdout).write(text + "\n")
+
+    def run_point(name, rid, levels):
+        command = doemod.substitute(template, levels, fixed)
+        check_danger(command, args.yes, "doe optimize")
+        factors = storemod.join_attrs(levels)
+        job = fleet_run(args, hs, command, name,
+                        context=[("design", name), ("point", str(rid))] +
+                        [(k, v) for k, v in levels],
+                        extra={"group": name, "part": str(rid),
+                               "factors": factors})
+        h = outcome_counts(job.last) if job else {}
+        say("%s doe %s -- point %d (%s): %d/%d ok  (%s)" % (
+            PROG, name, rid, factors, h.get(fleet.OK, 0), len(hs),
+            job.entry.id if job and job.entry else "not kept"))
+        if job is not None and job.interrupted:
+            die("interrupted (Ctrl-C) at %s point %d, which is kept as not "
+                "measured: the same command again carries on from there "
+                "(the runs made so far count against --budget)"
+                % (name, rid), 130)
+
+    opt = optmod.Optimizer(st, prov, start, cols[0] if cols else None,
+                           args.agg, args.budget, args.confirm_runs,
+                           args.batch, args.strategy, args.min_gain,
+                           run_point, say)
+    opt.begin()
+    say("%s doe optimize -- %s: %s (%s, %s) from %s, on %s; %d of a budget "
+        "of %s spent" % (
+            PROG, opt.study, opt.rname, opt.column,
+            "maximise" if opt.direction != "minimize" else "minimise",
+            start, ", ".join(h.name for h in hs), opt.spent(),
+            plural(args.budget, "run")))
+    opt.loop()
+    rep = opt.report()
+    if args.json:
+        import json
+        sys.stdout.write(json.dumps(rep, indent=1, sort_keys=True) + "\n")
+    else:
+        sys.stdout.write(render.page(optimize_lines(args, rep)))
+    return 0 if rep["stop"]["reason"] == "converged" else 1
+
+
+def optimize_lines(args, rep):
+    """`qd doe optimize`'s report: why it stopped, every round, and the
+    recommendation."""
+    import textwrap
+    wrap = max(40, min(width_of(args) or 80, 100) - 2)
+    num = stats.fmt_num
+    stop = rep["stop"]
+    lines = ["", "%s doe optimize -- %s: %s, %s" % (
+        PROG, rep["study"], rep["response"], {
+            "converged": "an optimum found",
+            "budget": "stopped: the budget",
+            "stalled": "stopped: it cannot go on"}.get(stop["reason"],
+                                                       stop["reason"]))]
+
+    def para(head, text):
+        lines.extend(textwrap.wrap(text, wrap, initial_indent="  %-10s " % head,
+                                   subsequent_indent=" " * 13,
+                                   break_on_hyphens=False))
+
+    para("why", stop["text"])
+    para("budget", "%d of %s made (%d in this run)" % (
+        rep["spent"], plural(rep["budget"], "run"), rep["ran"]))
+    rows = [[str(r["round"]), r["design"], r["kind"],
+             "%d/%d" % (r["measured"], r["points"]), str(r["runs"]),
+             num(r["best"]) if r["best"] is not None else "", r["note"]]
+            for r in rep["rounds"]]
+    lines.extend(render.render_rows(
+        ["round", "design", "kind", "measured", "runs", "best", "what"],
+        rows, numeric=[0, 4, 5], width=width_of(args), indent="  "))
+    rec = rep["recommended"]
+    if not rec:
+        para("so", "nothing measured %s, so there is nothing to recommend"
+             % rep["response"])
+        return lines
+    lines.append("")
+    want = "maximum" if rep["optimize"] != "minimize" else "minimum"
+    para("recommend", {
+        "confirmed": "the settings confirmed at doe's predicted %s" % want,
+        "confirmation": "the settings of the latest confirmation runs (not "
+                        "yet confirmed by the rule)",
+        "measured": "the best settings measured (not confirmed)"}.get(
+            rec["source"], rec["source"]))
+    start = rep["starting"]["settings"]
+    rows = [[f, start.get(f, ""), rec["settings"].get(f, "")]
+            for f in rep["factors"]]
+    lines.extend(render.render_rows(["factor", "starting", "recommended"],
+                                    rows, numeric=[1, 2],
+                                    width=width_of(args), indent="    "))
+    if rep["held"]:
+        para("held", " ".join("%s=%s" % (k, v) for k, v in rep["held"]))
+    m = rec["measured"]
+    para("measured", "%s = %s, %s" % (
+        rep["response"], num(m["mean"]),
+        "mean of %d runs (%s to %s%s)" % (
+            m["n"], num(m["min"]), num(m["max"]),
+            (", sd %s" % num(m["sd"])) if m["sd"] is not None else "")
+        if m["n"] > 1 else "one run"))
+    if rec["predicted"] is not None:
+        para("predicted", "%s%s (doe's model; the spread is twice its "
+             "cross-validated error, as doe gives no prediction interval)"
+             % (num(rec["predicted"]),
+                (" +/- %s" % num(rec["interval"]))
+                if rec["interval"] is not None else ""))
+    sm = rep["starting"]["measured"]
+    if sm is not None:
+        ch = rep["change"]
+        para("starting", "%s = %s at the centre of %s%s" % (
+            rep["response"], num(sm), rep["starting"]["design"],
+            (": the recommendation is %.1f%% %s" % (
+                abs(ch), "better" if ch >= 0 else "worse"))
+            if ch is not None else ""))
+    else:
+        para("starting", "the centre of %s was not measured"
+             % rep["starting"]["design"])
+    reg = ", ".join("%s %s to %s" % (f, num(rep["region"][f][0]),
+                                     num(rep["region"][f][1]))
+                    for f in rep["factors"] if f in rep["region"])
+    ov = rep["overall"]
+    if rec["source"] == "confirmed":
+        text = "a local %s, the best of the region searched (%s)" % (
+            want, reg)
+    else:
+        text = "not a confirmed %s: the best measured in the region "             "searched (%s)" % (want, reg)
+    if ov["best"]:
+        text += ", and the best the study has measured anywhere (%s)%s" % (
+            plural(ov["points"], "point"),
+            "; a region not searched may still hold a better one"
+            if rec["source"] == "confirmed" else "")
+    else:
+        b = ov["better"][0]
+        text += "; the study measured better elsewhere: %s = %s at %s "             "point %d (%s)" % (rep["response"], num(b["value"]),
+                               b["design"], b["point"], " ".join(
+                                   "%s=%s" % kv for kv in
+                                   sorted(b["levels"].items())))
+    para("optimum", text)
+    para("command", rec["command"])
+    tips = [("%s compare --study %s -c %s" % (PROG, rep["study"],
+                                              rep["response"]),
+             "every run of every round")]
+    if stop["reason"] != "converged":
+        tips.insert(0, ("%s doe optimize %s -c %s --budget %d" % (
+            PROG, rep["study"], rep["response"], rep["budget"] +
+            max(10, rep["budget"] // 2)),
+            "carry on from here with a larger budget"))
+    lines.extend(next_steps(tips))
+    return lines
 
 
 def doe_report_lines(doemod, report, args, column=None):
@@ -6351,6 +6609,8 @@ HINTS = [
      "qd doe analyze fio-screen"),
     ("Larger jobs", "Where is the best setting, and is it inside the region?",
      "qd doe surface FOLLOWUP -c read_iops --report; qd web"),
+    ("Larger jobs", "Run the rounds until the best fio settings are found",
+     "qd doe optimize STUDY -c read_iops --budget 60"),
     ("Larger jobs", "Half the fleet against the other half",
      "qd split -s hosts.txt --ab --out ab/"),
     ("Larger jobs", "What were temperature and power doing meanwhile?",
@@ -7345,11 +7605,12 @@ def build_parser():
               "analyses")
     sp.add_argument("action",
                     choices=["init", "plan", "run", "status", "analyze",
-                             "next", "surface"])
+                             "next", "surface", "optimize"])
     sp.add_argument("target", metavar="CONFIG|NAME",
                     help="init: a starting config (fio); plan/run: a doe "
                     "config; status: a design's or a study's name; "
-                    "analyze/next/surface: the design's name")
+                    "analyze/next/surface: the design's name; optimize: "
+                    "the study's (or the design to start from)")
     add_fleet(sp, preview=0)
     sp.add_argument("--name", help="the design's name (default the "
                     "config's)")
@@ -7360,7 +7621,8 @@ def build_parser():
                     help="measure points that are measured already")
     sp.add_argument("-c", "--column", metavar="COL[,COL]",
                     help="analyze: the response columns (default: the "
-                    "config's responses that name one); surface: one")
+                    "config's responses that name one); surface, "
+                    "optimize: one")
     sp.add_argument("--agg", default="median",
                     help="analyze: one number per point from its hosts "
                     "(median)")
@@ -7369,8 +7631,20 @@ def build_parser():
     sp.add_argument("--factors", metavar="A,B",
                     help="next: the factors to vary (default: the big "
                     "numeric ones, 2 to 4)")
-    sp.add_argument("--budget", type=int, default=30, metavar="N",
-                    help="next: the runs doe suggest may plan for (30)")
+    sp.add_argument("--budget", type=int, metavar="N",
+                    help="next: the runs doe suggest may plan for (30); "
+                    "optimize: the runs it may make in all, never more "
+                    "(needed)")
+    sp.add_argument("--confirm-runs", type=positive, default=3, metavar="N",
+                    help="optimize: runs at the predicted optimum (3)")
+    sp.add_argument("--batch", type=positive, default=4, metavar="N",
+                    help="optimize: points doe next-batch adds a round (4)")
+    sp.add_argument("--strategy", default="refine",
+                    choices=["refine", "model_guided", "bayesian"],
+                    help="optimize: doe next-batch's strategy (refine)")
+    sp.add_argument("--min-gain", type=float, default=2.0, metavar="PCT",
+                    help="optimize: stop once a confirmed round improves "
+                    "the best by under PCT%% (2)")
     sp.add_argument("-o", "--output", metavar="FILE",
                     help="next: the follow-up config (default NAME.json)")
     sp.add_argument("--like", metavar="DESIGN",
@@ -7378,7 +7652,7 @@ def build_parser():
                     "held")
     sp.add_argument("--json", action="store_true",
                     help="surface: doe's figures, and qd web's contours, "
-                    "as JSON")
+                    "as JSON; optimize: its report as JSON")
     sp.add_argument("--report", nargs="?", const="", metavar="DIR",
                     help="analyze/surface: keep doe's HTML report and "
                     "plots, in DIR or qd's cache (which qd web links)")
