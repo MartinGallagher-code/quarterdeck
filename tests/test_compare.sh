@@ -7,6 +7,8 @@
 
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/test_helper.bash"
+# seed's runs are filed once and copied into each case that starts from them
+use_fixtures
 
 seed() {
     install_fake_ssh
@@ -26,7 +28,7 @@ put() {
 }
 
 t_last_n_runs_one_column() {
-    seed
+    fixture seed seed
     qd_rc compare load --last 3 -c A > out
     out="$(cat out)"
     # a change is a finding, as in diff
@@ -40,14 +42,14 @@ t_last_n_runs_one_column() {
 }
 
 t_identical_runs_exit_zero() {
-    seed
+    fixture seed seed
     qd_rc compare latest~2 latest~1 -c A > out
     assert_status "$QD_RC" 0
     assert_contains "$(cat out)" "0 of 4 keys changed"
 }
 
 t_drift_threshold_and_baseline() {
-    seed
+    fixture seed seed
     qd_rc compare load --last 3 -c A --drift 30 > out
     assert_status "$QD_RC" 0
     # against the last run instead: the first two moved the other way
@@ -57,7 +59,7 @@ t_drift_threshold_and_baseline() {
 }
 
 t_status_flip_is_a_change() {
-    seed
+    fixture seed seed
     rm -rf "$FAKE_ROOT/d"
     qdf run -q -s hosts.txt --name load -- cat v > /dev/null || true
     qd_rc compare load --last 2 -c A > out
@@ -67,14 +69,14 @@ t_status_flip_is_a_change() {
 }
 
 t_no_column_compares_every_median() {
-    seed
+    fixture seed seed
     out="$(qd compare load --last 3)" || true
     assert_contains "$out" "medians"
     assert_contains "$out" "A "
 }
 
 t_csv_is_the_wide_table() {
-    seed
+    fixture seed seed
     out="$(qd compare load --last 3 -c A --format csv)" || true
     assert_contains "$out" "host,R1,R2,R3,change_pct,flags"
     assert_contains "$out" "b,20,20,25,25.0,R3 drift +25.0%"

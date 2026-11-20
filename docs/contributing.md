@@ -29,6 +29,16 @@ machine because every case has a temp dir, a store and XDG directories of
 its own, and each suite that starts a web server has a range of ports of
 its own. On four cores the whole suite takes about seven minutes.
 
+Most of a suite's time is provost filing runs, so a setup that files runs
+and that several cases start from is made once a suite, not once a case:
+the suite calls `use_fixtures`, and a case calls `fixture NAME FUNCTION`
+where it would have called `FUNCTION`. The first case to ask runs it; each
+later one gets a copy of what it left (the store, the fake hosts, every
+file, the variables it exported or unset), so it starts exactly where it
+would have. A suite's cases then all run in one directory path, because a
+store records its path. Use it only for a setup that is a case's first
+step, and give two setups that differ in anything two names (QD-074).
+
 `--shard K/N` runs share K of N, which is how CI spreads one job over N
 runners. The suites are dealt by their measured seconds (`TIMES` in
 `tests/run_tests.sh`), the longest first, each to the share with the

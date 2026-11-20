@@ -8,6 +8,8 @@
 
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/test_helper.bash"
+# seed's filings are made once and copied into each case that starts from them
+use_fixtures
 
 # a store on fake host wr01, at wr01:store, with one run in it
 seed() {
@@ -27,7 +29,7 @@ COPY() { echo "$XDG_CACHE_HOME/quarterdeck/remotes/$1"; }
 runs_in() { qd log "$@" 2>/dev/null | tail -n +2 | awk '{print $1}' | tr '\n' ' '; }
 
 t_a_remote_store_reads_and_refreshes() {
-    seed
+    fixture seed seed
     qd store new wr01 --remote wr01:store > out
     assert_contains "$(cat out)" "wr01 = wr01:store"
     assert_contains "$(cat out)" "fetched now: 1 run"
@@ -61,7 +63,7 @@ t_a_remote_store_reads_and_refreshes() {
 
 # refused before anything is done: no host contacted, nothing fetched
 t_nothing_files_into_a_copy() {
-    seed
+    fixture seed seed
     qd store new wr01 --remote wr01:store > /dev/null
     fake_host node01
     n="$(ssh_calls)"
@@ -96,7 +98,7 @@ t_nothing_files_into_a_copy() {
 
 # QD_SSH_USER, as qd run logs in, unless the spec names a user
 t_the_fleets_ssh_user() {
-    seed
+    fixture seed seed
     cat > "$FAKE_BIN/ssh-who" <<EOF
 #!/bin/bash
 echo "\$*" >> "$TEST_TMPDIR/who.log"
@@ -115,7 +117,7 @@ EOF
 
 # every ten fetches a gc: the copy is one store, not its history
 t_a_copy_stays_one_store() {
-    seed
+    fixture seed seed
     qd store new wr01 --remote wr01:store > /dev/null
     for i in $(seq 1 11); do
         printf 'host,load\nh%s,0.%s\n' "$i" "$i" > n.csv
@@ -128,7 +130,7 @@ t_a_copy_stays_one_store() {
 }
 
 t_an_unreachable_host_leaves_the_copy() {
-    seed
+    fixture seed seed
     qd store new wr01 --remote wr01:store > /dev/null
     touch "$FAKE_ROOT/wr01/.unreachable"
     QD_REMOTE_REFRESH=0 qd log --store wr01 > out 2> err
@@ -143,7 +145,7 @@ t_an_unreachable_host_leaves_the_copy() {
 }
 
 t_what_cannot_be_a_remote_store() {
-    seed
+    fixture seed seed
     qd_rc store new a --remote wr01:nowhere 2> err
     assert_status "$QD_RC" 2
     assert_contains "$(cat err)" "nowhere on wr01 is not a provost store"
@@ -165,7 +167,7 @@ t_what_cannot_be_a_remote_store() {
 
 # what git says over ssh of a store owned by someone else, put in words
 t_another_users_store_is_explained() {
-    seed
+    fixture seed seed
     cat > "$FAKE_BIN/ssh-dubious" <<'EOF'
 #!/bin/bash
 echo "fatal: detected dubious ownership in repository at '/srv/store'" >&2
@@ -179,7 +181,7 @@ EOF
 }
 
 t_rename_and_rm_a_remote_store() {
-    seed
+    fixture seed seed
     qd store new wr01 --remote wr01:store > /dev/null
     qd store rename wr01 rack1 > /dev/null
     assert_no_file "$(COPY wr01)"
@@ -194,7 +196,7 @@ t_rename_and_rm_a_remote_store() {
 
 # git's words for a copy in one object format and a store in the other
 t_a_mismatched_format_is_explained() {
-    seed
+    fixture seed seed
     cat > "$FAKE_BIN/ssh-mismatch" <<'EOF2'
 #!/bin/bash
 echo "fatal: mismatched algorithms: client sha1; server sha256" >&2
@@ -210,7 +212,7 @@ EOF2
 
 # a git too old for SHA-256 (2.29) is named when a copy cannot be made
 t_an_old_git_is_named() {
-    seed
+    fixture seed seed
     real="$(command -v git)"
     mkdir -p oldgit
     cat > oldgit/git <<EOF2
@@ -284,7 +286,7 @@ t_a_sha256_store_reads_and_refreshes() {
 
 # a SHA-1 store remade SHA-256: its copy is made again, and said
 t_a_store_remade_sha256_remakes_its_copy() {
-    seed
+    fixture seed seed
     qd store new wr01 --remote wr01:store > /dev/null
     assert_eq "$(git -C "$(COPY wr01)" rev-parse --show-object-format)" "sha1"
     touch "$(COPY wr01)/.git/kept"
@@ -311,7 +313,7 @@ EOF
 }
 
 t_the_web_page_reads_a_remote_store() {
-    seed
+    fixture seed seed
     qd store new wr01 --remote wr01:store > /dev/null
     # a port range of this suite's own (test_xstore.sh says why)
     QD_REMOTE_REFRESH=0 "$PY" "$QD_DIR/qd" web -n -q --port 18140 \

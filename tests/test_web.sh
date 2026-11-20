@@ -8,6 +8,8 @@
 
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/test_helper.bash"
+# seed's runs are filed once and copied into each case that starts from them
+use_fixtures
 
 start_web() {
     # The interpreter itself goes in the background, not the qd function:
@@ -71,7 +73,7 @@ seed() {
 }
 
 t_entries_rows_and_filters() {
-    seed
+    fixture seed seed
     start_web
     out="$(get /api/entries)"
     assert_contains "$out" "200"
@@ -96,7 +98,7 @@ t_entries_carry_the_operator() {
 }
 
 t_column_figures_match_the_cli() {
-    seed
+    fixture seed seed
     start_web
     out="$(get '/api/column?e=latest&c=A')"
     assert_contains "$out" '"median": 0.5'
@@ -127,7 +129,7 @@ t_column_unit_is_the_figures_scale() {
 }
 
 t_group_pivot_trend() {
-    seed
+    fixture seed seed
     start_web
     out="$(get '/api/group?e=latest&by=rack')"
     assert_contains "$out" '"A_mean"'
@@ -140,7 +142,7 @@ t_group_pivot_trend() {
 }
 
 t_diff_defaults_to_the_last_same_run() {
-    seed
+    fixture seed seed
     start_web
     out="$(get '/api/diff?b=latest')"
     assert_contains "$out" '"changed_total": 1'
@@ -151,7 +153,7 @@ t_diff_defaults_to_the_last_same_run() {
 }
 
 t_compare_is_the_terminal_s() {
-    seed
+    fixture seed seed
     start_web
     # host a moved 0.5 -> 0.6 between the two runs: past 5%, a change
     out="$(get '/api/compare?e=latest&c=A')"
@@ -207,7 +209,7 @@ t_compare_against_a_qualified_baseline() {
 }
 
 t_join_is_the_terminal_s() {
-    seed
+    fixture seed seed
     # telemetry for the latest run's hosts, inside each one's window, kept
     # in the store as qd import --telemetry keeps it
     qd show ds:qd.hosts --format csv > hosts.csv
@@ -371,7 +373,7 @@ t_a_designs_blank_points() {
 }
 
 t_raw_export_and_overlay() {
-    seed
+    fixture seed seed
     start_web
     out="$(get '/api/raw?e=latest&host=e')"
     assert_contains "$out" '"out": "9.0\n"'
@@ -391,7 +393,7 @@ t_raw_export_and_overlay() {
 }
 
 t_static_page_and_no_escape() {
-    seed
+    fixture seed seed
     start_web
     out="$(get /)"
     assert_contains "$out" "<title>quarterdeck</title>"
@@ -414,7 +416,7 @@ t_static_page_and_no_escape() {
 # machine is read through e=, and a page that points its own name at the
 # server (DNS rebinding) is turned away
 t_refs_are_never_paths() {
-    seed
+    fixture seed seed
     # a value no temp path can hold (mktemp's are letters and digits): the
     # refusal names the path, and qd-test.Bz42H2 once held "42"
     mkdir -p outside && printf 'k\tv\nsecret\tnever-shown-77\n' > outside/secret.tsv
@@ -445,7 +447,7 @@ EOF
 # the store picker: the named stores, and any of them read by name --
 # never by path
 t_the_store_picker_reads_named_stores() {
-    seed
+    fixture seed seed
     qd store new lab > /dev/null
     printf 'host,mbps\nx,9400\n' > lab.csv
     qd import lab.csv --name in_lab --store lab > /dev/null 2>&1
@@ -475,7 +477,7 @@ t_app_js_parses() {
 }
 
 t_floor_writes_the_overlay_and_names_the_viewer() {
-    seed
+    fixture seed seed
     printf 'dc A\n' > floor.dc
     # without the viewer: the overlay is written and the way to open it said
     # --dry-run either way: where dcviz is installed it would otherwise start
@@ -504,7 +506,7 @@ t_empty_store_is_refused() {
 # beyond loopback: a token is made and printed once, every request needs
 # it, the link's ?token= becomes a cookie, and nothing writes
 t_exposed_needs_its_token() {
-    seed
+    fixture seed seed
     start_web --host 0.0.0.0
     [ -n "$TOKEN" ] || fail "no token in the link: $LINK"
     assert_contains "$(cat web.err)" "WARNING: no TLS"
@@ -558,7 +560,7 @@ t_exposed_needs_its_token() {
 }
 
 t_allow_writes_and_a_given_token() {
-    seed
+    fixture seed seed
     printf '%s\n' "given-token-0123456789" > tok
     start_web --host 0.0.0.0 --token-file tok --allow-writes
     # a token given is never printed
@@ -581,7 +583,7 @@ t_allow_writes_and_a_given_token() {
 }
 
 t_bad_tokens_and_tls_files_are_refused() {
-    seed
+    fixture seed seed
     QD_WEB_TOKEN=short qd_rc web -n 2> err
     assert_status "$QD_RC" 2
     assert_contains "$(cat err)" "at least 16"
