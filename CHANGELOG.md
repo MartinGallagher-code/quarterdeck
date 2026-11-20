@@ -28,7 +28,8 @@ the owner's "it should be much faster"). Patch: the tests only.
 - **The suites that use it**, seconds here before and after (four at a
   time, or alone): web 233 to 115, xstore 135 to 27, compare 169 to 89,
   again 138 to 89, report 86 to 51, remote 85 to 65, rm 73 to 35, view 64
-  to 38, study 125 to 67, doe_next 338 to 271, doe_fio 186 to 148. Every
+  to 38, study 125 to 67, doe_next 338 to 271, doe_fio 186 to 148, and
+  QD-071's doe_surface 290 to 219. Every
   case is the same case; only where its setup comes from changed. `TIMES`
   in `tests/run_tests.sh` has their new seconds, so the three shares stay
   even.
