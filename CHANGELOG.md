@@ -5,6 +5,22 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.49.1 — 2026-11-20
+
+CI's suite jobs have 25 minutes, not 15 (QD-070). 0.49.0 and 0.49.1 share
+one pull request, so 0.49.0 is not published on its own.
+
+### Changed
+- **`.github/workflows/ci.yml`:** the four jobs that run a share of the
+  suite (Python 3.9 to 3.13, Python 3.6, provost 2.1.0 and the store
+  check) time out at 25 minutes. A share usually takes 7 to 9 minutes,
+  and a slow runner runs every suite about twice as long: on `main`'s own
+  run for 0.48.0, Python 3.10's first share took 14.6 minutes and
+  provost 2.1.0's second 14.7, against a limit of 15. 0.49.0's run lost
+  Python 3.10's first share to it, and QD-071's run lost five shares, each
+  stopped at 15 minutes with every case that had finished passing. 25 is
+  still about three times a share's usual time, as QD-024 set out.
+
 ## 0.49.0 — 2026-11-19
 
 Every run of a study -- a screen, its follow-up and every later round --
