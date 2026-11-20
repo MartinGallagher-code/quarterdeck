@@ -145,7 +145,7 @@ What only CI does: the suite under a real Python 3.6 (in a container),
 under each of 3.9 to 3.13, under PyPI's provost 2.1.0 (`pip install
 "provost==2.1.0"` into a second venv and point `QD_PROVOST` at it to try it
 here), the installed wheel's smoke test, and the suite under provost
-2.19.0 from its repository with `QD_STORE_CHECK=require`: every store a
+2.28.0 from its repository with `QD_STORE_CHECK=require`: every store a
 case leaves must pass `provost store check` (PyPI's newest provost, 2.3.0,
 has no `store check`). A case that makes a store by hand, or breaks one on
 purpose, names it to `no_store_check` in `tests/test_helper.bash`.
