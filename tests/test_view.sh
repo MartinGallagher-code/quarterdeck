@@ -7,6 +7,8 @@
 
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/test_helper.bash"
+# seed's filings are made once and copied into each case that starts from them
+use_fixtures
 
 seed() {
     {
@@ -22,7 +24,7 @@ seed() {
 view() { QD_TEST_SCREEN="${SCREEN:-100x14}" QD_TEST_KEYS="$1" qd view "${2:-latest}"; }
 
 t_first_screen_and_column_strip() {
-    seed
+    fixture seed seed
     out="$(view '')"
     assert_contains "$out" "qd view"
     assert_contains "$out" "h04"
@@ -35,7 +37,7 @@ t_first_screen_and_column_strip() {
 # a filter nothing matches leaves an empty list to move in: it is said,
 # not a crash
 t_an_empty_list_can_be_moved_in() {
-    seed
+    fixture seed seed
     out="$(view 'fmbps>99999<enter><right><right>cjG <enter>')"
     assert_contains "$out" "0 distinct values over 0 rows"
     assert_contains "$out" "0 of 0"
@@ -43,7 +45,7 @@ t_an_empty_list_can_be_moved_in() {
 
 # r in a grouped view would put the raw rows under the grouped title
 t_r_in_a_derived_view_is_said() {
-    seed
+    fixture seed seed
     out="$(view '<right>gr')"
     assert_contains "$out" "q back to that, and r there"
     assert_contains "$out" "mbps_mean"
@@ -52,7 +54,7 @@ t_r_in_a_derived_view_is_said() {
 }
 
 t_filter_sort_and_undo() {
-    seed
+    fixture seed seed
     out="$(view 'fmbps<9405<enter>')"
     assert_contains "$out" "2 rows where mbps<9405"
     out="$(view 'fmbps<9405<enter><right><right><right>S')"
@@ -64,7 +66,7 @@ t_filter_sort_and_undo() {
 }
 
 t_quick_filter_on_a_cell() {
-    seed
+    fixture seed seed
     out="$(view '<right>=')"
     assert_contains "$out" "2 rows where rack=r1"
     out="$(view '<right><right>!')"
@@ -74,7 +76,7 @@ t_quick_filter_on_a_cell() {
 }
 
 t_describe_counts_and_drill_down() {
-    seed
+    fixture seed seed
     SCREEN=100x24 out="$(SCREEN=100x24 view '<right><right><right>d')"
     assert_contains "$out" "mbps in depth"
     assert_contains "$out" "measured  3   blank 1"
@@ -86,7 +88,7 @@ t_describe_counts_and_drill_down() {
 }
 
 t_group_and_back() {
-    seed
+    fixture seed seed
     out="$(view '<right>g')"
     assert_contains "$out" "grouped by rack"
     assert_contains "$out" "r2"
@@ -97,7 +99,7 @@ t_group_and_back() {
 }
 
 t_detail_help_and_quit() {
-    seed
+    fixture seed seed
     out="$(SCREEN=100x20 view '<down><enter>')"
     assert_contains "$out" "row 2 of"
     assert_contains "$out" "h02"
@@ -181,7 +183,7 @@ t_back_to_the_contents() {
 }
 
 t_needs_a_terminal_without_a_script() {
-    seed
+    fixture seed seed
     qd_rc view latest < /dev/null > out 2> err
     assert_status "$QD_RC" 2
     assert_contains "$(cat err)" "needs a terminal"

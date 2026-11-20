@@ -5,6 +5,49 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.50.1 — 2026-11-20
+
+The slowest suites make their costly setup once, not once a case (QD-074,
+the owner's "it should be much faster"), and CI's store-check job takes
+provost 2.28.0, which files a run in a fraction of the time. Patch: tests
+and CI only.
+
+### Tests
+- **Where the time goes:** in `tests/test_doe_next.sh`, 320 of 338
+  seconds were `provost batch`, at about 1.3 s a run filed, nearly all of
+  it provost working out the format of what it is given. Starting qd takes
+  80 ms. The rest of the fix is provost's (PV-046: a repeat filing reuses
+  the dataset's strategy).
+- **`use_fixtures` and `fixture NAME FUNCTION`** in
+  `tests/test_helper.bash`: the first case to ask runs the setup, and
+  every later case of the suite gets a copy of what it left -- the store,
+  the fake hosts, every file, the directory it ended in, the variables it
+  exported or unset -- so it starts where it would have. A suite that uses
+  it runs each case in one directory path, as a store records its path.
+  `tests/test_runner.sh` checks it (made once; files, directory and
+  variables kept; a case's own changes reach no other case; refused
+  without `use_fixtures`), with mutations that make it fail.
+- **The suites that use it**, seconds here before and after (four at a
+  time, or alone): web 233 to 115, xstore 135 to 27, compare 169 to 89,
+  again 138 to 89, report 86 to 51, remote 85 to 65, rm 73 to 35, view 64
+  to 38, study 125 to 67, doe_next 338 to 271, doe_fio 186 to 148, and
+  QD-071's doe_surface 290 to 219. Every
+  case is the same case; only where its setup comes from changed. `TIMES`
+  in `tests/run_tests.sh` has their new seconds, so the three shares stay
+  even.
+
+### Changed
+- **CI's store-check job takes provost 2.28.0** (`PROVOST_REF` at provost's
+  main, d7ce5ea; the job and `docs/contributing.md` say so), not 2.19.0.
+  2.28.0 reads a capture into a dataset the store already has with that
+  dataset's last strategy first, and scans its strategy ceilings once
+  (provost QD-056): a filing takes a fraction of the time. The whole suite
+  here on 2.28.0, every store checked: 784 s, four at a time, against 1522
+  s on 2.24.0 before this release's fixtures (one case fails here, as on
+  `main`: `ssh`'s klist case, which needs ssh and klist this machine has
+  not). The other suite jobs take PyPI's newest provost, still 2.24.0:
+  they gain this when 2.28.0 is published there.
+
 ## 0.50.0 — 2026-11-20
 
 A response surface fitted to a central composite or Box-Behnken

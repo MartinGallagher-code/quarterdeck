@@ -337,6 +337,59 @@ EOF
     assert_contains "$(cat out)" "two parts in one share: big"
 }
 
+# fixture (QD-074): the setup runs once a suite, and every case that asks
+# gets the files, the directory and the variables it left -- a copy, so a
+# case's own changes reach no other case; the suite's directory goes at
+# the end
+t_a_fixture_is_made_once_and_copied() {
+    unset QD_STORE_CHECK QD_TEST_ONLY QD_TEST_PART
+    mkdir -p t tmp
+    printf '#!/bin/sh\nexit 1\n' > "$FAKE_BIN/provost"
+    chmod +x "$FAKE_BIN/provost"
+    export COUNT="$PWD/count"
+    cat > t/test_fx.sh <<EOF
+source "$TESTS/test_helper.bash"
+use_fixtures
+made() {
+    echo made >> "\$COUNT"
+    mkdir d
+    echo x > d/f
+    export FX_SET=1
+    unset FX_GONE
+    cd d
+}
+check() {
+    [ "\$(cat f)" = x ] || fail "f: \$(cat f)"
+    [ "\${FX_SET:-}" = 1 ] || fail "FX_SET not kept"
+    [ -z "\${FX_GONE+x}" ] || fail "FX_GONE not unset"
+    [ "\$PWD" = "\$TEST_TMPDIR/d" ] || fail "in \$PWD"
+}
+t_one() { export FX_GONE=1; fixture m made; check; echo y > f; }
+t_two() { export FX_GONE=1; fixture m made; check; }
+t_bare() { fixture m made; }
+run_test one t_one
+run_test two t_two
+finish
+EOF
+    set +e
+    OUT="$(TMPDIR="$PWD/tmp" QD_PROVOST="$FAKE_BIN/provost" bash t/test_fx.sh 2>&1)"
+    RC=$?
+    set -e
+    assert_status "$RC" 0
+    assert_contains "$OUT" "2 run, 0 failed"
+    assert_eq "$(cat count)" "made"
+    assert_eq "$(ls tmp)" ""
+    # without use_fixtures: said, and the case fails
+    sed -i.bak -e '/^use_fixtures$/d' -e 's/^run_test two t_two$/run_test bare t_bare/' \
+        -e '/^run_test one t_one$/d' t/test_fx.sh
+    set +e
+    OUT="$(TMPDIR="$PWD/tmp" QD_PROVOST="$FAKE_BIN/provost" bash t/test_fx.sh 2>&1)"
+    RC=$?
+    set -e
+    assert_status "$RC" 1
+    assert_contains "$OUT" "fixture m: the suite has not called use_fixtures"
+}
+
 run_test "--list: every suite once, no provost needed"   t_list_names_every_suite_once_and_needs_no_provost
 run_test "every share count covers every suite once"     t_every_share_count_covers_every_suite_once
 run_test "the deal: longest first, to the lightest"      t_the_deal_is_longest_first_to_the_lightest_share
@@ -346,4 +399,5 @@ run_test "a failing suite fails its share, whole"       t_a_failing_suite_fails_
 run_test "more shares than suites: nothing, and 0"      t_more_shares_than_suites_runs_nothing_and_passes
 run_test "the runner otherwise runs as before"          t_the_runner_otherwise_runs_as_before
 run_test "check_shards fails a gap or a suite in two"   t_check_shards_fails_a_gap_or_a_suite_in_two
+run_test "a fixture is made once, and copied"         t_a_fixture_is_made_once_and_copied
 finish
