@@ -10,6 +10,8 @@
 
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/test_helper.bash"
+# seed's filings are made once and copied into each case that starts from them
+use_fixtures
 
 # five hosts: one slow, one down, and one whose answer is hostile HTML
 seed() {
@@ -23,6 +25,7 @@ seed() {
     printf 'n1 rack=r1\nn2 rack=r1\nn3 rack=r2\nn4 rack=r2\nn5 rack=r2\n' > hosts.txt
     qdf_rc run -q -s hosts.txt --name bw -- cat m > /dev/null 2>&1
     RUN="$(qd log | tail -1 | cut -d' ' -f1)"
+    export RUN     # so that a fixture of it keeps it
 }
 
 # a thresholds file from rows of fields, '|' between them
@@ -64,7 +67,7 @@ sys.exit(bad)')
 has_verify() { pv verify --help > /dev/null 2>&1; }
 
 t_a_run_package_and_its_sums() {
-    seed
+    fixture seed seed
     qd_rc report "$RUN" --out rep > out
     # a host that did not answer is a finding, as it was for qd run
     assert_status "$QD_RC" 1
@@ -106,7 +109,7 @@ t_a_run_package_and_its_sums() {
 }
 
 t_the_figures_are_the_commands() {
-    seed
+    fixture seed seed
     qd_rc report "$RUN" --out rep > /dev/null
     d="rep/data/$RUN"
     assert_eq "$(cat "$d/data.csv")" "$(qd export "$RUN" --format csv)"
@@ -133,7 +136,7 @@ for r in csv.DictReader(open(sys.argv[1])):
 }
 
 t_the_html_runs_nothing() {
-    seed
+    fixture seed seed
     # what a summary shows of a dataset (the commonest note) and of a
     # thresholds file (its notes), each hostile
     # shellcheck disable=SC2016  # the backticks are text, not a command
@@ -177,7 +180,7 @@ PYEOF
 }
 
 t_checks_baseline_verify_and_operator() {
-    seed
+    fixture seed seed
     # the seeded run is the baseline; since then the fleet slowed down
     base="$RUN"
     for h in n1 n2 n3; do
@@ -241,7 +244,7 @@ PYEOF
 }
 
 t_what_does_not_exist_is_left_out() {
-    seed
+    fixture seed seed
     # a provost that has no verify: the rest of provost as it is
     real="$PROVOST_CMD"
     cat > "$FAKE_BIN/old-provost" <<EOF
@@ -268,7 +271,7 @@ EOF
 }
 
 t_kept_verdicts_without_check() {
-    seed
+    fixture seed seed
     limits t.tsv 'R1|mbps|>=|900||status=ok||'
     qd_rc check "$RUN" --against t.tsv --keep > /dev/null
     qd_rc report "$RUN" --out rep > /dev/null
@@ -303,7 +306,7 @@ t_an_import_has_its_tables() {
 }
 
 t_refusals_write_nothing() {
-    seed
+    fixture seed seed
     mkdir full && touch full/x
     qd_rc report "$RUN" --out full > out 2>&1
     assert_status "$QD_RC" 2
@@ -399,7 +402,7 @@ PYEOF
 }
 
 t_waivers_in_the_report() {
-    seed
+    fixture seed seed
     # QD-028: n4's 100 fails R1 under a waiver whose justification is
     # hostile HTML and Markdown; R2 passes; an expired waiver on R3
     printf 'req\tcolumn\top\tlimit\twhere\tseverity\n%s\n%s\n%s\n' \
@@ -448,7 +451,7 @@ t_waivers_in_the_report() {
 }
 
 t_kept_waived_verdicts() {
-    seed
+    fixture seed seed
     limits t.tsv 'R1|mbps|>=|900||status=ok||'
     printf 'req\tjustification\nR1\tn4 is a 100M port\n' > w.tsv
     qd_rc check "$RUN" --against t.tsv --waivers w.tsv --keep > /dev/null

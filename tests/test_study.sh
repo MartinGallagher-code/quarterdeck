@@ -11,6 +11,8 @@
 
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/test_helper.bash"
+# the two designs are run once and copied into each case that starts from them
+use_fixtures
 
 # shellcheck disable=SC2016  # expanded on the far side, not here
 BENCH='[ ! -e skip{window} ] && echo "mbps: $(( 900 + 300 * ({streams} > 1) + {window} / 8 + {burst} ))"'
@@ -100,7 +102,7 @@ t_compare_lines_up_every_run() {
 }
 
 t_compare_refuses_what_it_cannot_do() {
-    study
+    fixture study study
     qd_rc compare --study nothing 2> err
     assert_status "$QD_RC" 2
     assert_contains "$(cat err)" "no study 'nothing'"
@@ -120,7 +122,7 @@ t_compare_refuses_what_it_cannot_do() {
 }
 
 t_doe_status_lists_the_study() {
-    study
+    fixture study study
     out="$(qd doe status screen)"
     assert_contains "$out" "qd doe -- screen: 4 of 4 points measured"
     assert_contains "$out" "the study screen: 2 designs, 8 of 8 points measured"
@@ -187,7 +189,7 @@ EOF
 }
 
 t_web_study() {
-    study
+    fixture study study
     start_web
     assert_eq "$(api /api/groups 'd["studies"]')" '[{"designs": ["screen", "follow"], "name": "screen", "progress": "2 designs, 8 of 8 points measured"}]'
     p='/api/study?study=screen'

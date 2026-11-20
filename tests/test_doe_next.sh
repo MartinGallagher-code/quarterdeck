@@ -11,6 +11,8 @@
 
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/test_helper.bash"
+# the screen is made once and copied into each case that starts from it
+use_fixtures
 
 # the screen, run and filed: on host a (or the hosts given)
 screen() {
@@ -26,12 +28,14 @@ screen() {
     qdf doe run fio-screen.json -s hosts.txt -q > /dev/null
 }
 
+# the screen, as the stand-in doe lays it out: on host a, or on a and b
+screened() { stand_in_doe; screen "$@"; }
+
 # a key of the follow-up config, as JSON
 cfg() { "$PY" -c 'import json,sys; c = json.load(open(sys.argv[1])); exec("print(json.dumps(" + sys.argv[2] + ", sort_keys=True))")' "$1" "$2"; }
 
 t_next_keeps_the_big_factors() {
-    stand_in_doe
-    screen
+    fixture screen screened
     qd doe next fio-screen -c read_iops > out
     f=fio-screen-read-iops-ccd.json
     assert_file_exists "$f"
@@ -70,8 +74,7 @@ t_next_keeps_the_big_factors() {
 # the held factors are at the level the screen found better for the
 # response, and the follow-up's command carries them
 t_held_factors_at_their_better_level() {
-    stand_in_doe
-    screen
+    fixture screen screened
     qd doe next fio-screen -c read_lat_p99 --factors iodepth,bs,numjobs -o bbd.json > out
     assert_contains "$(cat out)" "wrote bbd.json: box-behnken on 3 factors, 15 points"
     assert_contains "$(cat out)" "read_lat_p99 (jobs.0.read.clat_ns.percentile.99.000000, minimise)"
@@ -95,8 +98,7 @@ t_held_factors_at_their_better_level() {
 
 # a categorical factor is never varied: held at its better level, and said
 t_a_categorical_factor_is_held() {
-    stand_in_doe
-    screen
+    fixture screen screened
     qd doe next fio-screen -c read_lat_p99 --factors iodepth,rw,ioengine,bs > out
     assert_contains "$(cat out)" "note      rw is categorical: a central composite or Box-Behnken varies a"
     assert_contains "$(cat out)" "number between two levels, so it is held at rw, its better level"
@@ -120,8 +122,7 @@ t_a_categorical_factor_is_held() {
 }
 
 t_next_refuses_what_it_cannot_do() {
-    stand_in_doe
-    screen
+    fixture screen screened
     qd_rc doe next fio-screen 2> err
     assert_status "$QD_RC" 2
     assert_contains "$(cat err)" "a follow-up is for one response: -c NAME, one of read_iops, write_iops"
@@ -144,8 +145,7 @@ t_next_refuses_what_it_cannot_do() {
 # --like: exactly the hosts and the target the screen ran on, said; a host
 # that has gone is reported, never skipped in silence
 t_like_runs_where_the_screen_ran() {
-    stand_in_doe
-    screen a b
+    fixture screen-a-b screened a b
     qd doe next fio-screen -c write_iops > /dev/null
     f=fio-screen-write-iops-ccd.json
     # a hosts.txt here names other hosts: --like does not read it
