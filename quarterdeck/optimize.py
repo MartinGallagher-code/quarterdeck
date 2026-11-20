@@ -716,9 +716,13 @@ class Optimizer(object):
             "n": k, "first": first, "points": len(pts),
             "strategy": strategy}]
         self.file(w, cfg, matrix, row.get("seed") or None, row)
-        self.say("%s doe optimize -- the %s is inside %s: doe next-batch "
-                 "(%s) adds %s near it, points %d to %d" % (
-                     PROG, doemod.WANTED.get(self.direction, "optimum"), w,
+        want = doemod.WANTED.get(self.direction, "optimum")
+        self.say("%s doe optimize -- %s: doe next-batch (%s) adds %s near "
+                 "it, points %d to %d" % (
+                     PROG, ("the %s is inside %s" % (want, w))
+                     if s["verdict"]["where"] == "inside" else
+                     ("the region stays at %s, its %s not clearly inside "
+                      "it" % (w, want)),
                      strategy, plural(len(pts), "point"), first,
                      first + len(pts) - 1))
 
