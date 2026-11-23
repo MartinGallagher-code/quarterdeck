@@ -5,6 +5,23 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.51.5 — 2026-11-23
+
+CI's suite jobs have 15 minutes again, not 25 (QD-075, the owner's "lower
+the job limit to 15 minutes"), now that provost 2.28.0 is on PyPI.
+Patch: CI only.
+
+### Changed
+- **`timeout-minutes` on the jobs that run a share of the suite**: 15 on
+  the Python 3.9 to 3.13 jobs, the Python 3.6 jobs and the store-check
+  jobs, and 20 on the provost 2.1.0 jobs, which file one capture at a
+  time. On quarterdeck#73's last run, on PyPI's provost 2.24.0, three
+  Python shares took 17 to 20 minutes; the store-check shares, on
+  provost 2.28.0, took 6 to 11, and the provost 2.1.0 shares up to 14.4.
+  The Python jobs take PyPI's newest provost, 2.28.0 since today, which
+  files a run in a fraction of the time (QD-074). QD-070 raised the limit
+  to 25 as a stopgap until then. `docs/contributing.md` gives the limits.
+
 ## 0.51.4 — 2026-11-23
 
 A fio tuning study, start to finish (QD-066): the seven steps QD-067 to

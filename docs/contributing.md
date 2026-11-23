@@ -66,9 +66,10 @@ On every pull request and every push to `main` (`.github/workflows/ci.yml`):
 
 A newer push to a pull request cancels that pull request's run still in
 progress; a push to `main` is never cancelled, so the version check on
-every push to `main` always runs. Every job has a time limit, about three
-times its usual time, so a case that hangs fails its job within minutes,
-not GitHub's six hours.
+every push to `main` always runs. Every job has a time limit well above
+its usual time (15 minutes for a share of the suite, 20 on provost 2.1.0,
+which files one capture at a time), so a case that hangs fails its job
+within minutes, not GitHub's six hours.
 
 The tests need no network and no second machine, but a real provost
 (`pip install provost`, or `QD_PROVOST`): every case files into a store of
