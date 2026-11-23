@@ -70,6 +70,7 @@ from . import VERSION
 from .common import (PROG, VERSION_TEXT, QdError, _stdio_safe, die, env,
                      env_float, env_int, plural, warn, write_text)
 from . import diff as diffmod
+from . import drives as drivesmod
 from . import filing, fleet, hosts as hostmod, importers, launch, query
 from . import pacing
 from . import policy as policymod
@@ -1029,9 +1030,17 @@ def failing_plan(args, stop, retry):
 
 
 def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
-              store=True, stdin=None, runner=None, at=None):
+              store=True, stdin=None, runner=None, at=None, per_drive=False,
+              together=None):
     """Run `command` on every host, as args says (ssh, jobs, timeout,
     passes), and file what came back as one run named `label`.
+
+    per_drive (qd doe run on hosts naming drives=, QD-073): hs are drive
+    targets (drives.targets), each running the command with {drive} as
+    its own file.  together: {host name: [its targets]}, hs being the
+    hosts -- each host one task whose drives start at once, so --jobs,
+    --rate and --max-fail count hosts -- and the run filed with a row per
+    drive.
 
     context: (key, value) pairs every answer's prologue carries besides
     run and host -- a campaign's part, a design point's factors -- so they
@@ -1051,9 +1060,12 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
         die("--every wants a number of seconds above 0")
     gate = gate_of(args)        # a bad --rate is refused before any host
     pol = policy_of(args)
-    policymod.check(pol, command, getattr(args, "verb_name", "run"),
-                    len(hs), bool(push), args.sudo,
-                    (extra or {}).get("tool") == "probe")
+    shown = [drivesmod.fill(command, t) for t in drive_targets(hs, together)]\
+        if per_drive else [command]
+    for c in sorted(set(shown)):
+        policymod.check(pol, c, getattr(args, "verb_name", "run"),
+                        len(hs), bool(push), args.sudo,
+                        (extra or {}).get("tool") == "probe")
     if pol.active:
         extra = dict(extra or {})
         extra["policy"] = pol.notes()
@@ -1067,9 +1079,16 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
         check_ssh_setup(runner)
         for ln in failing_plan(args, stop, retry):
             warn(ln)
+        if per_drive:
+            for t in drive_targets(hs, together):
+                dry_run_lines(runner, [t], drivesmod.fill(command, t), push,
+                              stdin, 1, one_by_one=True)
+            return None
         dry_run_lines(runner, hs, command, push, stdin, args.jobs,
                       one_by_one=stop is not None or bool(retry[0]))
         return None
+    if per_drive:
+        runner = drivesmod.PerDrive(runner, together)
     check_transport(runner, bool(push), bool(stdin))
     context = list(context) + runner.context()
     st = prov = None
@@ -1102,6 +1121,10 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
         launch.stop_local()
     if not results:
         die("interrupted before any pass started; nothing was kept", 130)
+    if together:
+        # a host's drives ran as one task: a row each, as they answered
+        results = drivesmod.flatten(results, together)
+        hs = drive_targets(hs, together)
     stopped = stop.why if stop is not None else None
     if push and args.keep_remote:
         warn("the pushed files are left on each host in %s"
@@ -1131,6 +1154,14 @@ def fleet_run(args, hs, command, label, push=(), context=(), extra=None,
     notes = file_batch(prov, b, "answers")
     entry = filed(st, rid, notes, b)
     return Job(results, interrupted, entry, entry.load("data"), stopped)
+
+
+def drive_targets(hs, together):
+    """The drive targets of a per-drive fan-out: hs themselves, or the
+    targets of each host when its drives run together."""
+    if not together:
+        return list(hs)
+    return [t for h in hs for t in together.get(h.name, [h])]
 
 
 def fleet_runs_together(args, hs, specs, extra=None):
@@ -5418,6 +5449,15 @@ def cmd_doe(args):
             "measure every point on the fleet")]))
         sys.stdout.write(render.page(lines))
         return 0
+    if what not in ("analyze", "next", "surface", "optimize"):
+        for flag in ("per", "group", "block"):
+            if getattr(args, flag, None):
+                die("--%s chooses the drives an analysis reads: analyze, "
+                    "next, surface and optimize take it, not %s" % (
+                        flag, what))
+    if what != "run" and getattr(args, "drives_together", False) and \
+            what != "optimize":
+        die("--drives-together is how qd doe run measures a host's drives")
     st = store_of(args)
     if what == "run":
         return doe_run(args, st, doemod)
@@ -5432,6 +5472,15 @@ def cmd_doe(args):
             "  command  %s" % row.get("command", "")]
         _, scfg, _ = doemod.load(st, args.target)
         meta = scfg.get("metadata") or {}
+        if isinstance(meta, dict) and meta.get("qd_drives"):
+            gs = doemod.groups(st, args.target, "drive")
+            own = drivesmod.from_meta(meta.get("qd_group"))
+            lines.append("  drives   %s, %s%s; ok: the drives that answered" % (
+                plural(len(gs), "drive"),
+                "all of a host's at once" if meta["qd_drives"] ==
+                drivesmod.TOGETHER else "one at a time on each host",
+                (" (%s %s)" % (own.per, own.group))
+                if own is not None and own.group else ""))
         if isinstance(meta, dict) and meta.get("qd_study"):
             fol = meta.get("qd_follows") or {}
             how = []
@@ -5474,62 +5523,17 @@ def cmd_doe(args):
     if what == "analyze":
         cols = [c.strip() for c in (args.column or "").split(",")
                 if c.strip()]
-        report = None
-        if args.report is not None:
-            _, rcfg, _ = doemod.load(st, args.target)
-            key = doemod.report_key(rcfg, cols)
-            if key:
-                report = doemod.report_dir(st, args.target, key,
-                                           args.report or None)
-        text, allr, effects, matrix = doemod.analyze(
-            st, args.target, cols, args.agg, args.optimize, report=report)
-        if len(allr) == 1:
-            rname, col, _, resp = allr[0]
-            lv = dict((rid, " ".join("%s=%s" % kv for kv in levels))
-                      for rid, _, levels in doemod.points(matrix))
-            rows = [[str(rid), lv.get(rid, ""), str(n), num_or_blank(v)]
-                    for rid, v, n in resp]
-            lines = ["%s doe -- %s: %s per point (%s over the hosts that "
-                     "answered)" % (PROG, args.target, col, args.agg)]
-            lines.extend(render.render_rows(
-                ["point", "factors", "samples", col], rows,
-                numeric=[0, 2, 3], width=width_of(args), indent="  "))
-        else:
-            # a column a response, blank where a point did not measure it
-            vals = [dict((rid, v) for rid, v, _ in r[3]) for r in allr]
-            rows = [[str(rid)] + [num_or_blank(d.get(rid)) for d in vals]
-                    for rid, _, _ in doemod.points(matrix)]
-            lines = ["%s doe -- %s: %s per point (%s over the hosts that "
-                     "answered; blank: not measured)" % (
-                         PROG, args.target,
-                         plural(len(allr), "response"), args.agg)]
-            lines.extend(render.render_rows(
-                ["point"] + [r[0] for r in allr], rows,
-                numeric=range(len(allr) + 1), width=width_of(args),
-                indent="  "))
-            named = ", ".join("%s=%s" % (r[0], r[1]) for r in allr
-                              if r[0] != r[1])
-            if named:
-                import textwrap
-                lines.extend(textwrap.wrap(
-                    "(the columns: %s)" % named,
-                    max(40, (width_of(args) or 80) - 2),
-                    initial_indent="  ", subsequent_indent="   ",
-                    break_on_hyphens=False))
-        lines.append("")
-        lines.append("  what moves each response: doe's main effects as "
-                     "shares, largest first;")
-        lines.append("  big: inside doe's %d%% Pareto line, with the level "
-                     "that is best for it" % doemod.PARETO)
-        lines.extend(doemod.ranking_lines(allr, effects, matrix,
-                                          width_of(args)))
-        lines.append("")
-        lines.append("  doe analyze:")
-        lines.extend("  " + ln for ln in text.splitlines())
-        if report is not None:
-            lines.extend(doe_report_lines(
-                doemod, report, args,
-                allr[0][1] if len(allr) == 1 else None))
+        _, rcfg, _ = doemod.load(st, args.target)
+        sels = doe_sels(args, st, doemod, args.target, rcfg)
+        if args.report is not None and len(sels) > 1:
+            die("--report keeps one analysis: --group NAME, one of %s"
+                % ", ".join(sel.group for sel, _ in sels))
+        lines = []
+        for sel, members in sels:
+            if lines:
+                lines.append("")
+            lines.extend(doe_analyze_lines(args, st, doemod, rcfg, cols, sel,
+                                           members))
         sys.stdout.write(render.page(lines))
         return 0
     if what == "next":
@@ -5540,6 +5544,137 @@ def cmd_doe(args):
         return doe_optimize(args, st, doemod)
     die("unknown doe action %r (init, plan, run, status, analyze, next, "
         "surface, optimize)" % what)
+
+
+def doe_sels(args, st, doemod, name, cfg, one=None):
+    """The groups an analysis of the design `name` reads (QD-073):
+    [(drives.Selection or None, [its targets, host:drive])], None being
+    every row with one value a point, as before drives.  --per defaults to
+    the design's own (a follow-up's metadata.qd_group), else model where
+    its hosts named drives, else fleet; --group picks one group, which a
+    follow-up made for one group also names; --block makes each host's or
+    drive's value an observation.  one: what needs a single group (the
+    words of the refusal when there are several)."""
+    meta = cfg.get("metadata") or {}
+    own = drivesmod.from_meta(meta.get("qd_group")) \
+        if isinstance(meta, dict) else None
+    per = args.per or (own.per if own else None) or \
+        ("model" if doemod.has_drives(st, name) else "fleet")
+    same = own is not None and own.per == per
+    block = args.block if args.block else (own.block if same else None)
+    group = args.group
+    if group is None and same and own.group is not None:
+        group = own.group
+    drivesmod.Selection(per, None, block)       # refuses what cannot be
+    if per == "fleet":
+        if group not in (None, "fleet"):
+            die("--group %s with --per fleet: the fleet is one group (--per "
+                "model, host or drive to pick one)" % group)
+        if not block:
+            return [(None, [])]
+        return [(drivesmod.Selection("fleet", None, block),
+                 [t for _, ts in doemod.groups(st, name, "drive")
+                  for t in ts])]
+    gs = doemod.groups(st, name, per)
+    if group is not None:
+        known = dict(gs)
+        if group not in known:
+            die("%s has no %s %r%s" % (
+                name, per, group, (": its %ss are %s" % (
+                    per, ", ".join(g for g, _ in gs))) if gs else
+                " (none of its points has run)"))
+        gs = [(group, known[group])]
+    if not gs:
+        die("%s: none of its points has run, so it has no %ss to analyse "
+            "(%s doe status %s)" % (name, per, PROG, name))
+    if one and len(gs) > 1:
+        die("%s is for one group, and %s has %s under --per %s: --group "
+            "NAME, one of %s (or --per fleet: every drive as one)" % (
+                one, name, plural(len(gs), per), per,
+                ", ".join(g for g, _ in gs)))
+    return [(drivesmod.Selection(per, g, block), ts) for g, ts in gs]
+
+
+def sel_heading(sel, members):
+    """'drive_model PM9A3: node01:/srv/a, node02:/srv/a' -- which rows."""
+    if sel is None:
+        return ""
+    who = ", ".join(members[:6]) + (" and %d more" % (len(members) - 6)
+                                    if len(members) > 6 else "")
+    return "%s%s" % (sel.words(), (" (%s)" % who) if who and
+                     (sel.group is None or who != sel.group) else "")
+
+
+def doe_analyze_lines(args, st, doemod, rcfg, cols, sel, members):
+    """`qd doe analyze`'s lines for one group (sel None: every row)."""
+    report = None
+    if args.report is not None:
+        key = doemod.report_key(rcfg, cols)
+        if key:
+            if sel is not None:
+                key += "@" + (sel.group or sel.per) + (
+                    "-by-" + sel.block if sel.block else "")
+            report = doemod.report_dir(st, args.target, key,
+                                       args.report or None)
+    text, allr, effects, matrix = doemod.analyze(
+        st, args.target, cols, args.agg, args.optimize, report=report,
+        sel=sel)
+    over = "the hosts that answered" if sel is None else \
+        "its drives that answered" if sel.per != "host" or \
+        doemod.has_drives(st, args.target) else "the host's answers"
+    where = (", " + sel_heading(sel, members)) if sel is not None else ""
+    if len(allr) == 1:
+        rname, col, _, resp = allr[0]
+        lv = dict((rid, " ".join("%s=%s" % kv for kv in levels))
+                  for rid, _, levels in doemod.points(matrix))
+        rows = [[str(rid), lv.get(rid, ""), str(n), num_or_blank(v)]
+                for rid, v, n in resp]
+        lines = ["%s doe -- %s%s: %s per point (%s over %s)" % (
+            PROG, args.target, where, col, args.agg, over)]
+        lines.extend(render.render_rows(
+            ["point", "factors", "samples", col], rows,
+            numeric=[0, 2, 3], width=width_of(args), indent="  "))
+    else:
+        # a column a response, blank where a point did not measure it
+        vals = [dict((rid, v) for rid, v, _ in r[3]) for r in allr]
+        rows = [[str(rid)] + [num_or_blank(d.get(rid)) for d in vals]
+                for rid, _, _ in doemod.points(matrix)]
+        lines = ["%s doe -- %s%s: %s per point (%s over %s; blank: not "
+                 "measured)" % (PROG, args.target, where,
+                                plural(len(allr), "response"), args.agg,
+                                over)]
+        lines.extend(render.render_rows(
+            ["point"] + [r[0] for r in allr], rows,
+            numeric=range(len(allr) + 1), width=width_of(args),
+            indent="  "))
+        named = ", ".join("%s=%s" % (r[0], r[1]) for r in allr
+                          if r[0] != r[1])
+        if named:
+            import textwrap
+            lines.extend(textwrap.wrap(
+                "(the columns: %s)" % named,
+                max(40, (width_of(args) or 80) - 2),
+                initial_indent="  ", subsequent_indent="   ",
+                break_on_hyphens=False))
+    if sel is not None and sel.block:
+        lines.append("  each %s's value at a point is an observation, in a "
+                     "block of its own: doe's ANOVA has a Block row" %
+                     sel.block)
+    lines.append("")
+    lines.append("  what moves each response: doe's main effects as "
+                 "shares, largest first;")
+    lines.append("  big: inside doe's %d%% Pareto line, with the level "
+                 "that is best for it" % doemod.PARETO)
+    lines.extend(doemod.ranking_lines(allr, effects, matrix,
+                                      width_of(args)))
+    lines.append("")
+    lines.append("  doe analyze:")
+    lines.extend("  " + ln for ln in text.splitlines())
+    if report is not None:
+        lines.extend(doe_report_lines(
+            doemod, report, args,
+            allr[0][1] if len(allr) == 1 and sel is None else None))
+    return lines
 
 
 def study_lines(args, st, studymod, names, indent="  "):
@@ -5601,12 +5736,15 @@ def doe_next(args, st, doemod):
             "ranks what moves each)" % (
                 (", one of %s" % ", ".join(names)) if names else
                 " (a column, as qd show names it)", PROG, screen))
-    _, allr, effects, _ = doemod.analyze(st, screen, cols)
+    (sel, members), = doe_sels(args, st, doemod, screen, cfg,
+                               one="a follow-up")
+    _, allr, effects, _ = doemod.analyze(st, screen, cols, sel=sel)
     rname, column, optimize, _ = allr[0]
     eff = effects.get(rname)
     if not eff:
-        die("doe gave no main effects for %s: %s doe analyze %s -c %s says "
-            "why" % (rname, PROG, screen, cols[0]))
+        die("doe gave no main effects for %s%s: %s doe analyze %s -c %s "
+            "says why" % (rname, (" (%s)" % sel.words()) if sel else "",
+                          PROG, screen, cols[0]))
     best = doemod.best_levels(smatrix, eff, optimize)
     picked = [f.strip() for f in (args.factors or "").split(",")
               if f.strip()]
@@ -5627,7 +5765,13 @@ def doe_next(args, st, doemod):
                 plural(len(varied), "numeric factor"), budget, op,
                 "\n  ".join(why)))
     name, new = doemod.follow_up(screen, row, cfg, rname, column, optimize,
-                                 varied, held, op)
+                                 varied, held, op,
+                                 sel.group if sel is not None else None)
+    if doemod.has_drives(st, screen):
+        # the follow-up is for this group: --like runs it on the group's
+        # drives, and its analysis reads them as this one did
+        new["metadata"]["qd_group"] = sel.meta() if sel is not None else \
+            {"per": "fleet"}
     path = args.output or (name + ".json")
     if os.path.exists(path):
         die("%s is there already: move it, or -o another file" % path)
@@ -5644,9 +5788,10 @@ def doe_next(args, st, doemod):
     lines = ["%s doe -- wrote %s: %s on %s, %s" % (
         PROG, path, op.replace("_", "-"), plural(len(varied), "factor"),
         plural(n, "point"))]
-    para("for", "%s (%s, %s), as the screen %s ranked it" % (
+    para("for", "%s (%s, %s), as the screen %s ranked it%s" % (
         rname, column, "maximise" if optimize != "minimize" else "minimise",
-        screen))
+        screen, (" for %s" % sel_heading(sel, members)) if sel is not None
+        else ""))
     rows = [[f["name"], " / ".join(f["levels"]),
              "%.0f%%" % pct[f["name"]] if f["name"] in pct else "",
              "varied: the screen's range"] for f in varied]
@@ -5677,6 +5822,9 @@ def doe_next(args, st, doemod):
     lines.extend(next_steps([
         ("%s doe plan %s" % (PROG, path), "the points doe lays out"),
         ("%s doe run %s --like %s" % (PROG, path, screen),
+         ("measure them on the drives of %s %s that %s ran on" % (
+             sel.per, sel.group, screen)) if sel is not None and
+         sel.group is not None else
          "measure them on the host and target %s ran on" % screen)]))
     sys.stdout.write(render.page(lines))
     return 0
@@ -5688,26 +5836,48 @@ def doe_surface(args, st, doemod):
     fit, the stationary point and its kind, the best point inside the
     design region -- and whether that optimum is inside the region (confirm
     it) or on its edge (another round)."""
-    import textwrap
     _, cfg, _ = doemod.load(st, args.target)
     cols = [c.strip() for c in (args.column or "").split(",") if c.strip()]
     if len(cols) > 1:
         die("a surface is of one response: -c COLUMN")
     rname, col, _ = doemod.surface_spec(cfg, cols[0] if cols else None)
-    report = None
-    if args.report is not None:
-        report = doemod.report_dir(st, args.target, col, args.report or None)
-    s = doemod.surface(st, args.target, col, args.agg, report=report,
-                       grid=args.json)
-    if args.json:
-        import json
-        sys.stdout.write(json.dumps(s, indent=1, sort_keys=True) + "\n")
-        return 0
+    sels = doe_sels(args, st, doemod, args.target, cfg,
+                    one="--json" if args.json else
+                    "--report" if args.report is not None else None)
+    lines = []
+    for sel, members in sels:
+        report = None
+        if args.report is not None:
+            key = col if sel is None else "%s@%s%s" % (
+                col, sel.group or sel.per,
+                ("-by-" + sel.block) if sel.block else "")
+            report = doemod.report_dir(st, args.target, key,
+                                       args.report or None)
+        s = doemod.surface(st, args.target, col, args.agg, report=report,
+                           grid=args.json, sel=sel)
+        if args.json:
+            import json
+            sys.stdout.write(json.dumps(s, indent=1, sort_keys=True) + "\n")
+            return 0
+        if lines:
+            lines.append("")
+        lines.extend(doe_surface_lines(args, doemod, s, rname, col, report,
+                                       sel, members))
+    sys.stdout.write(render.page(lines))
+    return 0
+
+
+def doe_surface_lines(args, doemod, s, rname, col, report, sel, members):
+    """`qd doe surface`'s lines for one group (sel None: every row)."""
+    import textwrap
     wrap = max(40, min(width_of(args) or 80, 100) - 2)
-    lines = ["%s doe surface -- %s: %s (%s, %s), %d of %d points measured" % (
-        PROG, s["design"], rname, col,
-        "maximise" if s["optimize"] != "minimize" else "minimise",
-        s["measured"], s["total"])]
+    lines = ["%s doe surface -- %s%s: %s (%s, %s), %d of %d points "
+             "measured" % (
+                 PROG, s["design"],
+                 (", " + sel_heading(sel, members)) if sel is not None
+                 else "", rname, col,
+                 "maximise" if s["optimize"] != "minimize" else "minimise",
+                 s["measured"], s["total"])]
 
     def para(head, text, first=None):
         lines.extend(textwrap.wrap(
@@ -5774,16 +5944,20 @@ def doe_surface(args, st, doemod):
                      if kv[0] in s["factors"] else 0))))
     para("so", s["verdict"]["text"])
     if report is not None:
-        lines.extend(doe_report_lines(doemod, report, args, col))
+        lines.extend(doe_report_lines(doemod, report, args,
+                                      col if sel is None else None))
     tips = []
     if report is None:
-        tips.append(("%s doe surface %s -c %s --report" % (
-            PROG, args.target, shlex.quote(rname)),
-            "doe's surface plots, and its report, kept for qd web"))
-    tips.append(("%s web" % PROG, "the contours, on the design's page"))
+        tips.append(("%s doe surface %s -c %s%s --report" % (
+            PROG, args.target, shlex.quote(rname),
+            (" --per %s --group %s" % (sel.per, shlex.quote(sel.group)))
+            if sel is not None and sel.group is not None else ""),
+            "doe's surface plots, and its report, kept for qd web"
+            if sel is None else "doe's surface plots, and its report"))
+    tips.append(("%s web" % PROG, "the contours, on the design's page"
+                 + (" (every drive pooled)" if sel is not None else "")))
     lines.extend(next_steps(tips))
-    sys.stdout.write(render.page(lines))
-    return 0
+    return lines
 
 
 def optimize_start(st, doemod, studymod, target, column):
@@ -5853,7 +6027,10 @@ def doe_optimize(args, st, doemod):
     for on, flag in ((args.every, "--every"), (args.dry_run, "--dry-run"),
                      (args.no_store, "--no-store"),
                      (args.blocks_by, "--blocks-by"), (args.redo, "--redo"),
-                     (getattr(args, "like", None), "--like")):
+                     (getattr(args, "like", None), "--like"),
+                     (getattr(args, "drives_together", False),
+                      "--drives-together (it measures drives as its start "
+                      "design did)")):
         if on:
             die("optimize runs every round itself, on the hosts its study "
                 "ran on, and files each one: it takes no %s" % flag)
@@ -5871,7 +6048,21 @@ def doe_optimize(args, st, doemod):
         die("%s ran its blocks by %s, and optimize runs every point on the "
             "same hosts: start from a design run without --blocks-by"
             % (start, row["blocks_by"]))
+    (sel, members), = doe_sels(args, st, doemod, start, cfg,
+                               one="optimize")
     hs = like_hosts(args, st, doemod, start)
+    template = row.get("command") or doemod.command_of(cfg)
+    per_drive = drivesmod.uses(template) and drivesmod.named(hs)
+    meta = cfg.get("metadata") or {}
+    mode = (meta.get("qd_drives") if isinstance(meta, dict) else None) or \
+        drivesmod.EACH
+    targets = []
+    if per_drive:
+        # the start design's drives, of the group optimised
+        targets = [t for t in drivesmod.targets(hs)
+                   if sel is None or sel.wants_target(t)]
+        keep = set(t.name for t in targets)
+        hs = [h for h in hs if h.name in keep]
     check_limit(args, hs)
     need = doemod.timeout_of(cfg)
     if need and need > args.timeout:
@@ -5880,13 +6071,14 @@ def doe_optimize(args, st, doemod):
         args.timeout = need
     prov = filing.Provost(st)
     prov.require("keep the measurements")
-    template = row.get("command") or doemod.command_of(cfg)
     fixed = doemod.fixed_of(cfg)
     pts = doemod.points(matrix)
     # the guard before anything runs: the target is the study's own (its
-    # fixed factors), and every round keeps it
-    check_danger(doemod.substitute(template, pts[0][2] if pts else [],
-                                   fixed), args.yes, "doe optimize")
+    # fixed factors, its drives), and every round keeps it
+    first = doemod.substitute(template, pts[0][2] if pts else [], fixed)
+    for t in targets or [None]:
+        check_danger(drivesmod.fill(first, t) if t is not None else first,
+                     args.yes, "doe optimize")
 
     def say(text):
         # with --json, stdout is the report alone: the rounds go to stderr
@@ -5894,36 +6086,52 @@ def doe_optimize(args, st, doemod):
 
     def run_point(name, rid, levels):
         command = doemod.substitute(template, levels, fixed)
-        check_danger(command, args.yes, "doe optimize")
+        for t in targets or [None]:
+            check_danger(drivesmod.fill(command, t) if t is not None
+                         else command, args.yes, "doe optimize")
         factors = storemod.join_attrs(levels)
-        job = fleet_run(args, hs, command, name,
-                        context=[("design", name), ("point", str(rid))] +
-                        [(k, v) for k, v in levels],
-                        extra={"group": name, "part": str(rid),
-                               "factors": factors})
-        h = outcome_counts(job.last) if job else {}
-        say("%s doe %s -- point %d (%s): %d/%d ok  (%s)" % (
-            PROG, name, rid, factors, h.get(fleet.OK, 0), len(hs),
-            job.entry.id if job and job.entry else "not kept"))
-        if job is not None and job.interrupted:
-            die("interrupted (Ctrl-C) at %s point %d, which is kept as not "
-                "measured: the same command again carries on from there "
-                "(the runs made so far count against --budget)"
-                % (name, rid), 130)
+        runs = drive_runs(targets, mode, [], True) if per_drive else \
+            [(hs, None, None, "")]
+        for on, together, note, what in runs:
+            extra = {"group": name, "part": str(rid), "factors": factors}
+            if note:
+                extra["notes"] = note
+            job = fleet_run(args, on, command, name,
+                            context=[("design", name), ("point", str(rid))] +
+                            [(k, v) for k, v in levels],
+                            extra=extra, per_drive=per_drive,
+                            together=together)
+            h = outcome_counts(job.last) if job else {}
+            say("%s doe %s -- point %d (%s)%s: %d/%d ok  (%s)" % (
+                PROG, name, rid, factors, what, h.get(fleet.OK, 0),
+                len(job.last) if job else len(on),
+                job.entry.id if job and job.entry else "not kept"))
+            if job is not None and job.interrupted:
+                die("interrupted (Ctrl-C) at %s point %d, which is kept as "
+                    "not measured: the same command again carries on from "
+                    "there (the runs made so far count against --budget)"
+                    % (name, rid), 130)
 
+    cost = len(drivesmod.slots(targets)) \
+        if per_drive and mode != drivesmod.TOGETHER else 1
     opt = optmod.Optimizer(st, prov, start, cols[0] if cols else None,
                            args.agg, args.budget, args.confirm_runs,
                            args.batch, args.strategy, args.min_gain,
-                           run_point, say)
+                           run_point, say, sel=sel, cost=cost)
     opt.begin()
-    say("%s doe optimize -- %s: %s (%s, %s) from %s, on %s; %d of a budget "
-        "of %s spent" % (
+    say("%s doe optimize -- %s: %s (%s, %s) from %s, on %s%s; %d of a "
+        "budget of %s spent%s" % (
             PROG, opt.study, opt.rname, opt.column,
             "maximise" if opt.direction != "minimize" else "minimise",
-            start, ", ".join(h.name for h in hs), opt.spent(),
-            plural(args.budget, "run")))
+            start, ", ".join(h.name for h in hs),
+            drives_words(targets, sel) if per_drive else "", opt.spent(),
+            plural(args.budget, "run"),
+            ("; a point is %d runs, a drive at a time" % cost)
+            if cost > 1 else ""))
     opt.loop()
     rep = opt.report()
+    rep["drives"] = [drivesmod.target_label(t.name, drivesmod.drive_of(t))
+                     for t in targets]
     if args.json:
         import json
         sys.stdout.write(json.dumps(rep, indent=1, sort_keys=True) + "\n")
@@ -5939,8 +6147,10 @@ def optimize_lines(args, rep):
     wrap = max(40, min(width_of(args) or 80, 100) - 2)
     num = stats.fmt_num
     stop = rep["stop"]
-    lines = ["", "%s doe optimize -- %s: %s, %s" % (
-        PROG, rep["study"], rep["response"], {
+    g = rep.get("group") or {}
+    lines = ["", "%s doe optimize -- %s%s: %s, %s" % (
+        PROG, rep["study"], (" (%s %s)" % (g["per"], g["group"]))
+        if g.get("group") else "", rep["response"], {
             "converged": "an optimum found",
             "budget": "stopped: the budget",
             "stalled": "stopped: it cannot go on"}.get(stop["reason"],
@@ -6028,12 +6238,22 @@ def optimize_lines(args, rep):
                                    sorted(b["levels"].items())))
     para("optimum", text)
     para("command", rec["command"])
+    if rep.get("drives"):
+        g = rep.get("group") or {}
+        para("on", "%s: %s%s" % (
+            ("each drive of %s %s" % (g["per"], g["group"]))
+            if g.get("group") else "each drive it ran on",
+            ", ".join(rep["drives"]),
+            ", {drive} being each one's file"
+            if "{drive}" in rec["command"] else ""))
     tips = [("%s compare --study %s -c %s" % (PROG, rep["study"],
                                               rep["response"]),
              "every run of every round")]
     if stop["reason"] != "converged":
-        tips.insert(0, ("%s doe optimize %s -c %s --budget %d" % (
-            PROG, rep["study"], rep["response"], rep["budget"] +
+        tips.insert(0, ("%s doe optimize %s -c %s%s --budget %d" % (
+            PROG, rep["study"], rep["response"],
+            (" --per %s --group %s" % (g["per"], shlex.quote(g["group"])))
+            if g.get("group") else "", rep["budget"] +
             max(10, rep["budget"] // 2)),
             "carry on from here with a larger budget"))
     lines.extend(next_steps(tips))
@@ -6075,7 +6295,7 @@ def doe_run(args, st, doemod):
     need = doemod.timeout_of(cfg)
     if need and need > args.timeout:
         warn("%s: --timeout %gs, as the config's metadata.qd_timeout asks "
-            "(a point runs longer than %gs)" % (name, need, args.timeout))
+             "(a point runs longer than %gs)" % (name, need, args.timeout))
         args.timeout = need
     prov = filing.Provost(st)
     prov.require("keep the measurements")
@@ -6107,16 +6327,36 @@ def doe_run(args, st, doemod):
         if template != lrow.get("command"):
             warn("--like %s: this is not the command %s ran (%s)" % (
                 like, like, lrow.get("command")))
-        out("%s doe %s -- like %s: on %s %s, with %s, holding what it "
+    else:
+        hs = collect(args)
+    drivesmod.check(hs, template, [f for f, _ in (pts[0][2] if pts else [])] +
+                    [k for k, _ in fixed])
+    per_drive = drivesmod.uses(template) and drivesmod.named(hs)
+    mode = drives_mode(args, cfg if new else old, like and lcfg, name, new,
+                       per_drive)
+    sel = drivesmod.from_meta((cfg.get("metadata") or {}).get("qd_group")) \
+        if per_drive else None
+    if sel is not None and sel.group is None:
+        sel = None
+    if like:
+        ts = drivesmod.targets(hs) if per_drive else hs
+        if sel is not None:
+            ts = [t for t in ts if sel.wants_target(t)]
+            if not ts:
+                die("--like %s: none of its drives is in %s %s, the group "
+                    "%s was made for" % (like, sel.per, sel.group,
+                                          args.target))
+            keep = set(t.name for t in ts)
+            hs = [h for h in hs if h.name in keep]
+        out("%s doe %s -- like %s: on %s %s%s, with %s, holding what it "
             "held (%s)" % (
                 PROG, name, like, "its host" if len(hs) == 1 else
                 "its %d hosts" % len(hs), ", ".join(h.name for h in hs),
+                drives_words(ts, sel) if per_drive else "",
                 "its command" if template == lrow.get("command") else
                 "another command", " ".join(
                     "%s=%s" % kv for kv in doemod.fixed_of(lcfg)) or
                 "nothing"))
-    else:
-        hs = collect(args)
     check_limit(args, hs)
     blocks = None
     if args.blocks_by:
@@ -6132,16 +6372,30 @@ def doe_run(args, st, doemod):
                  "will not be measured" % (
                      plural(nblocks, "block"), args.blocks_by, len(groups),
                      ", ".join(g for g, _ in groups[nblocks:])))
+
+    def targets_of(hosts):
+        ts = drivesmod.targets(hosts)
+        return [t for t in ts if sel is None or sel.wants_target(t)]
+
     done = doemod.point_runs(st, name)
     worst, ran = 0, 0
     answered_on, missed = set(), {}
     # every point's command is checked before the first runs: a point the
     # guard refuses half way through would leave the design half measured
     for rid, blk, levels in pts:
-        if not doemod.answered(done.get(rid, [])) or args.redo:
-            check_danger(doemod.substitute(template, levels, fixed),
-                         args.yes, "doe run")
+        if not doemod.answered(done.get(rid, [])) or args.redo or per_drive:
+            command = doemod.substitute(template, levels, fixed)
+            if per_drive:
+                for t in targets_of(blocks[blk] if blocks else hs):
+                    check_danger(drivesmod.fill(command, t), args.yes,
+                                 "doe run")
+            else:
+                check_danger(command, args.yes, "doe run")
     if new:
+        if per_drive:
+            meta = cfg.setdefault("metadata", {})
+            if isinstance(meta, dict):
+                meta["qd_drives"] = mode
         # filed only now, every check passed: a run refused before here
         # leaves no design behind tied to the command it refused
         doemod.file_design(st, prov, name, template, seed, args.blocks_by,
@@ -6149,29 +6403,40 @@ def doe_run(args, st, doemod):
         st.reset()
         done = doemod.point_runs(st, name)
     for rid, blk, levels in pts:
-        if doemod.answered(done.get(rid, [])) and not args.redo:
-            continue
-        command = doemod.substitute(template, levels, fixed)
         hosts = blocks[blk] if blocks else hs
+        command = doemod.substitute(template, levels, fixed)
         factors = storemod.join_attrs(levels)
-        job = fleet_run(args, hosts, command, name,
-                        context=[("design", name), ("point", str(rid))] +
-                        [(k, v) for k, v in levels],
-                        extra={"group": name, "part": str(rid),
-                               "factors": factors})
-        if job is None:
-            continue
-        ran += 1
-        worst = max(worst, job.rc)
-        for r in job.last:
-            if r.outcome == fleet.OK:
-                answered_on.add(r.host.name)
-            else:
-                missed.setdefault(r.host.name, r.outcome)
-        h = outcome_counts(job.last)
-        out("%s doe %s -- point %d/%d (%s): %d/%d ok  (%s)" % (
-            PROG, name, rid, len(pts), factors, h.get(fleet.OK, 0),
-            len(hosts), job.entry.id if job.entry else "not kept"))
+        context = [("design", name), ("point", str(rid))] + \
+            [(k, v) for k, v in levels]
+        if not per_drive:
+            if doemod.answered(done.get(rid, [])) and not args.redo:
+                continue
+            runs = [(hosts, None, None, "")]
+        else:
+            runs = drive_runs(targets_of(hosts), mode, done.get(rid, []),
+                              args.redo)
+        for on, together, note, what in runs:
+            extra = {"group": name, "part": str(rid), "factors": factors}
+            if note:
+                extra["notes"] = note
+            job = fleet_run(args, on, command, name, context=context,
+                            extra=extra, per_drive=per_drive,
+                            together=together)
+            if job is None:
+                continue
+            ran += 1
+            worst = max(worst, job.rc)
+            for r in job.last:
+                who = drivesmod.target_label(r.host.name,
+                                             drivesmod.drive_of(r.host))
+                if r.outcome == fleet.OK:
+                    answered_on.add(who)
+                else:
+                    missed.setdefault(who, r.outcome)
+            h = outcome_counts(job.last)
+            out("%s doe %s -- point %d/%d (%s)%s: %d/%d ok  (%s)" % (
+                PROG, name, rid, len(pts), factors, what, h.get(fleet.OK, 0),
+                len(job.last), job.entry.id if job.entry else "not kept"))
     st.reset()
     gone = [h for h in missed if h not in answered_on]
     if gone:
@@ -6191,6 +6456,82 @@ def doe_run(args, st, doemod):
         out("  next: %s doe analyze %s%s" % (
             PROG, name, "" if doemod.specs(cfg) else " -c COLUMN"))
     return worst
+
+
+def drives_mode(args, cfg, lcfg, name, new, per_drive):
+    """How a design measures its drives: "each" (one at a time on each
+    host, the default) or "together" (--drives-together).  A design keeps
+    the way it was first run, and a follow-up (--like) the way its screen
+    was."""
+    asked = bool(getattr(args, "drives_together", False))
+    if not per_drive:
+        if asked:
+            die("--drives-together runs a host's drives at once: the hosts "
+                "name no drives (drives=FILE,FILE...), or the command has no "
+                "{drive}")
+        return None
+    meta = cfg.get("metadata") if isinstance(cfg, dict) else None
+    had = meta.get("qd_drives") if isinstance(meta, dict) else None
+    lmeta = lcfg.get("metadata") if isinstance(lcfg, dict) else None
+    lhad = lmeta.get("qd_drives") if isinstance(lmeta, dict) else None
+    if not new:
+        have = had or drivesmod.EACH
+        if asked and have != drivesmod.TOGETHER:
+            die("the design %s measured its drives one at a time: leave out "
+                "--drives-together, or --name a new design" % name)
+        return have
+    if lcfg:
+        have = lhad or drivesmod.EACH
+        if asked and have != drivesmod.TOGETHER:
+            die("--like %s: it measured its drives one at a time, and a "
+                "follow-up measures them as its screen did (leave out "
+                "--drives-together)" % args.like)
+        return have
+    return drivesmod.TOGETHER if asked else drivesmod.EACH
+
+
+def drive_runs(ts, mode, runs, redo):
+    """The runs a point makes on drive targets ts: [(hosts or targets, the
+    together map or None, the run's note, what the line says)].  One drive
+    at a time, a run per slot (the first drive of every host, then the
+    second, ...), the hosts of a slot side by side; together, one run with
+    every host's drives at once.  A slot, or a point run together, that
+    had a drive answer already is not run again unless --redo."""
+    from . import doe as doemod
+    if not ts:
+        return []
+    groups = drivesmod.by_host(ts)
+    if mode == drivesmod.TOGETHER:
+        if doemod.answered(runs) and not redo:
+            return []
+        firsts = [g[0] for _, g in groups]
+        return [(firsts, dict(groups), "drives together: %s at once" %
+                 plural(len(ts), "drive"),
+                 ", %s at once" % plural(len(ts), "drive"))]
+    ok = set((h, d) for e in runs
+             for h, d, _, s in doemod.run_targets(e) if s == "ok")
+    slots = drivesmod.slots(ts)
+    out = []
+    for k, slot in enumerate(slots):
+        if not redo and any((t.name, drivesmod.drive_of(t)) in ok
+                            for t in slot):
+            continue
+        out.append((slot, None,
+                    "drive %d of %d on each host, one at a time"
+                    % (k + 1, len(slots)),
+                    ", drive %d of %d" % (k + 1, len(slots))))
+    return out
+
+
+def drives_words(ts, sel=None):
+    """', 3 drives (model PM9A3)' for a line that says where a design
+    runs."""
+    n = len([t for t in ts if drivesmod.drive_of(t)])
+    if not n:
+        return ""
+    return ", %s%s" % (plural(n, "drive"),
+                       (" (%s %s)" % (sel.per, sel.group))
+                       if sel is not None and sel.group is not None else "")
 
 
 def like_design(args, st, doemod, like, cfg):
@@ -6229,17 +6570,37 @@ def like_design(args, st, doemod, like, cfg):
 def like_hosts(args, st, doemod, like):
     """The hosts the design `like` ran its points on, with their addresses
     and attributes, in the order they first ran; the way they were reached
-    too, when that was this machine (as --rerun does)."""
+    too, when that was this machine (as --rerun does).  A host whose drives
+    it ran on names them again, as its host line did: every drive it ran
+    on, in the order they ran (drives=, drive_model=)."""
     rows = doemod.screen_hosts(st, like)
     if not rows:
         die("--like %s: none of its points has run, so it has no hosts to "
             "give (%s doe status %s)" % (like, PROG, like))
-    hs = []
+    order, by = [], {}
     for h, _ in rows:
+        attrs = storemod.split_attrs(h.get("attrs"))
+        a = dict(attrs)
+        if h["host"] not in by:
+            order.append(h["host"])
+            by[h["host"]] = (h, [(k, v) for k, v in attrs
+                                 if k not in (drivesmod.DRIVE,
+                                              drivesmod.MODEL)], [])
+        if a.get(drivesmod.DRIVE):
+            by[h["host"]][2].append((a[drivesmod.DRIVE],
+                                     a.get(drivesmod.MODEL, "")))
+    hs = []
+    for n in order:
+        h, attrs, ds = by[n]
+        if ds:
+            models = [m for _, m in ds]
+            attrs = attrs + [(drivesmod.DRIVES, ",".join(d for d, _ in ds))]
+            if any(models):
+                attrs.append((drivesmod.MODEL, models[0]
+                              if len(set(models)) == 1 else ",".join(models)))
         addr = h.get("addr") or ""
         hs.append(hostmod.parse_host_token(
-            "%s=%s" % (h["host"], addr) if addr else h["host"],
-            storemod.split_attrs(h.get("attrs"))))
+            "%s=%s" % (h["host"], addr) if addr else h["host"], attrs))
     vias = set(v for _, v in rows)
     if not getattr(args, "via", None) and vias == set(["local"]):
         args.via = "local"
@@ -7607,7 +7968,8 @@ def build_parser():
                     choices=["init", "plan", "run", "status", "analyze",
                              "next", "surface", "optimize"])
     sp.add_argument("target", metavar="CONFIG|NAME",
-                    help="init: a starting config (fio); plan/run: a doe "
+                    help="init: a starting config (fio, fio-drives); "
+                    "plan/run: a doe "
                     "config; status: a design's or a study's name; "
                     "analyze/next/surface: the design's name; optimize: "
                     "the study's (or the design to start from)")
@@ -7648,8 +8010,23 @@ def build_parser():
     sp.add_argument("-o", "--output", metavar="FILE",
                     help="next: the follow-up config (default NAME.json)")
     sp.add_argument("--like", metavar="DESIGN",
-                    help="run: on the hosts DESIGN ran on, holding what it "
-                    "held")
+                    help="run: on the hosts (and drives) DESIGN ran on, "
+                    "holding what it held")
+    sp.add_argument("--drives-together", action="store_true",
+                    help="run: start all of a host's drives (drives=) at "
+                    "once, for the bottlenecks they share; without it, one "
+                    "drive at a time on each host")
+    sp.add_argument("--per", choices=list(drivesmod.PERS),
+                    help="analyze/next/surface/optimize: a group is each "
+                    "drive, drive model, host, or the fleet (default: model "
+                    "where the hosts named drives, else fleet)")
+    sp.add_argument("--group", metavar="NAME",
+                    help="analyze/next/surface/optimize: only this group "
+                    "(a model, a host, or host:drive)")
+    sp.add_argument("--block", choices=list(drivesmod.BLOCKS),
+                    help="analyze/next/surface/optimize: each host's (or "
+                    "drive's) value at a point an observation in a block "
+                    "of its own")
     sp.add_argument("--json", action="store_true",
                     help="surface: doe's figures, and qd web's contours, "
                     "as JSON; optimize: its report as JSON")

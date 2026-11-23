@@ -43,7 +43,8 @@ for a fleet of Linux boxes:
    experiment from design_of_experiments' `doe` and hands the results
    back to it for the analysis, and `qd doe optimize` runs round after
    round itself until it finds the best settings (fio's, say) and gives
-   you the command line that uses them.
+   you the command line that uses them, on one drive or on every drive
+   of every host, per drive model.
 5. **Reads any of it back, any way you like.** Statistics, value counts
    (who agrees and who doesn't), histograms, robust outliers, group-bys,
    pivots, trends, diffs between two runs and comparisons of many. You can
