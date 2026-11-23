@@ -47,9 +47,11 @@ usage() { sed -n '5,25p' run_tests.sh | sed 's/^# \{0,1\}//'; }
 # its parts added up, then the mean of the eight.  The figures before were
 # a mix of CI's and this machine's, scaled, and had drifted: survey was
 # 160 and took 447, and provost 2.1.0's third share took 18 minutes while
-# its first two took 12.  A run's last line, `seconds:`, gives every
-# suite's, to measure them again from.
-TIMES="demo:323 doe:183 doe_fio:134 doe_next:230 doe_surface:248 peers:146 web:158 via:198 run:209 xstore:27 local:102 compare:85 ask:59 probe:138 operator:57 report:44 campaign:63 rm:20 do:53 remote:48 preamble:68 view:43 changes:105 pacing:93 store:36 stop:33 policy:40 read:20 join:28 ssh:34 export:18 runner:29 split:13 diff:18 check:51 analyze:3 cleanup:2 concepts:2 help:12 coverage:26 odd:48 again:92 survey:447 setup:14 saved:40 study:90 doe_optimize:610 fio_study:291"
+# its first two took 12.  doe_drives (QD-073) came after, measured the
+# same way on quarterdeck#78's run: 416 to 789 s in seven jobs, 2147 on
+# provost 2.1.0, the mean 748.  A run's last line, `seconds:`, gives
+# every suite's, to measure them again from.
+TIMES="demo:323 doe:183 doe_fio:134 doe_next:230 doe_surface:248 peers:146 web:158 via:198 run:209 xstore:27 local:102 compare:85 ask:59 probe:138 operator:57 report:44 campaign:63 rm:20 do:53 remote:48 preamble:68 view:43 changes:105 pacing:93 store:36 stop:33 policy:40 read:20 join:28 ssh:34 export:18 runner:29 split:13 diff:18 check:51 analyze:3 cleanup:2 concepts:2 help:12 coverage:26 odd:48 again:92 survey:447 setup:14 saved:40 study:90 doe_optimize:610 fio_study:291 doe_drives:748"
 UNLISTED=30
 
 # With --shard K/N, a suite listed here is split into that many parts (or
@@ -58,7 +60,7 @@ UNLISTED=30
 # the rest of its share's.  A suite whose cases start a server can be split
 # too, since its parts never run on one machine.  Without --shard, every
 # suite runs whole.
-PARTS="demo:2 doe:3 peers:3 web:3 via:3 run:2 xstore:2 compare:2 probe:2 survey:2 doe_next:2 doe_surface:2 study:2 doe_optimize:3 fio_study:2"
+PARTS="demo:2 doe:3 peers:3 web:3 via:3 run:2 xstore:2 compare:2 probe:2 survey:2 doe_next:2 doe_surface:2 study:2 doe_optimize:3 fio_study:2 doe_drives:3"
 
 # This machine's cores: Linux, then POSIX, then macOS and the BSDs.
 cores() {

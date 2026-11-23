@@ -59,6 +59,13 @@ every run of it (`qd compare --study`, qd web's study view, QD-070).
 until an optimum is found, with doe's steepest path and next batch (the
 last section here) choosing the points.
 
+On hosts that name their drives (drives=FILE,FILE, QD-073,
+quarterdeck/drives.py), {drive} is each drive's file and every point runs
+on every drive; responses() and the analyses built on it read one group
+of drives (a drives.Selection: --per, --group, --block), and doe_results
+writes each host's or drive's value as an observation of its own when
+they are blocks.
+
 With --report doe's plots and HTML report are kept (in qd's cache unless a
 directory is named), where qd web links them.  qd web's charts of a design
 -- main effects, interactions, a Pareto of effect sizes -- are effects()'s
@@ -74,7 +81,8 @@ import subprocess
 import tempfile
 
 from .common import die, read_text, write_text
-from . import filing, store as storemod, table as tablemod, tools
+from . import drives as drivesmod, filing, store as storemod, \
+    table as tablemod, tools
 
 DESIGNS = "qd.designs"
 COLUMNS = ("design", "created", "command", "seed", "blocks_by", "config",
@@ -197,12 +205,16 @@ def timeout_of(cfg):
 
 def substitute(template, levels, fixed=()):
     """{factor} replaced by its level, {name} of a fixed factor by its
-    value; a {name} that is neither is an error, not a silent literal."""
+    value; a {name} that is neither is an error, not a silent literal --
+    except {drive}, each drive's own file, which is left for the drive it
+    runs on (drives.fill, QD-073)."""
     d = dict(fixed)
     d.update(dict(levels))
 
     def one(m):
         if m.group(1) not in d:
+            if m.group(1) == drivesmod.PLACEHOLDER:
+                return m.group(0)
             die("the command names {%s}, which is not a factor of the "
                 "design (factors: %s%s)" % (
                     m.group(1), ", ".join(k for k, _ in levels),
@@ -261,12 +273,70 @@ def point_runs(st, name):
     return out
 
 
-def answered(runs):
+def answered(runs, sel=None):
     """Whether any of a point's runs had a host answer ok: a point every
     run of which failed everywhere has measured nothing, and `qd doe run`
-    runs it again."""
-    return any(((e.meta.get("hosts") or {}).get("ok") or 0) > 0
-               for e in runs)
+    runs it again.  With sel (drives.Selection) naming a group, a target
+    of that group must have answered."""
+    if sel is None or sel.group is None:
+        return any(((e.meta.get("hosts") or {}).get("ok") or 0) > 0
+                   for e in runs)
+    return any(s == "ok" and sel.wants(h, d, m)
+               for e in runs for h, d, m, s in run_targets(e))
+
+
+def run_targets(e):
+    """[(host, drive, model, status)]: a run's qd.hosts rows, every try at
+    every target (a host, or one drive of it)."""
+    out = []
+    for h in e.store.host_rows(e.id):
+        a = dict(storemod.split_attrs(h.get("attrs")))
+        out.append((h.get("host", ""), a.get(drivesmod.DRIVE, ""),
+                    a.get(drivesmod.MODEL, ""), h.get("status", "")))
+    return out
+
+
+def has_drives(st, name):
+    """Whether the design's points ran on drives (hosts naming drives=)."""
+    for rs in point_runs(st, name).values():
+        for e in rs:
+            if any(d for _, d, _, _ in run_targets(e)):
+                return True
+    return False
+
+
+def groups(st, name, per):
+    """[(group, [its targets, as host:drive])] the design's runs fall in
+    under --per, in the order first run."""
+    order, out = [], {}
+    for _, rs in sorted(point_runs(st, name).items()):
+        for e in rs:
+            for h, d, m, _ in run_targets(e):
+                if not h:
+                    continue
+                g = drivesmod.key(per, h, d, m)
+                if g not in out:
+                    order.append(g)
+                    out[g] = []
+                t = drivesmod.target_label(h, d)
+                if t not in out[g]:
+                    out[g].append(t)
+    return [(g, out[g]) for g in order]
+
+
+def point_targets(runs, sel=None):
+    """(targets that answered ok, every target) of a point's runs, each
+    (host, drive), in the order they ran."""
+    seen, ok = [], set()
+    for e in runs:
+        for h, d, m, s in run_targets(e):
+            if sel is not None and not sel.wants(h, d, m):
+                continue
+            if (h, d) not in seen:
+                seen.append((h, d))
+            if s == "ok":
+                ok.add((h, d))
+    return [t for t in seen if t in ok], seen
 
 
 def names(st):
@@ -286,12 +356,18 @@ def status_rows(st, name):
     have been measured: a host answered ok)."""
     row, _, matrix = load(st, name)
     runs = point_runs(st, name)
+    drives = has_drives(st, name)
     rows, done = [], 0
     for rid, blk, lv in points(matrix):
         rs = runs.get(rid, [])
         done += 1 if answered(rs) else 0
         last = rs[-1] if rs else None
         h = (last.meta.get("hosts") or {}) if last else {}
+        if drives and rs:
+            # a point is a run per drive slot (or one with every drive):
+            # the drives that answered of all it ran on
+            okd, alld = point_targets(rs)
+            h = {"ok": len(okd), "total": len(alld)}
         rows.append([str(rid), str(blk), " ".join("%s=%s" % kv for kv in lv),
                      str(len(rs)), last.id if last else "",
                      ("%d/%d" % (h.get("ok", 0), h.get("total", 0))) if h
@@ -299,36 +375,125 @@ def status_rows(st, name):
     return row, rows, done
 
 
-def responses(st, name, column, agg="median"):
-    """[(run_id, value or None, n)]: each point's response, one number
-    from all its runs' rows (hosts that answered)."""
+def point_cells(runs, column, sel=None):
+    """[(host, drive, model, value)]: every row of a point's runs that
+    answered ok with a COLUMN, of the group sel names (every row when sel
+    is None or names none)."""
+    out = []
+    for e in runs:
+        t = e.load("data")
+        if not t.has(column):
+            continue
+        si = t.index("status") if t.has("status") else None
+        hi = t.index("host") if t.has("host") else None
+        di = t.index(drivesmod.DRIVE) if t.has(drivesmod.DRIVE) else None
+        mi = t.index(drivesmod.MODEL) if t.has(drivesmod.MODEL) else None
+        # each cell on its family's base scale (bytes, seconds): one
+        # point's 900M and another's 1.2G are one scale across runs
+        nums = [tablemod.to_base(c)[0] for c in t.values(column)]
+        for r, v in zip(t.rows, nums):
+            if (si is not None and r[si] != "ok") or v is None:
+                continue
+            h = r[hi] if hi is not None else ""
+            d = r[di] if di is not None else ""
+            m = r[mi] if mi is not None else ""
+            if sel is None or sel.wants(h, d, m):
+                out.append((h, d, m, v))
+    return out
+
+
+def _agg(agg, cells):
+    from .stats import AGGS
+    v = AGGS[agg]([repr(c) for c in cells]) if cells else None
+    if v is not None and not isinstance(v, float):
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            v = None
+    return v
+
+
+def _check_agg(agg):
     from .stats import AGGS
     if agg not in AGGS:
         die("unknown --agg %r" % agg)
+
+
+def responses(st, name, column, agg="median", sel=None):
+    """[(run_id, value or None, n)]: each point's response, one number
+    from all its runs' rows (hosts that answered) -- of one group's
+    drives, when sel (drives.Selection) names a group."""
+    _check_agg(agg)
     _, _, matrix = load(st, name)
     runs = point_runs(st, name)
     out = []
     for rid, _, _ in points(matrix):
-        cells = []
-        for e in runs.get(rid, []):
-            t = e.load("data")
-            if not t.has(column):
-                continue
-            si = t.index("status") if t.has("status") else None
-            # each cell on its family's base scale (bytes, seconds): one
-            # point's 900M and another's 1.2G are one scale across runs
-            nums = [tablemod.to_base(c)[0] for c in t.values(column)]
-            for r, v in zip(t.rows, nums):
-                if (si is None or r[si] == "ok") and v is not None:
-                    cells.append(repr(v))
-        v = AGGS[agg](cells) if cells else None
-        if v is not None and not isinstance(v, float):
-            try:
-                v = float(v)
-            except (TypeError, ValueError):
-                v = None
-        out.append((rid, v, len(cells)))
+        cells = [v for _, _, _, v in point_cells(runs.get(rid, []), column,
+                                                 sel)]
+        out.append((rid, _agg(agg, cells), len(cells)))
     return out
+
+
+def observations(st, name, column, agg="median", sel=None):
+    """[(run_id, unit, value, n)]: under --block, each host's (or drive's)
+    value at each point -- the --agg of its rows there -- in the design's
+    run order, the units in the order first seen."""
+    _check_agg(agg)
+    _, _, matrix = load(st, name)
+    runs = point_runs(st, name)
+    out = []
+    for rid, _, _ in points(matrix):
+        order, by = [], {}
+        for h, d, m, v in point_cells(runs.get(rid, []), column, sel):
+            u = sel.unit(h, d)
+            if u not in by:
+                order.append(u)
+                by[u] = []
+            by[u].append(v)
+        for u in order:
+            out.append((rid, u, _agg(agg, by[u]), len(by[u])))
+    return out
+
+
+def doe_results(st, name, matrix, usable, agg, sel=None):
+    """What doe reads for these responses: (the design matrix, {run_id:
+    {response: value}}).  One run a point, its value the --agg over the
+    group's rows; under --block a run a point and host (or drive), each
+    unit its own block, so doe's ANOVA has a Block term.  A response a run
+    did not measure is no key: blank, never 0."""
+    per = {}
+    if sel is None or not sel.block:
+        for rname, _, _, resp in usable:
+            for rid, v, _ in resp:
+                if v is not None:
+                    per.setdefault(rid, {})[rname] = v
+        return matrix, per
+    base = dict((int(r["run_id"]), r) for r in matrix.get("runs") or [])
+    keys, units, vals = [], [], {}
+    for rname, col, _, _ in usable:
+        for rid, u, v, _ in observations(st, name, col, agg, sel):
+            if v is None:
+                continue
+            if (rid, u) not in vals:
+                vals[(rid, u)] = {}
+                keys.append((rid, u))
+            if u not in units:
+                units.append(u)
+            vals[(rid, u)][rname] = v
+    order = dict((rid, i) for i, (rid, _, _) in enumerate(points(matrix)))
+    keys.sort(key=lambda k: (order.get(k[0], 0), units.index(k[1])))
+    runs = []
+    for i, (rid, u) in enumerate(keys, 1):
+        r = json.loads(json.dumps(base[rid]))
+        r["run_id"], r["block_id"] = i, units.index(u) + 1
+        runs.append(r)
+        per[i] = vals[(rid, u)]
+    mx = json.loads(json.dumps(matrix))
+    mx["runs"] = runs
+    meta = mx.get("metadata")
+    if isinstance(meta, dict):
+        meta["n_blocks"], meta["n_total_runs"] = len(units), len(runs)
+    return mx, per
 
 
 def response_name(column):
@@ -438,7 +603,7 @@ def read_tables(csv_dir, rname):
 
 
 def analyze(st, name, columns=None, agg="median", optimize=False, extra=(),
-            report=None, detail=None):
+            report=None, detail=None, sel=None):
     """Write the responses as doe reads them and run doe analyze (and
     optimize) on all of them at once.  Returns (doe's text, the responses
     [(name, column, optimize, [(run_id, value or None, n)])], doe's ranked
@@ -446,35 +611,33 @@ def analyze(st, name, columns=None, agg="median", optimize=False, extra=(),
     report (a directory, from report_dir), doe's plots and HTML report are
     kept there, with the results and config that made them.  With detail
     (a dict), doe's own texts and the rest of its --csv tables are put in
-    it: "analyze", "optimize" and "csv" {response: {table: rows}}."""
+    it: "analyze", "optimize" and "csv" {response: {table: rows}}.  sel
+    (drives.Selection): one group's drives, and --block (doe_results)."""
     row, cfg, matrix = load(st, name)
     sp = specs(cfg, columns)
     if not sp:
         die("analyze what? -c COLUMN[,COLUMN...]: the responses, as qd show "
             "names them (or a config whose responses name their column)")
-    allr = [(n, c, o, responses(st, name, c, agg)) for n, c, o in sp]
+    allr = [(n, c, o, responses(st, name, c, agg, sel)) for n, c, o in sp]
     usable = [r for r in allr if sum(1 for x in r[3] if x[1] is not None) >= 2]
     if not usable:
         n = max(sum(1 for x in r[3] if x[1] is not None) for r in allr)
-        die("only %d of the design's %d points have a %s to analyse: "
+        die("only %d of the design's %d points have a %s to analyse%s: "
             "`qd doe status %s` says which are measured" % (
                 n, len(allr[0][3]), " or ".join(c for _, c, _, _ in allr),
-                name))
+                (" for %s" % sel.words()) if sel is not None and
+                sel.group is not None else "", name))
     work = tempfile.mkdtemp(prefix="qd-doe-")
     try:
         out_dir = os.path.join(report or work, "results")
         csv_dir = os.path.join(work, "effects")
         os.makedirs(out_dir)
-        write_text(os.path.join(out_dir, "design_matrix.json"),
-                   json.dumps(matrix, indent=2))
         # one run_<id>.json a point, a key per response it measured: a
         # response not measured is no key -- blank, never 0 -- and doe
         # leaves that point out of that response's analysis
-        per = {}
-        for rname, _, _, resp in usable:
-            for rid, v, _ in resp:
-                if v is not None:
-                    per.setdefault(rid, {})[rname] = v
+        mx, per = doe_results(st, name, matrix, usable, agg, sel)
+        write_text(os.path.join(out_dir, "design_matrix.json"),
+                   json.dumps(mx, indent=2))
         for rid, vals in sorted(per.items()):
             write_text(os.path.join(out_dir, "run_%d.json" % rid),
                        json.dumps(vals, sort_keys=True))
@@ -667,14 +830,17 @@ def choose(cfg, effects, best, picked=None):
 
 
 def follow_up(screen, row, cfg, rname, column, optimize, varied, held,
-              operation):
+              operation, group=None):
     """The follow-up's doe config: the varied factors at the screen's
     levels, the rest and the screen's own fixed factors held, the
-    screen's command and responses, and the study it belongs to."""
+    screen's command and responses, and the study it belongs to.  group:
+    the drive group (QD-073) it is for, which its name carries."""
     meta = dict((k, v) for k, v in (cfg.get("metadata") or {}).items()
-                if k not in ("name", "description", "qd_note", "qd_like"))
-    name = filing.dataset_name("%s-%s-%s" % (
+                if k not in ("name", "description", "qd_note", "qd_like",
+                             "qd_group"))
+    name = filing.dataset_name("%s-%s-%s%s" % (
         screen, rname.replace("_", "-"),
+        (safe_part(group).lower().replace("_", "-") + "-") if group else "",
         "ccd" if operation == "central_composite" else
         "bbd" if operation == "box_behnken" else operation))
     fixed = dict(fixed_of(cfg))
@@ -734,8 +900,9 @@ def between(matrix, varied):
 
 def screen_hosts(st, name):
     """The hosts a design's points ran on, in the order they first ran:
-    [(host row of its latest point run there, via)].  A host is there
-    whether it answered or not."""
+    [(host row of its latest point run there, via)] -- one for each drive
+    of a host that named its drives (the row's drive= attribute says
+    which).  A host or drive is there whether it answered or not."""
     runs = point_runs(st, name)
     seen, out = {}, []
     for rid in sorted(runs):
@@ -744,10 +911,12 @@ def screen_hosts(st, name):
                 n = h.get("host", "")
                 if not n:
                     continue
-                if n not in seen:
-                    out.append(n)
-                seen[n] = (h, e.meta.get("via") or "ssh")
-    return [seen[n] for n in out]
+                d = dict(storemod.split_attrs(h.get("attrs"))).get(
+                    drivesmod.DRIVE, "")
+                if (n, d) not in seen:
+                    out.append((n, d))
+                seen[(n, d)] = (h, e.meta.get("via") or "ssh")
+    return [seen[k] for k in out]
 
 
 def clean(text):
@@ -868,7 +1037,27 @@ FIO_SCREEN = {
     "settings": {"operation": "plackett_burman", "block_count": 1},
 }
 
-EXAMPLES = {"fio": ("fio-screen.json", FIO_SCREEN)}
+# QD-073: the same screen on every drive of every host.  The drives are
+# the host lines' (drives=FILE,FILE drive_model=MODEL); {drive} is each
+# one's file, so the config holds no filename of its own.
+FIO_DRIVES_SCREEN = json.loads(json.dumps(FIO_SCREEN))
+FIO_DRIVES_SCREEN["metadata"].update({
+    "name": "fio-drives-screen",
+    "description": "Plackett-Burman screen of fio's parameters on every "
+                   "drive of every host (QD-073): which of them move IOPS, "
+                   "bandwidth and latency most, per drive model.",
+    "qd_command": FIO_COMMAND.replace("{filename}", "{drive}"),
+    "qd_note": "Name each host's drives on its host line: node01 "
+               "drives=/srv/nvme0/qd-fio.dat,/srv/nvme1/qd-fio.dat "
+               "drive_model=PM9A3 -- a file on each drive's filesystem, "
+               "which {drive} in the command becomes. A /dev path writes "
+               "the raw device and destroys what is on it: qd doe run "
+               "refuses it without --yes. One drive at a time on each host "
+               "by default; --drives-together runs a host's drives at once."})
+del FIO_DRIVES_SCREEN["fixed_factors"]["filename"]
+
+EXAMPLES = {"fio": ("fio-screen.json", FIO_SCREEN),
+            "fio-drives": ("fio-drives-screen.json", FIO_DRIVES_SCREEN)}
 
 
 def init(kind, path=None):
@@ -1010,7 +1199,7 @@ def _mean(xs):
     return sum(xs) / float(len(xs)) if xs else None
 
 
-def effects(st, name, column, agg="median"):
+def effects(st, name, column, agg="median", sel=None):
     """The figures qd web charts for one response: each point's value (as
     `qd doe analyze` reduces it), each factor's level means (main effects),
     each pair's cell means (interactions) and a Pareto of effect sizes.
@@ -1023,7 +1212,7 @@ def effects(st, name, column, agg="median"):
     declared = dict((f.get("name"), f.get("levels"))
                     for f in cfg.get("factors") or [] if isinstance(f, dict))
     resp = dict((rid, (v, n)) for rid, v, n in
-                responses(st, name, column, agg))
+                responses(st, name, column, agg, sel))
     levels = {}
     for f in factors:
         seen = []
@@ -1290,7 +1479,8 @@ def surface_spec(cfg, column=None):
     return sp[0]
 
 
-def surface(st, name, column=None, agg="median", report=None, grid=True):
+def surface(st, name, column=None, agg="median", report=None, grid=True,
+            sel=None):
     """doe's response surface for one response of a design, and what it
     means: the fitted model and its fit, the stationary point and its kind,
     the best point inside the design region and whether it is on the
@@ -1301,7 +1491,7 @@ def surface(st, name, column=None, agg="median", report=None, grid=True):
     rname, col, optimize = surface_spec(cfg, column)
     detail = {}
     text, allr, _, matrix = analyze(st, name, [col], agg, True,
-                                    report=report, detail=detail)
+                                    report=report, detail=detail, sel=sel)
     resp = allr[0][3]
     factors = list(matrix.get("factor_names") or [])
     code = coding(cfg, factors)
@@ -1314,6 +1504,7 @@ def surface(st, name, column=None, agg="median", report=None, grid=True):
     opt = optimize_text(detail.get("optimize", ""), rname)
     out = {"design": name, "response": rname, "column": col,
            "optimize": optimize, "agg": agg,
+           "group": sel.meta() if sel is not None else None,
            "operation": (cfg.get("settings") or {}).get("operation") or
            matrix.get("operation"),
            "measured": sum(1 for _, v, _ in resp if v is not None),
@@ -1485,22 +1676,23 @@ def surface_grids(s, code, terms, matrix, resp):
 # a step for the factor that moves most) and the runs `doe next-batch`
 # appends to the design.
 
-def one_response(st, name, column, agg, work):
+def one_response(st, name, column, agg, work, sel=None):
     """The design's points and one response, as doe reads them, in work:
     (config path, results directory, the response [(run_id, value or
-    None, n)], (name, column, optimize)).  A point not measured is no
-    run_<id>.json at all: blank, never 0."""
+    None, n)], (name, column, optimize), the run ids doe was given).  A
+    point not measured is no run_<id>.json at all: blank, never 0."""
     _, cfg, matrix = load(st, name)
     rname, col, optimize = surface_spec(cfg, column)
-    resp = responses(st, name, col, agg)
+    resp = responses(st, name, col, agg, sel)
     out_dir = os.path.join(work, "results")
     os.makedirs(out_dir)
+    mx, per = doe_results(st, name, matrix, [(rname, col, optimize, resp)],
+                          agg, sel)
     write_text(os.path.join(out_dir, "design_matrix.json"),
-               json.dumps(matrix, indent=2))
-    for rid, v, _ in resp:
-        if v is not None:
-            write_text(os.path.join(out_dir, "run_%d.json" % rid),
-                       json.dumps({rname: v}))
+               json.dumps(mx, indent=2))
+    for rid, vals in sorted(per.items()):
+        write_text(os.path.join(out_dir, "run_%d.json" % rid),
+                   json.dumps(vals))
     cfg = json.loads(json.dumps(cfg))
     cfg["responses"] = [{"name": rname, "optimize": optimize}]
     settings = cfg.setdefault("settings", {})
@@ -1508,7 +1700,8 @@ def one_response(st, name, column, agg, work):
     settings.setdefault("test_script", "true")
     conf = os.path.join(work, "config.json")
     write_text(conf, json.dumps(cfg, indent=2))
-    return conf, out_dir, resp, (rname, col, optimize)
+    return conf, out_dir, resp, (rname, col, optimize), \
+        set(int(r["run_id"]) for r in mx.get("runs") or [])
 
 
 def steepest_table(text, rname, factors):
@@ -1535,15 +1728,15 @@ def steepest_table(text, rname, factors):
     return out
 
 
-def steepest(st, name, column=None, agg="median"):
+def steepest(st, name, column=None, agg="median", sel=None):
     """doe's steepest ascent (or, for a response to minimise, descent) from
     a design's points: [(step, {factor: setting}, predicted)], and doe's
     text.  The path is doe's linear model's, so its predictions past the
     region are a straight line's: qd measures each step to see."""
     work = tempfile.mkdtemp(prefix="qd-doe-")
     try:
-        conf, out_dir, _, (rname, _, _) = one_response(st, name, column,
-                                                         agg, work)
+        conf, out_dir, _, (rname, _, _), _ = one_response(
+            st, name, column, agg, work, sel)
         rc, text = run_doe(["optimize", "--config", conf, "--results-dir",
                             out_dir, "--partial", "--steepest"], cwd=work)
         if rc != 0:
@@ -1557,16 +1750,17 @@ def steepest(st, name, column=None, agg="median"):
 
 
 def next_batch(st, name, column=None, agg="median", strategy="refine",
-               size=4, seed=None):
+               size=4, seed=None, sel=None):
     """doe next-batch on a design's points: the runs doe appends to its
     matrix, [{factor: setting}] in doe's order, and doe's text.  qd files
     them as more points of the same design, so a point measured already
     is not run again."""
     work = tempfile.mkdtemp(prefix="qd-doe-")
     try:
-        conf, out_dir, _, _ = one_response(st, name, column, agg, work)
-        _, _, matrix = load(st, name)
-        known = set(int(r["run_id"]) for r in matrix.get("runs") or [])
+        # the runs doe was given (under --block, one a point and unit):
+        # every other run of the matrix it writes back is new
+        conf, out_dir, _, _, known = one_response(st, name, column, agg,
+                                                  work, sel)
         args = ["next-batch", "--config", conf, "--results-dir", out_dir,
                 "--strategy", strategy, "--batch-size", str(size),
                 "--output", os.path.join(work, "next.sh"), "--partial"]

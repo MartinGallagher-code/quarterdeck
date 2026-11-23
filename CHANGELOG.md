@@ -5,6 +5,67 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.52.0 — 2026-11-23
+
+The fio tuning study on every drive of every host (QD-073, the part of
+QD-066 the owner deferred until the single-drive study worked end to
+end), on top of 0.51.5.
+
+### Added
+- Host lines name their drives: `drives=FILE,FILE` (the file the
+  command writes on each drive) and `drive_model=MODEL` (one, or one per
+  drive). `{drive}` in a design's command is each drive's file, and `qd
+  doe run` runs every point on every drive, each filed with `drive` and
+  `drive_model` columns beside the host's other attributes.
+- One drive at a time on each host by default (a run per drive slot, the
+  hosts side by side), which measures the drive; `--drives-together`
+  starts all of a host's drives at once, for the bottlenecks they share
+  (PCIe, controller, threads), a host being one task so `--jobs`,
+  `--rate` and `--max-fail` count hosts. A design keeps the way it was
+  first run (`metadata.qd_drives`), and its follow-ups run the same way.
+- `analyze`, `next`, `surface` and `optimize` take `--per
+  drive|model|host|fleet` (default: model where the hosts named drives,
+  else fleet, the analysis as before), `--group NAME` and `--block
+  host|drive` (each host's or drive's value an observation in a block of
+  its own, so doe's ANOVA has a Block row). `analyze` and `surface` go
+  through every group; `next` and `optimize` are for one.
+- A follow-up made for a group records it (`metadata.qd_group`, its name
+  carrying the group), and `qd doe run --like` runs it on every host and
+  drive its screen ran on, of that group. `--like` now reuses every drive
+  of every host, not only the hosts.
+- `qd doe optimize` runs its rounds on its group's drives alone, names
+  them for the group, keeps a budget count per group, counts a run per
+  drive slot against the budget, and ends with the group's settings, the
+  command keeping `{drive}` and an `on` line naming the drives.
+- `qd doe init fio-drives`: the fio screen with `--filename={drive}`.
+- `qd doe status` counts drives (`4/4`) and says how they were run.
+
+### Changed
+- CI's provost 2.1.0 jobs have 25 minutes again, not 20 (the owner's
+  call). There, filing one capture at a time, `doe_drives` takes about
+  36 minutes of suite time (2147 s over its three parts), and on this
+  pull request's run, merged with 0.51.5's limits, its first share ran
+  out its 20. The other suite jobs keep their 15; `docs/contributing.md`
+  gives the limits.
+
+### Docs
+- docs/larger-jobs.md: "Every drive on every host: `drives=` and
+  `{drive}`"; the README's front page says the study runs per drive
+  model, and docs/fio-study.md's "one drive of one host" points there
+  instead of at QD-073.
+
+### Tests
+- `tests/test_doe_drives.sh`: two hosts with two drives each, a stand-in
+  fio whose drive models are moved by different factors: every host x
+  drive x point filed, each model's planted effect found, one at a time
+  and together (with the timing of every call), a failed slot run again,
+  `--like` and a group's follow-up, the surface and optimize per model,
+  the budget counting each slot, the refusals, and the real doe's Block
+  row where it is installed. The screen is a fixture (QD-074), made once
+  for the four cases that read it. It is in `TIMES` at 748 s, measured
+  from CI as 0.51.5 measured the rest (its parts added up in each of
+  the eight jobs, the mean of the eight), and in `PARTS` in three.
+
 ## 0.51.5 — 2026-11-23
 
 CI's suite jobs have 15 minutes again, not 25 (QD-075, the owner's "lower
