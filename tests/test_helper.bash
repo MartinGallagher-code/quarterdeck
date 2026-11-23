@@ -42,7 +42,7 @@
 # it finds: a filing that breaks provost's store format (its
 # docs/store-format.md) fails here, not in somebody's store.  With a
 # provost that has no `store check`, 1 checks nothing and `require` fails
-# every case (CI's store-check job sets require).  QD-031.
+# every case (CI's Python 3.13 jobs set require).  QD-031.
 #
 # The harness is binnacle's (tests/test_helper.bash there), trimmed to what
 # these suites use: every case runs in a subshell, so one failed assertion

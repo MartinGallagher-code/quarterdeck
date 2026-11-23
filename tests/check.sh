@@ -21,8 +21,8 @@
 #
 # The batch run checks every store a case leaves with `provost store check`
 # (QD_STORE_CHECK=1), where this provost has one.  Left to CI: the suite
-# under a real Python 3.6, under each of 3.9-3.13, under PyPI's provost
-# 2.1.0, and the rest of the installed wheel's smoke test.
+# under a real Python 3.6, under 3.9 and 3.13, under PyPI's provost 2.1.0
+# (pushes to main only), and the rest of the installed wheel's smoke test.
 
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
