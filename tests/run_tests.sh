@@ -66,10 +66,12 @@ usage() { sed -n '5,25p' run_tests.sh | sed 's/^# \{0,1\}//'; }
 # (QD-063) timed here, raised for CI.  The suites given fixtures (QD-074:
 # web, xstore, compare, again, report, remote, rm, view, study, doe_next,
 # doe_fio, doe_surface) have their seconds here before and after, the CI figure scaled
-# by the same share; runner gained a case.  A
+# by the same share; runner gained a case.  doe_drives (QD-073) 1360 s
+# here in a whole run four at a time, beside doe_optimize's 979 (1200 in
+# CI).  A
 # run's last line, `seconds:`, gives every suite's, to measure them again
 # from.
-TIMES="demo:310 doe:236 doe_fio:175 doe_next:305 doe_surface:264 peers:231 web:111 via:224 run:205 xstore:29 local:140 compare:70 ask:130 probe:112 operator:98 report:52 campaign:86 rm:39 do:78 remote:80 preamble:76 view:44 changes:60 pacing:54 store:41 stop:40 policy:37 read:35 join:30 ssh:25 export:24 runner:20 split:15 diff:17 check:12 analyze:6 cleanup:3 concepts:3 help:5 coverage:80 odd:60 again:58 survey:160 setup:20 saved:40 study:160 doe_optimize:1200 fio_study:320 doe_drives:650"
+TIMES="demo:310 doe:236 doe_fio:175 doe_next:305 doe_surface:264 peers:231 web:111 via:224 run:205 xstore:29 local:140 compare:70 ask:130 probe:112 operator:98 report:52 campaign:86 rm:39 do:78 remote:80 preamble:76 view:44 changes:60 pacing:54 store:41 stop:40 policy:37 read:35 join:30 ssh:25 export:24 runner:20 split:15 diff:17 check:12 analyze:6 cleanup:3 concepts:3 help:5 coverage:80 odd:60 again:58 survey:160 setup:20 saved:40 study:160 doe_optimize:1200 fio_study:320 doe_drives:1400"
 UNLISTED=30
 
 # With --shard K/N, a suite listed here is split into that many parts (or
