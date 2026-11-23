@@ -12,6 +12,7 @@
 
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/test_helper.bash"
+use_fixtures
 
 # the screen's starting config, its fio file on a scratch directory
 screen() {
@@ -21,6 +22,14 @@ screen() {
     echo a > hosts.txt
     qd doe init fio > init.out
     sed -i.bak "s#/mnt/DRIVE/qd-fio.dat#${1:-/srv/scratch/qd-fio.dat}#" fio-screen.json
+}
+
+# the screen, run on host a: made once, and copied into each case that
+# starts from it
+ran_screen() {
+    stand_in_doe
+    screen
+    qdf doe run fio-screen.json -s hosts.txt -q > /dev/null
 }
 
 # the line of the ranking that starts with a response, and the one after
@@ -89,9 +98,7 @@ t_the_screen_files_every_point_with_fio_columns() {
 }
 
 t_the_analysis_ranks_the_planted_factors_per_response() {
-    stand_in_doe
-    screen
-    qdf doe run fio-screen.json -s hosts.txt -q > /dev/null
+    fixture ran ran_screen
     qd doe analyze fio-screen > an.out
     assert_contains "$(cat an.out)" "8 responses per point"
     assert_contains "$(cat an.out)" "read_lat_p99=jobs.0.read.clat_ns.percentile.99.000000"
@@ -117,9 +124,7 @@ t_the_analysis_ranks_the_planted_factors_per_response() {
 
 # -c picks responses: a column, or a response of the config by name
 t_c_picks_the_responses() {
-    stand_in_doe
-    screen
-    qdf doe run fio-screen.json -s hosts.txt -q > /dev/null
+    fixture ran ran_screen
     out="$(qd doe analyze fio-screen -c jobs.0.read.iops)"
     assert_contains "$out" "jobs.0.read.iops per point (median over the hosts"
     assert_contains "$out" "big: iodepth 67% (max 32), bs 33% (max 4)"
@@ -195,9 +200,7 @@ t_a_raw_device_write_needs_yes() {
 
 # what a design holds fixed is part of it: another file is another design
 t_another_fixed_factor_is_another_design() {
-    stand_in_doe
-    screen
-    qdf doe run fio-screen.json -s hosts.txt -q > /dev/null
+    fixture ran ran_screen
     sed -i.bak 's#"size": "8G"#"size": "16G"#' fio-screen.json
     qdf_rc doe run fio-screen.json -s hosts.txt -q 2> err
     assert_status "$QD_RC" 2

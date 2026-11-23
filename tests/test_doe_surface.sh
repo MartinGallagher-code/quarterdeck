@@ -13,6 +13,7 @@
 
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/test_helper.bash"
+use_fixtures
 
 # what qd said, its lines joined: wrapping does not split a phrase
 flat() { tr '\n' ' ' < "$1" | tr -s ' '; }
@@ -27,6 +28,17 @@ api() {
 # inside the region; the bowl of the other response a minimum
 found_the_optimum() {
     surface_design "iodepth=24,numjobs=6"
+    optimum_found
+}
+
+# the stand-in doe's design with its optimum inside: made once, and copied
+# into each case that starts from it
+optimum_design() {
+    stand_in_doe
+    surface_design "iodepth=24,numjobs=6"
+}
+
+optimum_found() {
     qd doe surface ccd > out
     assert_contains "$(flat out)" "ccd: read_iops (jobs.0.read.iops, maximise), 16 of 16 points measured"
     assert_contains "$(flat out)" "a maximum, inside the design region"
@@ -73,8 +85,7 @@ t_a_failed_point_is_left_out() {
 # --report keeps doe's report, its surface plots among the plots, where
 # qd web links it; the contours qd web draws are doe's model on a grid
 t_report_and_the_contours() {
-    stand_in_doe
-    surface_design "iodepth=24,numjobs=6"
+    fixture optimum optimum_design
     qd doe surface ccd --report > out
     assert_contains "$(flat out)" "doe's report: $XDG_CACHE_HOME/quarterdeck/doe/"
     assert_contains "$(flat out)" "rsm_read_iops_iodepth_vs_numjobs.png"
@@ -114,8 +125,7 @@ PYEOF
 # a design doe fits no quadratic to (two levels a factor) has no
 # stationary point, and qd says what would; what it cannot do is refused
 t_no_surface_and_refusals() {
-    stand_in_doe
-    surface_design "iodepth=24,numjobs=6"
+    fixture optimum optimum_design
     "$PY" - <<'PYEOF'
 import json
 c = json.load(open("ccd.json"))
@@ -140,7 +150,7 @@ PYEOF
     assert_contains "$(cat err)" "no design 'nothing'"
 }
 
-t_finds_the_known_optimum() { stand_in_doe; found_the_optimum; }
+t_finds_the_known_optimum() { fixture optimum optimum_design; optimum_found; }
 t_an_optimum_outside_is_on_the_edge() { stand_in_doe; found_the_edge; }
 
 t_with_the_real_doe() {

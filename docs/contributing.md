@@ -29,6 +29,16 @@ machine because every case has a temp dir, a store and XDG directories of
 its own, and each suite that starts a web server has a range of ports of
 its own. On four cores the whole suite takes about seven minutes.
 
+Most of a suite's time is provost filing runs, so a setup that files runs
+and that several cases start from is made once a suite, not once a case:
+the suite calls `use_fixtures`, and a case calls `fixture NAME FUNCTION`
+where it would have called `FUNCTION`. The first case to ask runs it; each
+later one gets a copy of what it left (the store, the fake hosts, every
+file, the variables it exported or unset), so it starts exactly where it
+would have. A suite's cases then all run in one directory path, because a
+store records its path. Use it only for a setup that is a case's first
+step, and give two setups that differ in anything two names (QD-074).
+
 `--shard K/N` runs share K of N, which is how CI spreads one job over N
 runners. The suites are dealt by their measured seconds (`TIMES` in
 `tests/run_tests.sh`), the longest first, each to the share with the
@@ -135,7 +145,7 @@ What only CI does: the suite under a real Python 3.6 (in a container),
 under each of 3.9 to 3.13, under PyPI's provost 2.1.0 (`pip install
 "provost==2.1.0"` into a second venv and point `QD_PROVOST` at it to try it
 here), the installed wheel's smoke test, and the suite under provost
-2.19.0 from its repository with `QD_STORE_CHECK=require`: every store a
+2.28.0 from its repository with `QD_STORE_CHECK=require`: every store a
 case leaves must pass `provost store check` (PyPI's newest provost, 2.3.0,
 has no `store check`). A case that makes a store by hand, or breaks one on
 purpose, names it to `no_store_check` in `tests/test_helper.bash`.

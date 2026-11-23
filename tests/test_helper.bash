@@ -22,6 +22,12 @@
 #   pv ARGS...              provost itself, on the case's store
 #   has_batch               whether that provost files a run as one batch
 #   assert_dir_exists DIR   a directory is there
+#   use_fixtures            a suite's cases all run in one directory path,
+#                           so that `fixture` can hand each a copy (QD-074)
+#   fixture NAME CMD...     a costly setup made once a suite: the first case
+#                           to ask runs CMD, later ones get a copy of what it
+#                           left (the store, the fake hosts, every file, the
+#                           variables it exported); needs use_fixtures
 #   stand_in_doe            a doe that designs and analyses as the real one
 #   stand_in_fio            a fio whose JSON answer is a known function of
 #                           its options (FIO_FAIL=TEXT: fails, as fio does,
@@ -78,7 +84,14 @@ setup_env() {
     # macOS's TMPDIR ends in a slash; a doubled one would not match the
     # paths qd prints
     local tmp="${TMPDIR:-/tmp}"
-    TEST_TMPDIR="$(mktemp -d "${tmp%/}/qd-test.XXXXXX")"
+    if [ -n "${SUITE_TMPDIR:-}" ]; then
+        # use_fixtures: one path for every case, so a fixture's copy -- whose
+        # store, shims and logs name that path -- works in each
+        TEST_TMPDIR="$SUITE_TMPDIR/case"
+        mkdir "$TEST_TMPDIR"
+    else
+        TEST_TMPDIR="$(mktemp -d "${tmp%/}/qd-test.XXXXXX")"
+    fi
     export TEST_TMPDIR
     export FAKE_BIN="$TEST_TMPDIR/bin"
     export FAKE_ROOT="$TEST_TMPDIR/hosts"
@@ -140,6 +153,55 @@ teardown_env() {
     if [ -n "$TEST_TMPDIR" ]; then
         rm -rf "$TEST_TMPDIR" 2> /dev/null || { sleep 1; rm -rf "$TEST_TMPDIR"; }
     fi
+}
+
+# use_fixtures: called once, at the top of a suite whose cases share a
+# costly setup.  Every case of the suite then runs in $SUITE_TMPDIR/case
+# (made afresh for each, and removed after it, as the random one is), and
+# the fixtures live beside it until the suite ends.  A suite whose cases
+# leave processes behind them should not use it: the next case has the
+# same path.
+use_fixtures() {
+    local tmp="${TMPDIR:-/tmp}"
+    SUITE_TMPDIR="$(mktemp -d "${tmp%/}/qd-suite.XXXXXX")"
+    export SUITE_TMPDIR
+    # shellcheck disable=SC2064  # the path now, not at exit
+    trap "rm -rf '$SUITE_TMPDIR'" EXIT
+}
+
+# fixture NAME CMD...: in a case, the state CMD leaves -- run here the
+# first time NAME is asked for in this suite (or this part of it), and a
+# copy of what it left every later time: every file under the case's
+# directory, the directory it ended in and the variables it exported or
+# unset (a variable it set without exporting is not kept).  A
+# case gets the same as if it had run CMD itself, in a fraction of the
+# time when CMD files runs (QD-074).  NAME says what differs: two setups
+# that differ in anything are two names.
+fixture() {
+    local name="$1" snap
+    shift
+    [ -n "${SUITE_TMPDIR:-}" ] || { fail "fixture $name: the suite has not called use_fixtures"; return 1; }
+    snap="$SUITE_TMPDIR/fixture.$name"
+    if [ -d "$snap" ]; then
+        cp -a "$snap/files/." "$TEST_TMPDIR/"
+        # shellcheck disable=SC1091
+        . "$snap/env"
+        cd "$(cat "$snap/pwd")" || return 1
+        return 0
+    fi
+    local before names v
+    before="$(export -p)"
+    names="$(compgen -e)"
+    "$@" || return 1
+    mkdir -p "$snap/files"
+    cp -a "$TEST_TMPDIR/." "$snap/files/"
+    # what CMD exported, as global exports (sourced inside this function),
+    # and what it unset
+    export -p | grep -vxF -e "$before" | sed 's/^declare -x /declare -gx /' > "$snap/env" || true
+    for v in $names; do
+        [ -n "${!v+x}" ] || echo "unset $v" >> "$snap/env"
+    done
+    pwd > "$snap/pwd"
 }
 
 run_test() {

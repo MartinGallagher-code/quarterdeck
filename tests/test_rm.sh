@@ -9,6 +9,8 @@
 
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/test_helper.bash"
+# seed's filings are made once and copied into each case that starts from them
+use_fixtures
 
 seed() {
     install_fake_ssh
@@ -30,7 +32,7 @@ runs() { qd log 2>/dev/null | tail -n +2 | awk '{print $1}' | tr '\n' ' '; }
 commits() { git -C "$QD_STORE" rev-list --count HEAD; }
 
 t_rm_says_what_goes_and_waits_for_yes() {
-    seed
+    fixture seed seed
     before="$(runs)"; n="$(commits)"
     qd_rc rm latest~1 > out 2> err
     assert_status "$QD_RC" 2
@@ -43,7 +45,7 @@ t_rm_says_what_goes_and_waits_for_yes() {
 }
 
 t_rm_deletes_one_run_of_a_fleet() {
-    seed
+    fixture seed seed
     if ! can_rm; then
         qd_rc rm latest~2 --yes 2> err
         assert_status "$QD_RC" 2
@@ -73,7 +75,7 @@ t_rm_deletes_one_run_of_a_fleet() {
 }
 
 t_rm_several_and_a_dataset() {
-    seed
+    fixture seed seed
     printf 'a=1, b=2\n' | pv --name loose > /dev/null 2>&1
     if ! can_rm; then
         # a whole dataset needs no new provost
@@ -93,7 +95,7 @@ t_rm_several_and_a_dataset() {
 }
 
 t_rm_refuses_what_is_not_one_runs() {
-    seed
+    fixture seed seed
     qd_rc rm ds:qd.runs --yes 2> err
     assert_status "$QD_RC" 2
     assert_contains "$(cat err)" "qd's own record"
@@ -106,7 +108,7 @@ t_rm_refuses_what_is_not_one_runs() {
 }
 
 t_store_clear() {
-    seed
+    fixture seed seed
     unset QD_STORE
     qd store new lab > /dev/null
     qd import load.csv --store lab --name load > /dev/null
