@@ -11,6 +11,11 @@ explorers `qd view` and `qd web`. Part of [the manual](README.md).
 
 ## Reading it back
 
+Each RUN below (`latest`, `firmware`, `monday`) can be written any of the
+ways [Concepts: Naming a run](concepts.md#naming-a-run) sets out, an
+example each: `latest~1`, an id or part of one, a run's name, `ds:NAME`,
+`RUN:TABLE`, `RUN@STORE` or a file.
+
 All of these take `--where` and `--format text|csv|tsv|json|ndjson|md`
 (`-o FILE`). The text is for people; the table behind it is for whatever
 comes next.

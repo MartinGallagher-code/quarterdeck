@@ -5,10 +5,12 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
-## 0.51.2 — 2026-11-20
+## 0.51.3 — 2026-11-23
 
 A fio tuning study, start to finish (QD-066): the seven steps QD-067 to
-QD-072 built, joined up, written down and tested as one.
+QD-072 built, joined up, written down and tested as one. Numbered 0.51.2
+on its pull request (quarterdeck#75) until QD-049 took that number on
+`main`; it is 0.51.3, on top of 0.51.2, with nothing else changed.
 
 ### Documentation
 - `docs/fio-study.md`, a new chapter: one drive's best fio settings in
@@ -32,6 +34,28 @@ QD-072 built, joined up, written down and tested as one.
 - `stand_in_fio`'s `FIO_PEAK` takes `scale=S`, which flattens its hill so
   read IOPS stays above 0 over a whole screen (the default, 1, leaves
   every other suite's numbers as they were).
+
+## 0.51.2 — 2026-11-20
+
+Every way to name a run is one click from where readers start (QD-049).
+QD-042 had already moved the table out of "Named stores" into
+`docs/concepts.md`, "Naming a run"; this points at it from the places
+people look first. Nothing else moves, and no table is copied.
+
+### Documentation
+- `qd --help`'s RUN paragraph ends with `docs/concepts.md: "Naming a
+  run"`, in place of a bare `See docs/concepts.md` that hung off the
+  "Stored by provost" sentence, which now comes first. The card is still
+  50 lines of at most 80 columns, so the RUN lines are shorter: "a run
+  id" is "an id", and "@STORE a registered store" is "@STORE a store".
+- README, "Thirty seconds": what `latest`, `latest~1` and `facts` mean in
+  the commands above, and a link to Concepts: Naming a run.
+- `docs/reading.md`, "Reading it back", opens with the same link and the
+  forms a RUN can take.
+
+### Tests
+- `tests/test_help.sh` checks that the card's RUN paragraph ends with
+  the pointer; `tests/check_readme_pointers.py` checks that it lands.
 
 ## 0.51.1 — 2026-11-20
 
