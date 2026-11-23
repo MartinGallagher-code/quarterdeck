@@ -225,6 +225,8 @@ qd doe next fio-screen -c read_iops         # a CCD/Box-Behnken follow-up on its
 qd doe run fio-screen-read-iops-ccd.json --like fio-screen   # where the screen ran
 qd doe surface fio-screen-read-iops-ccd      # doe's response surface: where the best is
 qd doe optimize fio-screen -c read_iops --budget 60   # rounds until the optimum: the settings to use
+qd doe init fio-drives                      # the screen on every drive of every host (drives=)
+qd doe analyze fio-drives-screen --per drive # each drive's own effects (default: per drive model)
 ```
 
 The last six are the steps of a fio tuning study, which
@@ -758,3 +760,106 @@ column (by default the follow-up's own), and `--agg` reduces each point
 over its hosts as `analyze` does. `--yes` lets a target that guard
 refuses through (a `/dev` path), as `qd doe run` does. It takes no `-s`:
 the hosts are the study's.
+
+### Every drive on every host: `drives=` and `{drive}`
+
+The study above runs on one drive of one host. QD-073 runs it on every
+drive of every host: each design point is measured on each drive, and the
+analysis, the follow-up, the surface and `qd doe optimize` read the
+results per drive model (or per drive, per host, or the fleet as one).
+
+```bash
+cat > hosts.txt <<'HOSTS'
+db07 drives=/srv/nvme0/qd-fio.dat,/srv/nvme1/qd-fio.dat drive_model=PM9A3
+db08 drives=/srv/nvme0/qd-fio.dat,/srv/sata0/qd-fio.dat drive_model=PM9A3,ST4000
+HOSTS
+qd doe init fio-drives                         # the screen, --filename={drive}
+qd doe run fio-drives-screen.json -s hosts.txt # every point on every drive, one at a time
+qd doe analyze fio-drives-screen               # what moves each response, per drive model
+qd doe next fio-drives-screen -c read_iops --group PM9A3   # a follow-up for one model
+qd doe run fio-drives-screen-read-iops-pm9a3-ccd.json --like fio-drives-screen   # on its drives
+qd doe surface fio-drives-screen-read-iops-pm9a3-ccd       # that model's surface
+qd doe optimize fio-drives-screen -c read_iops --budget 120 # that model's optimum
+```
+
+**Naming the drives.** A host line names its drives with two
+attributes: `drives=`, the file the command writes on each drive (a file
+on the drive's filesystem, joined by commas), and `drive_model=`, one
+model for all of them or one per drive in the same order. A file is
+letters, digits and `@%+=:./-_` only, so it goes into the command as it
+is. `{drive}` in the design's command is each drive's file
+(`qd doe init fio-drives` writes fio's screen with `--filename={drive}`
+and no `filename` of its own). A `/dev` path writes the raw device and
+destroys what is on it: the guard refuses that without `--yes`, for
+every drive, before any point runs, as it does for one.
+
+qd refuses a command and a host list that disagree: `{drive}` with no
+host naming drives, a host with none when the others have some, or
+drives named and no `{drive}` to put them in (every drive would run the
+same command).
+
+**Each drive is a target**: the host, with `drive=FILE` and
+`drive_model=MODEL` in place of the two lists, so both are columns of
+every row, beside the host's other attributes and the point's factors.
+`qd show`, `qd compare --group DESIGN -c jobs.0.read.iops` and qd web
+read them like any column.
+
+**One at a time, or together.** By default a point runs one drive at a
+time on each host: a run for the first drive of every host, then one for
+the second, the hosts side by side (`point 3/8 (...), drive 2 of 2: 2/2
+ok`). That measures the drive itself, which is what tuning a drive's
+settings wants. `--drives-together` starts all of a host's drives at
+once, one run a point (`point 3/8 (...), 4 drives at once: 4/4 ok`): for
+the bottlenecks a host's drives share, the PCIe lanes, the controller,
+the CPU's threads. Together, a host is one task: `--jobs`, `--rate` and
+`--max-fail` count hosts, never drives, so a host's drives are not split
+up. A design keeps the way it was first run (it is in its config,
+`metadata.qd_drives`), and a follow-up run `--like` its screen measures
+its drives the same way.
+
+**Carrying on.** A drive slot (or, together, a point) where a drive
+answered is measured; one where none did runs again, so a drive that
+failed throughout one slot is tried again by the same command, and the
+rest are kept. `qd doe status` counts drives: `4/4` is every drive of
+the point.
+
+**Per drive, per model, per host, or the fleet.** `analyze`, `next`,
+`surface` and `optimize` take:
+
+- `--per drive|model|host|fleet`: what a group is. The default is
+  `model` where the hosts named drives (a drive with no `drive_model` is
+  a group of its own, `host:file`), `fleet` otherwise, which is the
+  analysis as it was before drives: one value a point, the `--agg` of
+  every row.
+- `--group NAME`: one group (`PM9A3`, `db07`, `db07:/srv/nvme0/qd-fio.dat`).
+  `analyze` and `surface` with no `--group` go through every group in
+  turn; `next` and `optimize` need one when there are several, and say
+  which there are. `--report` and `surface --json` are one analysis, so
+  they need one too.
+- `--block host|drive`: each host's (or drive's) value at a point is an
+  observation of its own, in a block of its own, so doe's ANOVA takes
+  the differences between them out as a Block row before it judges the
+  factors. With `--per fleet --block drive`, that is one setting for the
+  fleet with every drive's difference blocked out.
+
+**A follow-up is for one group.** `qd doe next SCREEN -c R --group PM9A3`
+writes the follow-up for the PM9A3s (its name carries the group:
+`SCREEN-read-iops-pm9a3-ccd`), and records the group in its config
+(`metadata.qd_group`). `qd doe run FOLLOWUP --like SCREEN` then runs it
+on every host and drive the screen ran on, of that group only: every
+PM9A3, on every host that has one. The follow-up's `analyze`, `surface`
+and `optimize` read that group by default. `--per fleet` writes one
+follow-up for every drive at once.
+
+**Optimize, per group.** `qd doe optimize` runs every round on the
+drives of its group alone, names its rounds for it
+(`STUDY-read-iops-pm9a3-path1`), and ends with the settings for that
+group: the command keeps `{drive}`, and an `on` line lists the drives it
+is for. Two models are two optimizes from the same design, each with its
+own rounds and its own count of the budget. The budget counts runs, and
+one drive at a time a point is a run per drive slot, so optimize says
+how many runs a point takes and plans with that (`a point is 2 runs, a
+drive at a time`).
+
+qd web's pages for a design read every drive pooled, one value a point,
+as `--per fleet` does.

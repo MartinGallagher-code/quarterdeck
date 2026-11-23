@@ -5,6 +5,54 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.52.0 — 2026-11-23
+
+The fio tuning study on every drive of every host (QD-073, the part of
+QD-066 the owner deferred until the single-drive study worked end to
+end).
+
+### Added
+- Host lines name their drives: `drives=FILE,FILE` (the file the
+  command writes on each drive) and `drive_model=MODEL` (one, or one per
+  drive). `{drive}` in a design's command is each drive's file, and `qd
+  doe run` runs every point on every drive, each filed with `drive` and
+  `drive_model` columns beside the host's other attributes.
+- One drive at a time on each host by default (a run per drive slot, the
+  hosts side by side), which measures the drive; `--drives-together`
+  starts all of a host's drives at once, for the bottlenecks they share
+  (PCIe, controller, threads), a host being one task so `--jobs`,
+  `--rate` and `--max-fail` count hosts. A design keeps the way it was
+  first run (`metadata.qd_drives`), and its follow-ups run the same way.
+- `analyze`, `next`, `surface` and `optimize` take `--per
+  drive|model|host|fleet` (default: model where the hosts named drives,
+  else fleet, the analysis as before), `--group NAME` and `--block
+  host|drive` (each host's or drive's value an observation in a block of
+  its own, so doe's ANOVA has a Block row). `analyze` and `surface` go
+  through every group; `next` and `optimize` are for one.
+- A follow-up made for a group records it (`metadata.qd_group`, its name
+  carrying the group), and `qd doe run --like` runs it on every host and
+  drive its screen ran on, of that group. `--like` now reuses every drive
+  of every host, not only the hosts.
+- `qd doe optimize` runs its rounds on its group's drives alone, names
+  them for the group, keeps a budget count per group, counts a run per
+  drive slot against the budget, and ends with the group's settings, the
+  command keeping `{drive}` and an `on` line naming the drives.
+- `qd doe init fio-drives`: the fio screen with `--filename={drive}`.
+- `qd doe status` counts drives (`4/4`) and says how they were run.
+
+### Docs
+- docs/larger-jobs.md: "Every drive on every host: `drives=` and
+  `{drive}`"; the README's front page says the study runs per drive
+  model.
+
+### Tests
+- `tests/test_doe_drives.sh`: two hosts with two drives each, a stand-in
+  fio whose drive models are moved by different factors: every host x
+  drive x point filed, each model's planted effect found, one at a time
+  and together (with the timing of every call), a failed slot run again,
+  `--like` and a group's follow-up, the surface and optimize per model,
+  the budget counting each slot, the refusals, and the real doe's Block
+  row where it is installed.
 ## 0.51.4 — 2026-11-23
 
 A fio tuning study, start to finish (QD-066): the seven steps QD-067 to

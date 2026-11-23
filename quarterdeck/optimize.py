@@ -177,9 +177,14 @@ class Optimizer(object):
 
     def __init__(self, st, prov, start, column, agg="median", budget=0,
                  confirm=CONFIRM_RUNS, batch=BATCH, strategy="refine",
-                 gain=GAIN, run_point=None, say=None):
+                 gain=GAIN, run_point=None, say=None, sel=None, cost=1):
         self.st, self.prov, self.start = st, prov, start
         self.agg, self.budget = agg, budget
+        # QD-073: the drive group optimised (drives.Selection; None, every
+        # row as one), and the runs a point makes (one a drive slot, when
+        # a host's drives are measured one at a time)
+        self.sel, self.cost = sel, max(1, int(cost or 1))
+        self.gkey = sel.meta() if sel is not None else None
         self.confirm, self.batch = confirm, batch
         self.strategy, self.gain = strategy, gain
         self.run_point = run_point
@@ -214,7 +219,8 @@ class Optimizer(object):
             meta = r[1].get("metadata") or {}
             rd = meta.get("qd_round") if isinstance(meta, dict) else None
             if isinstance(rd, dict) and rd.get("start") == self.start and \
-                    rd.get("response") == self.rname:
+                    rd.get("response") == self.rname and \
+                    rd.get("group") == self.gkey:
                 self.rounds.append(name)
         self.vals = {}
 
@@ -247,18 +253,23 @@ class Optimizer(object):
         if name not in self.vals:
             self.vals[name] = dict(
                 (rid, v) for rid, v, _ in
-                doemod.responses(self.st, name, self.column, self.agg))
+                doemod.responses(self.st, name, self.column, self.agg,
+                                 self.sel))
         return self.vals[name]
 
     def answered(self, name, rid):
-        return doemod.answered(self.runs.get(name, {}).get(rid, []))
+        return doemod.answered(self.runs.get(name, {}).get(rid, []),
+                               self.sel)
 
     def spent(self):
         """Every run this optimize made: each of its rounds' runs, and the
         start design's runs since it began."""
         n = sum(len(rs) for name in self.rounds
                 for rs in self.runs.get(name, {}).values())
-        before = int((self.marker() or {}).get("runs_before") or 0)
+        m = self.marker() or {}
+        before = int(m.get("runs_before") or 0)
+        if self.gkey is not None:
+            before = int((m.get("groups") or {}).get(self.glabel(), before))
         mine = sum(len(rs) for rs in self.runs.get(self.start, {}).values())
         return n + max(0, mine - before)
 
@@ -348,7 +359,16 @@ class Optimizer(object):
 
     # -- spending ----------------------------------------------------------
 
+    def glabel(self):
+        """The group's key in the start design's qd_optimize marker."""
+        g = self.gkey or {}
+        return "%s=%s%s" % (g.get("per", ""), g.get("group", ""),
+                            ("/" + g["block"]) if g.get("block") else "")
+
     def need(self, n, what):
+        # n points; a point is self.cost runs when a host's drives are
+        # measured one at a time
+        n *= self.cost
         left = self.budget - self.spent()
         if left >= n:
             return
@@ -363,7 +383,7 @@ class Optimizer(object):
     def run(self, name, rid, levels):
         self.tried.add((name, rid))
         self.run_point(name, rid, levels)
-        self.ran += 1
+        self.ran += self.cost
         self.refresh()
         return self.answered(name, rid)
 
@@ -388,28 +408,39 @@ class Optimizer(object):
         """Mark the start design with the optimize it starts (so the budget
         counts only the runs made since), once."""
         m = self.marker()
+        now = sum(len(rs) for rs in self.runs.get(self.start, {}).values())
         if m is not None:
             if m.get("response") != self.rname:
                 die("%s is optimised for %s already: one optimize a design "
                     "(qd doe next %s -c %s writes another follow-up to "
                     "start from)" % (self.start, m.get("response"),
                                      self.study, self.rname))
-            return
+            if self.gkey is None or \
+                    self.glabel() in (m.get("groups") or {}):
+                return
+            # another drive group's optimize from the same design: its own
+            # count of the runs made before it began
+            m = json.loads(json.dumps(m))
+            m.setdefault("groups", {})[self.glabel()] = now
+        else:
+            m = {"response": self.rname, "column": self.column,
+                 "optimize": self.direction, "runs_before": now}
+            if self.gkey is not None:
+                m["groups"] = {self.glabel(): now}
         row, cfg, matrix = self.load(self.start)
         cfg = json.loads(json.dumps(cfg))
-        cfg.setdefault("metadata", {})["qd_optimize"] = {
-            "response": self.rname, "column": self.column,
-            "optimize": self.direction,
-            "runs_before": sum(len(rs) for rs in
-                               self.runs.get(self.start, {}).values())}
+        cfg.setdefault("metadata", {})["qd_optimize"] = m
         self.file(self.start, cfg, matrix, row.get("seed") or None, row)
 
     def round_name(self, kind):
         n = 1 + sum(1 for r in self.rounds if self.kind(r) == kind)
         known = set(doemod.names(self.st))
         while True:
-            name = filing.dataset_name("%s-%s-%s%d" % (
-                self.study, self.rname.replace("_", "-"), kind, n))
+            name = filing.dataset_name("%s-%s-%s%s%d" % (
+                self.study, self.rname.replace("_", "-"),
+                (doemod.safe_part(self.sel.group).lower().replace("_", "-")
+                 + "-") if self.sel is not None and self.sel.group else "",
+                kind, n))
             if name not in known:
                 return name, n
             n += 1
@@ -421,6 +452,8 @@ class Optimizer(object):
                     if k not in SKIP_META)
         rd = {"kind": kind, "n": n, "start": self.start,
               "response": self.rname, "follows": follows}
+        if self.gkey is not None:
+            rd["group"] = self.gkey
         rd.update(extra)
         meta.update({
             "name": name,
@@ -432,6 +465,8 @@ class Optimizer(object):
                            "column": self.column,
                            "optimize": self.direction},
             "qd_round": rd})
+        if self.gkey is not None:
+            meta["qd_group"] = self.gkey
         cfg["metadata"] = meta
         cfg["settings"] = dict(cfg.get("settings") or {}, operation=operation,
                                block_count=1)
@@ -443,7 +478,8 @@ class Optimizer(object):
         key = (w, tuple(sorted(self.values(w).items())))
         if key not in self.surfaces:
             self.surfaces[key] = doemod.surface(self.st, w, self.column,
-                                                self.agg, grid=False)
+                                                self.agg, grid=False,
+                                                sel=self.sel)
         return self.surfaces[key]
 
     # -- the rounds ------------------------------------------------------------
@@ -491,7 +527,8 @@ class Optimizer(object):
         factors' limits, a point a step; None when it goes nowhere."""
         if (w, "nopath") in self.said:
             return None
-        table, _ = doemod.steepest(self.st, w, self.column, self.agg)
+        table, _ = doemod.steepest(self.st, w, self.column, self.agg,
+                                   self.sel)
         lims = self.lims(w)
         prev = dict(self.centre(w))
         steps = []
@@ -685,7 +722,7 @@ class Optimizer(object):
                       "used" % self.rname)
         new, _ = doemod.next_batch(self.st, w, self.column, self.agg,
                                    strategy, self.batch,
-                                   _seed("%s/%d" % (w, k)))
+                                   _seed("%s/%d" % (w, k)), self.sel)
         lims = self.lims(w)
         pts = []
         for fv in new:
@@ -823,6 +860,7 @@ class Optimizer(object):
                "optimize": self.direction, "agg": self.agg,
                "budget": self.budget, "spent": self.spent(),
                "ran": self.ran, "factors": self.factors,
+               "group": self.gkey, "runs_per_point": self.cost,
                "held": [[k, v] for k, v in self.fixed],
                "stop": {"reason": stop.reason, "text": stop.text}
                if stop else None,
