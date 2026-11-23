@@ -9,7 +9,7 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 The fio tuning study on every drive of every host (QD-073, the part of
 QD-066 the owner deferred until the single-drive study worked end to
-end), on top of 0.51.4.
+end), on top of 0.51.5.
 
 ### Added
 - Host lines name their drives: `drives=FILE,FILE` (the file the
@@ -54,7 +54,38 @@ end), on top of 0.51.4.
   `--like` and a group's follow-up, the surface and optimize per model,
   the budget counting each slot, the refusals, and the real doe's Block
   row where it is installed. The screen is a fixture (QD-074), made once
-  for the four cases that read it.
+  for the four cases that read it. It is in `TIMES` at 748 s, measured
+  from CI as 0.51.5 measured the rest (its parts added up in each of
+  the eight jobs, the mean of the eight), and in `PARTS` in three.
+
+## 0.51.5 — 2026-11-23
+
+CI's suite jobs have 15 minutes again, not 25 (QD-075, the owner's "lower
+the job limit to 15 minutes"), now that provost 2.28.0 is on PyPI.
+Patch: CI only.
+
+### Changed
+- **`timeout-minutes` on the jobs that run a share of the suite**: 15 on
+  the Python 3.9 to 3.13 jobs, the Python 3.6 jobs and the store-check
+  jobs, and 20 on the provost 2.1.0 jobs, which file one capture at a
+  time. On quarterdeck#73's last run, on PyPI's provost 2.24.0, three
+  Python shares took 17 to 20 minutes; the store-check shares, on
+  provost 2.28.0, took 6 to 11, and the provost 2.1.0 shares up to 14.4.
+  The Python jobs take PyPI's newest provost, 2.28.0 since today, which
+  files a run in a fraction of the time (QD-074). QD-070 raised the limit
+  to 25 as a stopgap until then. `docs/contributing.md` gives the limits.
+
+### Tests
+- **`TIMES` in `tests/run_tests.sh` re-measured from CI**, as QD-024 first
+  measured it: each suite's seconds in each of the eight jobs that run the
+  suite (quarterdeck#77's first run), parts added up, the mean of the
+  eight. The old figures had drifted (survey was 160 and took 447,
+  doe_optimize 1200 and took 610), so the deal was uneven: on that run
+  provost 2.1.0's third share took 18.5 minutes, near its new 20, while
+  its first two took 12 to 13. Dealt by the new figures, the same
+  seconds come to at most 866 s a share on provost 2.1.0 (was 1073) and
+  501 s on the Python jobs (was 628).
+
 ## 0.51.4 — 2026-11-23
 
 A fio tuning study, start to finish (QD-066): the seven steps QD-067 to
