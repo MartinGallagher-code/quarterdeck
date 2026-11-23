@@ -40,36 +40,16 @@ usage() { sed -n '5,25p' run_tests.sh | sed 's/^# \{0,1\}//'; }
 # the longest first, so the longest is not left to begin last, and how
 # --shard deals them out.  A suite not listed counts as UNLISTED seconds
 # until it is (tests/test_runner.sh fails until it is).  The output is in
-# name order whatever this says.  Measured in CI on 2026-11-10 (run #101,
-# QD-024): each suite's seconds in each of the seven jobs that run the
-# suite, four at a time on four cores, parts added up, then the mean of
-# the seven; report and join, which came after, timed here beside
-# compare, do and view on both of provost's paths and scaled to their
-# seconds in CI; ssh (QD-018) timed here, a real sshd and all, on four
-# cores; via (QD-008) beside report, scaled the same way; run and probe
-# raised by the share of cases QD-027 added, an estimate; changes (QD-030)
-# timed here at 54 s and raised for CI, an estimate; preamble (QD-038)
-# the mean of its seconds here on both of provost's paths, four at a
-# time on four cores (68 and 85); demo (QD-039), which files a few hundred
-# captures, timed here at 261 with `batch` four at a time and 490 with
-# PyPI's provost 2.1.0 two at a time, raised for four, and weighted as the
-# seven jobs are (six file with `batch`); local (QD-037) timed here beside
-# via, on both of provost's paths, and scaled to via's seconds in CI; help
-# (QD-043, QD-045, QD-046) about a second here, rounded up for CI;
-# concepts (QD-042) two seconds here, rounded up the same way; coverage
-# (QD-053) 72 alone here with `batch`, raised for CI; odd
-# (QD-062) 97 here with `batch` beside peers' 378, scaled to its 231; ask
-# (QD-059) timed here in a whole run beside local (366 s and 370 s, four
-# at a time on a loaded machine) and scaled to local's seconds in CI; survey
-# (QD-060) 548 here beside probe's 389, four at a time on a loaded
-# machine, scaled by probe's 112 in CI; setup
-# (QD-063) timed here, raised for CI.  The suites given fixtures (QD-074:
-# web, xstore, compare, again, report, remote, rm, view, study, doe_next,
-# doe_fio, doe_surface) have their seconds here before and after, the CI figure scaled
-# by the same share; runner gained a case.  A
-# run's last line, `seconds:`, gives every suite's, to measure them again
-# from.
-TIMES="demo:310 doe:236 doe_fio:175 doe_next:305 doe_surface:264 peers:231 web:111 via:224 run:205 xstore:29 local:140 compare:70 ask:130 probe:112 operator:98 report:52 campaign:86 rm:39 do:78 remote:80 preamble:76 view:44 changes:60 pacing:54 store:41 stop:40 policy:37 read:35 join:30 ssh:25 export:24 runner:20 split:15 diff:17 check:12 analyze:6 cleanup:3 concepts:3 help:5 coverage:80 odd:60 again:58 survey:160 setup:20 saved:40 study:160 doe_optimize:1200 fio_study:320"
+# name order whatever this says.  Measured in CI on 2026-11-23
+# (quarterdeck#77's run, QD-075), as QD-024 first measured them: each
+# suite's seconds in each of the eight jobs that run the suite (Python 3.9
+# to 3.13, Python 3.6, provost 2.1.0 and the store check), four at a time,
+# its parts added up, then the mean of the eight.  The figures before were
+# a mix of CI's and this machine's, scaled, and had drifted: survey was
+# 160 and took 447, and provost 2.1.0's third share took 18 minutes while
+# its first two took 12.  A run's last line, `seconds:`, gives every
+# suite's, to measure them again from.
+TIMES="demo:323 doe:183 doe_fio:134 doe_next:230 doe_surface:248 peers:146 web:158 via:198 run:209 xstore:27 local:102 compare:85 ask:59 probe:138 operator:57 report:44 campaign:63 rm:20 do:53 remote:48 preamble:68 view:43 changes:105 pacing:93 store:36 stop:33 policy:40 read:20 join:28 ssh:34 export:18 runner:29 split:13 diff:18 check:51 analyze:3 cleanup:2 concepts:2 help:12 coverage:26 odd:48 again:92 survey:447 setup:14 saved:40 study:90 doe_optimize:610 fio_study:291"
 UNLISTED=30
 
 # With --shard K/N, a suite listed here is split into that many parts (or
