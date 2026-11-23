@@ -9,7 +9,7 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 The fio tuning study on every drive of every host (QD-073, the part of
 QD-066 the owner deferred until the single-drive study worked end to
-end).
+end), on top of 0.51.4.
 
 ### Added
 - Host lines name their drives: `drives=FILE,FILE` (the file the
@@ -43,7 +43,8 @@ end).
 ### Docs
 - docs/larger-jobs.md: "Every drive on every host: `drives=` and
   `{drive}`"; the README's front page says the study runs per drive
-  model.
+  model, and docs/fio-study.md's "one drive of one host" points there
+  instead of at QD-073.
 
 ### Tests
 - `tests/test_doe_drives.sh`: two hosts with two drives each, a stand-in
@@ -52,7 +53,8 @@ end).
   and together (with the timing of every call), a failed slot run again,
   `--like` and a group's follow-up, the surface and optimize per model,
   the budget counting each slot, the refusals, and the real doe's Block
-  row where it is installed.
+  row where it is installed. The screen is a fixture (QD-074), made once
+  for the four cases that read it.
 ## 0.51.4 — 2026-11-23
 
 A fio tuning study, start to finish (QD-066): the seven steps QD-067 to

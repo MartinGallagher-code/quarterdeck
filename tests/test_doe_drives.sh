@@ -20,6 +20,7 @@
 
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/test_helper.bash"
+use_fixtures
 
 flat() { tr '\n' ' ' < "$1" | tr -s ' '; }
 
@@ -100,6 +101,14 @@ screen() {
     qdf doe run fio-drives-screen.json -s hosts.txt -q "$@" > run.out 2> run.err
 }
 
+# the screen with the stand-in doe, each call a fifth of a second (so the
+# timing tells one at a time from at once): made once a suite, a copy for
+# each case that asks (QD-074)
+screened() {
+    stand_in_doe
+    FIO_SLEEP=0.2 screen
+}
+
 # the line of the ranking that starts with a response, and the one after,
 # of the analysis in $2 that follows the heading matching $3
 ranking() { sed -n "/$3/,/doe analyze:/p" "$2" | sed -n "/^  $1 /{N;p;}"; }
@@ -140,8 +149,7 @@ EOF
 }
 
 t_every_drive_of_every_host_one_at_a_time() {
-    stand_in_doe
-    FIO_SLEEP=0.2 screen
+    fixture screened screened
     assert_contains "$(cat run.out)" "8 of 8 points measured"
     # a run per drive slot: the first drive of each host, then the second
     assert_eq "$(grep -c ', drive 1 of 2: 2/2 ok' run.out)" "8"
@@ -174,8 +182,7 @@ hosts-overlap"
 }
 
 t_each_model_has_its_own_effects() {
-    stand_in_doe
-    screen
+    fixture screened screened
     # the default: per drive model, each with its own big factor
     qd doe analyze fio-drives-screen -c read_iops > an.out
     assert_contains "$(flat an.out)" "fio-drives-screen, model PM9A3 (h1:/srv/nvme0/qd-fio.dat, h2:/srv/nvme0/qd-fio.dat): jobs.0.read.iops per point"
@@ -229,8 +236,7 @@ hosts-apart"
 }
 
 t_a_design_keeps_how_it_ran_its_drives() {
-    stand_in_doe
-    screen
+    fixture screened screened
     qdf_rc doe run fio-drives-screen.json -s hosts.txt -q --drives-together 2> err
     assert_status "$QD_RC" 2
     assert_contains "$(cat err)" "the design fio-drives-screen measured its drives one at a time"
@@ -259,8 +265,7 @@ t_a_failed_slot_runs_again() {
 }
 
 t_like_reuses_every_host_and_drive() {
-    stand_in_doe
-    screen
+    fixture screened screened
     # a follow-up is for one group
     qd_rc doe next fio-drives-screen -c read_iops 2> err
     assert_status "$QD_RC" 2

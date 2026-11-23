@@ -39,8 +39,12 @@ Before you start:
   and the rounds of step 7 as many runs as `--budget` allows (the example
   below made 29, about 35 minutes). Every run writes to the drive; the
   budget is the bound on how much.
-- **One drive of one host.** Several drives on several hosts, each its
-  own optimum or one setting for the fleet, is not in qd yet (QD-073).
+- **One drive of one host.** The same study on every drive of every
+  host, each drive model its own optimum (or one setting for the fleet),
+  is
+  [Larger jobs: "Every drive on every host"](larger-jobs.md#every-drive-on-every-host-drives-and-drive):
+  the host lines name the drives, and `{drive}` in the command is each
+  one's file.
 
 The output below is from the test suite's run of this study
 (`tests/test_fio_study.sh`), with the real doe and a stand-in fio whose
