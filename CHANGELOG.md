@@ -40,6 +40,14 @@ end), on top of 0.51.5.
 - `qd doe init fio-drives`: the fio screen with `--filename={drive}`.
 - `qd doe status` counts drives (`4/4`) and says how they were run.
 
+### Changed
+- CI's provost 2.1.0 jobs have 25 minutes again, not 20 (the owner's
+  call). There, filing one capture at a time, `doe_drives` takes about
+  36 minutes of suite time (2147 s over its three parts), and on this
+  pull request's run, merged with 0.51.5's limits, its first share ran
+  out its 20. The other suite jobs keep their 15; `docs/contributing.md`
+  gives the limits.
+
 ### Docs
 - docs/larger-jobs.md: "Every drive on every host: `drives=` and
   `{drive}`"; the README's front page says the study runs per drive

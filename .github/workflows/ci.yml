@@ -24,9 +24,11 @@ concurrency:
 # timeout well above its usual time, so a hang fails within minutes.
 # QD-024.  A share of the suite took 6 to 11 minutes on provost 2.28.0
 # (QD-074's fixtures, and its faster filing), so the jobs that run one
-# have 15; the provost 2.1.0 jobs, which file one capture at a time and
-# took up to 14.4 minutes, have 20.  QD-075 (25 from QD-070 until provost
-# 2.28.0 was on PyPI).
+# have 15 (QD-075; 25 from QD-070 until provost 2.28.0 was on PyPI).  The
+# provost 2.1.0 jobs, which file one capture at a time, took up to 14.4
+# minutes and had 20, until doe_drives (QD-073) added about 36 minutes of
+# suite time there and a share ran out its 20 on quarterdeck#78: they
+# have 25, the owner's call.
 
 jobs:
   test:
@@ -130,7 +132,7 @@ jobs:
     # one keeps the oldest qd supports under the whole suite.
     name: test (provost 2.1.0, one capture at a time, ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     strategy:
       fail-fast: false
