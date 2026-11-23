@@ -170,7 +170,11 @@ t_a_remote_store_on_one_side() {
     n="$(ssh_calls)"
     qd_rc diff kernel@wr01 kernel@lab > out
     assert_status "$QD_RC" 1
-    assert_contains "$(cat out)" "kernel@lab (2 rows)"
+    # the two imports' ids are their second and label: when both land in
+    # one second the newer is ...-kernel-2 (qd's new_run_id), so the name
+    # is read without that suffix (QD-076: it failed CI that way)
+    assert_contains "$(sed 's/-kernel-[0-9][0-9]*@lab/-kernel@lab/' out)" \
+        "kernel@lab (2 rows)"
     assert_contains "$(cat out)" "h1  mbps 150 -> 120"
     # copies younger than QD_REMOTE_REFRESH are not fetched again
     assert_eq "$(ssh_calls)" "$n"

@@ -348,7 +348,7 @@ run_test "the web page reads a remote store"         t_the_web_page_reads_a_remo
 run_test "a mismatched object format, explained"     t_a_mismatched_format_is_explained
 run_test "an old git is named"                       t_an_old_git_is_named
 
-# QD_TEST_SHA256=require (CI's store-check job) fails these rather than
+# QD_TEST_SHA256=require (CI's Python 3.13 jobs) fails these rather than
 # skipping them where git or provost cannot make a SHA-256 store
 why="$(sha256_why_not)"
 for c in "a SHA-256 store reads, and refreshes:t_a_sha256_store_reads_and_refreshes" \
