@@ -10,6 +10,8 @@
 
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/test_helper.bash"
+# seed's runs are filed once and copied into each case that starts from them
+use_fixtures
 
 seed() {
     install_fake_ssh
@@ -91,7 +93,7 @@ fake_sudo() {
 }
 
 t_nothing_changed_exits_zero() {
-    seed
+    fixture seed seed
     first="$(qd show ds:qd.runs --cols run --format csv | tail -1)"
     : > "$FAKE_SSH_LOG"
     again > out
@@ -127,7 +129,7 @@ t_nothing_changed_exits_zero() {
 }
 
 t_a_changed_answer_exits_one_and_names_the_host() {
-    seed
+    fixture seed seed
     echo "6.1.0-20" > "$FAKE_ROOT/node02/kernel"
     again > out
     assert_status "$QD_RC" 1
@@ -141,7 +143,7 @@ t_a_changed_answer_exits_one_and_names_the_host() {
 }
 
 t_a_host_now_unreachable_exits_one() {
-    seed
+    fixture seed seed
     fake_host_unreachable node03
     again > out
     assert_status "$QD_RC" 1
@@ -155,7 +157,7 @@ t_a_host_now_unreachable_exits_one() {
 }
 
 t_the_host_file_is_read_again_or_its_hosts_kept() {
-    seed
+    fixture seed seed
     # a host added to the list since: in the new run, and new in the diff
     fake_host node04
     echo "6.1.0-18" > "$FAKE_ROOT/node04/kernel"
@@ -186,7 +188,7 @@ t_the_host_file_is_read_again_or_its_hosts_kept() {
 }
 
 t_via_timeout_and_name_are_kept() {
-    seed
+    fixture seed seed
     install_fake_launchers
     qd_rc run --via pdsh -s hosts.txt --timeout 7 --name kern -q -- cat kernel > /dev/null
     assert_status "$QD_RC" 0
@@ -216,7 +218,7 @@ t_a_local_run_stays_local() {
 }
 
 t_a_sudo_run_is_rerun_under_sudo() {
-    seed
+    fixture seed seed
     fake_sudo
     qdf_rc run -q -s hosts.txt --sudo -- cat kernel > /dev/null
     assert_status "$QD_RC" 0
@@ -254,7 +256,7 @@ t_a_sudo_run_is_rerun_under_sudo() {
 }
 
 t_dry_run_runs_and_files_nothing() {
-    seed
+    fixture seed seed
     : > "$FAKE_SSH_LOG"
     again --dry-run > out
     assert_status "$QD_RC" 0

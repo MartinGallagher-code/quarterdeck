@@ -8,6 +8,8 @@
 
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/test_helper.bash"
+# seed's runs are filed once and copied into each case that starts from them
+use_fixtures
 
 # two named stores, wr01 and wr02, each with runs named kernel; and the
 # case's own store (QD_STORE) with one of its own
@@ -29,7 +31,7 @@ seed() {
 ids_in() { qd log --store "$1" 2>/dev/null | tail -n +2 | awk '{print $1}'; }
 
 t_show_and_diff_across_two_stores() {
-    seed
+    fixture seed seed
     out="$(qd show kernel@wr02 --format csv)"
     assert_contains "$out" "h3,300"
     assert_not_contains "$out" "999"
@@ -51,7 +53,7 @@ t_show_and_diff_across_two_stores() {
 }
 
 t_a_table_of_a_run_in_another_store() {
-    seed
+    fixture seed seed
     mkdir two
     printf 'host,mbps\nh1,5\n' > two/net.csv
     printf 'host,disk\nh1,7\n' > two/disk.csv
@@ -65,7 +67,7 @@ t_a_table_of_a_run_in_another_store() {
 }
 
 t_an_unknown_store_is_refused_listing_the_stores() {
-    seed
+    fixture seed seed
     qd_rc show kernel@nope 2> err
     assert_status "$QD_RC" 2
     assert_contains "$(cat err)" "no store named 'nope'"
@@ -82,7 +84,7 @@ t_an_unknown_store_is_refused_listing_the_stores() {
 }
 
 t_a_file_named_with_an_at_is_still_a_file() {
-    seed
+    fixture seed seed
     printf 'host,mbps\nf1,42\n' > 'me@wr01.csv'
     assert_contains "$(qd show me@wr01.csv --format csv)" "f1,42"
     mkdir 'dir@wr02'
@@ -94,7 +96,7 @@ t_a_file_named_with_an_at_is_still_a_file() {
 }
 
 t_previous_like_stays_in_its_own_store() {
-    seed
+    fixture seed seed
     # one reference: the run before it in wr01, not the case's own store's
     qd_rc diff kernel@wr01 > out
     assert_status "$QD_RC" 1
@@ -108,7 +110,7 @@ t_previous_like_stays_in_its_own_store() {
 }
 
 t_compare_across_three_stores_with_labels() {
-    seed
+    fixture seed seed
     qd_rc compare kernel@wr01 kernel kernel@wr02 -c mbps > out
     assert_status "$QD_RC" 1
     assert_contains "$(cat out)" "3 runs, mbps by host"
@@ -131,7 +133,7 @@ t_compare_across_three_stores_with_labels() {
 }
 
 t_compare_last_n_at_a_store() {
-    seed
+    fixture seed seed
     out="$(qd compare kernel --last 2@wr01 -c mbps || true)"
     assert_contains "$out" "2 runs"
     assert_contains "$out" "@wr01"
@@ -145,7 +147,7 @@ t_compare_last_n_at_a_store() {
 }
 
 t_writing_commands_take_no_at() {
-    seed
+    fixture seed seed
     qd_rc rm kernel@wr01 --yes 2> err
     assert_status "$QD_RC" 2
     assert_contains "$(cat err)" "rm deletes from --store"
@@ -155,7 +157,7 @@ t_writing_commands_take_no_at() {
 # one side read from a remote store's copy, fetched over the fake ssh;
 # a command reading two runs from it fetches it once
 t_a_remote_store_on_one_side() {
-    seed
+    fixture seed seed
     install_fake_ssh
     fake_host lab
     export QD_SSH="$FAKE_BIN/ssh"
@@ -210,7 +212,7 @@ EOF
 }
 
 t_the_web_api_diffs_and_compares_across_stores() {
-    seed
+    fixture seed seed
     start_web
     # B here (the case's own store), A from wr02
     out="$(get '/api/diff?b=kernel&a=kernel&a_store=wr02')"
