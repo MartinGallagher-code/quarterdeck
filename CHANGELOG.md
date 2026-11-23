@@ -22,6 +22,17 @@ Patch: CI only.
   files a run in a fraction of the time (QD-074). QD-070 raised the limit
   to 25 as a stopgap until then. `docs/contributing.md` gives the limits.
 
+### Tests
+- **`TIMES` in `tests/run_tests.sh` re-measured from CI**, as QD-024 first
+  measured it: each suite's seconds in each of the eight jobs that run the
+  suite (quarterdeck#77's first run), parts added up, the mean of the
+  eight. The old figures had drifted (survey was 160 and took 447,
+  doe_optimize 1200 and took 610), so the deal was uneven: on that run
+  provost 2.1.0's third share took 18.5 minutes, near its new 20, while
+  its first two took 12 to 13. Dealt by the new figures, the same
+  seconds come to at most 866 s a share on provost 2.1.0 (was 1073) and
+  501 s on the Python jobs (was 628).
+
 ## 0.51.4 — 2026-11-23
 
 A fio tuning study, start to finish (QD-066): the seven steps QD-067 to
