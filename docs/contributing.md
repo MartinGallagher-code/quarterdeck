@@ -54,13 +54,14 @@ is there.
 
 ### What CI runs
 
-On every pull request and every push to `main` (`.github/workflows/ci.yml`):
+On every pull request and every push to `main` (`.github/workflows/ci.yml`),
+except where it says `main` only:
 
 | Job | Runs | Runners |
 |---|---|---|
-| test (python 3.9 to 3.13) | the whole suite, PyPI's newest provost (`batch`), binnacle, and doe from 3.10 | 3 each, `--shard 1/3` to `3/3` |
+| test (python 3.9 and 3.13) | the whole suite, PyPI's newest provost (`batch`), binnacle, and doe on 3.13; on 3.13 every store a case leaves must pass `provost store check` (`QD_STORE_CHECK=require`) and the SHA-256 cases are required (`QD_TEST_SHA256=require`) | 3 each, `--shard 1/3` to `3/3` |
 | Python 3.6 compatibility | vermin and the compile check, then the whole suite under a real Python 3.6 in a container, provost's bundle | 3 |
-| test (provost 2.1.0) | the whole suite, one capture at a time | 3 |
+| test (provost 2.1.0) | the whole suite, one capture at a time; pushes to `main` only | 3 |
 | ssh (a real sshd on loopback) | `test_ssh.sh` with openssh-server installed and `QD_TEST_SSHD=require`: a bastion, `--reuse`, a master opened first, a certificate, a `~/.bashrc` that prints | 1 |
 | version, web page syntax, shellcheck and the shard check, REUSE, build the wheel | once each | 1 each |
 
@@ -110,7 +111,7 @@ named; `QD_TEST_SSHD=require`, as in CI's ssh job, fails them instead.
 `tests/test_remote.sh` reads a store made in git's SHA-256 object format
 (`provost init --object-format sha256`); where git is older than 2.29 or
 provost's `init` has no `--object-format` those cases are skipped and
-named, and `QD_TEST_SHA256=require`, as in CI's store-check job, fails
+named, and `QD_TEST_SHA256=require`, as in CI's Python 3.13 jobs, fails
 them instead.
 Kerberos is not tested: it needs a KDC. `qd doctor`'s reading of `klist`
 is, with stand-ins.
@@ -143,12 +144,11 @@ CI's order, and ends with a summary:
 A check whose tool is missing is skipped and named in the summary, never
 failed. `--quick` leaves out the two slow ones (the suites and the wheel).
 What only CI does: the suite under a real Python 3.6 (in a container),
-under each of 3.9 to 3.13, under PyPI's provost 2.1.0 (`pip install
-"provost==2.1.0"` into a second venv and point `QD_PROVOST` at it to try it
-here), the installed wheel's smoke test, and the suite under provost
-2.28.0 from its repository with `QD_STORE_CHECK=require`: every store a
-case leaves must pass `provost store check` (PyPI's newest provost, 2.3.0,
-has no `store check`). A case that makes a store by hand, or breaks one on
+under 3.9 and 3.13, under PyPI's provost 2.1.0 on pushes to `main`
+(`pip install "provost==2.1.0"` into a second venv and point `QD_PROVOST`
+at it to try it here), the installed wheel's smoke test, and, on 3.13, the
+suite with `QD_STORE_CHECK=require`: every store a case leaves must pass
+`provost store check`. A case that makes a store by hand, or breaks one on
 purpose, names it to `no_store_check` in `tests/test_helper.bash`.
 
 While changing something, run less:

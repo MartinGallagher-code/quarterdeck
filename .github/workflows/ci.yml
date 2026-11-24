@@ -29,6 +29,14 @@ concurrency:
 # minutes and had 20, until doe_drives (QD-073) added about 36 minutes of
 # suite time there and a share ran out its 20 on quarterdeck#78: they
 # have 25, the owner's call.
+#
+# What runs when (QD-076, the owner's choice, to cut a push's wait): a
+# pull request runs the whole suite on Python 3.9 and 3.13, the oldest and
+# newest the runners have (vermin and the 3.6 jobs cover the floor, every
+# version's syntax and APIs), 3.13's with every store checked, and under a
+# real 3.6.  The provost 2.1.0 jobs, the slowest, run on pushes to main
+# only, after the merge.  Until then 3.10, 3.11 and 3.12 each ran the
+# suite, and the store check had three jobs of its own: 32 jobs a push.
 
 jobs:
   test:
@@ -40,13 +48,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Every version the hosted runners still provide. The declared floor
+        # The oldest and newest versions the hosted runners provide (QD-076:
+        # 3.10 to 3.12 ran the same suite between them). The declared floor
         # is 3.6, which setup-python can no longer install, so the bottom of
         # the range runs in a container in the python-floor job below.
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.9", "3.13"]
         shard: [1, 2, 3]
 
     name: test (python ${{ matrix.python-version }}, ${{ matrix.shard }}/3)
+
+    # 3.13's shares also check every store a case leaves against provost's
+    # spec, `provost store check` (QD_STORE_CHECK=require, QD-031; a case
+    # that makes a store by hand names it to no_store_check), and require
+    # test_remote.sh's SHA-256 cases (QD_TEST_SHA256=require, QD-032): an
+    # old git fails them, saying so.  PyPI's newest provost has `store
+    # check` (2.16.0 on).  This was the store-check job's, three runners of
+    # its own on provost from its repository, until QD-076.
+    env:
+      QD_STORE_CHECK: ${{ matrix.python-version == '3.13' && 'require' || '0' }}
+      QD_TEST_SHA256: ${{ matrix.python-version == '3.13' && 'require' || '' }}
 
     steps:
       - name: Check out repository
@@ -77,7 +97,10 @@ jobs:
       # slowest first, each suite's output printed whole when it ends; the
       # log's last lines give the wall time and every suite's seconds.
       - name: Run the test suite
-        run: bash tests/run_tests.sh --shard ${{ matrix.shard }}/3
+        run: |
+          provost --version | head -n 1
+          git --version
+          bash tests/run_tests.sh --shard ${{ matrix.shard }}/3
 
   python-floor:
     name: Python 3.6 compatibility (${{ matrix.shard }}/3)
@@ -129,8 +152,12 @@ jobs:
     # PyPI's provost 2.1.0 has no `batch`: it files a run one capture at a
     # time, strips quotes inside TSV cells, and drops nested JSON keys where
     # there is no jq.  The jobs above take PyPI's newest provost, so this
-    # one keeps the oldest qd supports under the whole suite.
+    # one keeps the oldest qd supports under the whole suite.  The slowest
+    # jobs, so they run on pushes to main only, not on every push to a pull
+    # request (QD-076): a break only provost 2.1.0 shows is found after the
+    # merge, on main's own run.
     name: test (provost 2.1.0, one capture at a time, ${{ matrix.shard }}/3)
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -154,57 +181,6 @@ jobs:
       # The longest job, one capture at a time: suites side by side, as above.
       - name: Run the test suite
         run: bash tests/run_tests.sh --shard ${{ matrix.shard }}/3
-
-  store-check:
-    # provost's store format is a spec (its docs/store-format.md, PV-022),
-    # and `provost store check DIR` (2.16.0 on) checks a store against it.
-    # Here the whole suite files with that provost, and every store a case
-    # leaves is checked once the case passes (QD_STORE_CHECK=require,
-    # tests/test_helper.bash): a filing that breaks the format fails here,
-    # not in somebody's store.  PyPI's newest provost is 2.3.0, which has
-    # no `store check`, so this takes provost from its repository, pinned
-    # to the commit of its 2.28.0 (move PROVOST_REF on to take a newer
-    # one).  It also runs the suite against the newest provost.  QD-031.
-    # Its git and provost can make a store in git's SHA-256 object format,
-    # so test_remote.sh's SHA-256 cases are required here, not skipped
-    # (QD_TEST_SHA256=require, QD-032): an old git fails them, saying so.
-    name: store check (provost 2.28.0, ${{ matrix.shard }}/3)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3]
-
-    env:
-      PROVOST_REF: d7ce5ea0c558522d26c6323b6376fe28e2324052
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Fetch provost at PROVOST_REF, and binnacle and doe
-        run: |
-          git init -q "$RUNNER_TEMP/provost"
-          git -C "$RUNNER_TEMP/provost" fetch -q --depth 1 \
-            https://github.com/MartinGallagher-code/provost.git "$PROVOST_REF"
-          git -C "$RUNNER_TEMP/provost" checkout -q FETCH_HEAD
-          "$RUNNER_TEMP/provost/provost" --version | head -n 1
-          python -m pip install binnacle doehelper
-
-      - name: Run the test suite, every store checked
-        run: |
-          export QD_PROVOST="$RUNNER_TEMP/provost/provost"
-          export QD_STORE_CHECK=require
-          export QD_TEST_SHA256=require
-          git --version
-          bash tests/run_tests.sh --shard ${{ matrix.shard }}/3
 
   ssh:
     # tests/test_ssh.sh logs in to a real sshd of its own on loopback,

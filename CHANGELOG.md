@@ -5,6 +5,41 @@ SPDX-FileCopyrightText: 2026 Martin J. Gallagher
 
 # Changelog
 
+## 0.52.1 — 2026-11-23
+
+CI runs less on every push (QD-076, the owner's "shorten the amount of
+time taken to test", choosing A, B and C of the options put to them).
+Patch: CI and tests only. quarterdeck is public, so its CI on GitHub's
+standard runners costs nothing; this is about the wait.
+
+### Changed
+- **A pull request runs the whole suite three ways, not eight**: Python
+  3.9 and 3.13 (the oldest and newest the runners have) and a real 3.6.
+  3.10, 3.11 and 3.12 ran the same suite between them; vermin and the 3.6
+  jobs still check every version's syntax and APIs from the floor up.
+- **The store check is part of Python 3.13's jobs** (`QD_STORE_CHECK=require`,
+  `QD_TEST_SHA256=require`) instead of three jobs of its own. They now
+  take the same provost, PyPI's newest (2.28.0, which has `store check`),
+  so the separate jobs ran the same suite again.
+- **The provost 2.1.0 jobs run on pushes to `main` only**, after a merge,
+  not on every push to a pull request. They are the slowest (one capture
+  at a time) and set every pull request's wait; a break only they show is
+  found on `main`'s own run.
+- Measured on the same code, `main` at f47fcc4 before and this pull
+  request's run after: a push to a pull request was 32 jobs, 203
+  runner-minutes and 20.8 minutes of waiting; it is now 17 jobs, 64
+  runner-minutes and 11.3 minutes. A push to `main` runs those 17 and the
+  three provost 2.1.0 jobs, about 20 minutes, which nobody waits on.
+- `docs/contributing.md`, `CLAUDE.md` and the comments in
+  `tests/check.sh` and `tests/test_helper.bash` say what CI runs and when.
+
+### Fixed
+- `tests/test_xstore.sh`, "a remote store on one side": the two imports'
+  run ids are their second and label, so when both land in one second the
+  newer is `...-kernel-2`, and the case failed CI that way
+  (quarterdeck#78's run at fb6c641). It now reads the name without that
+  suffix.
+
 ## 0.52.0 — 2026-11-23
 
 The fio tuning study on every drive of every host (QD-073, the part of

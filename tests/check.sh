@@ -21,8 +21,8 @@
 #
 # The batch run checks every store a case leaves with `provost store check`
 # (QD_STORE_CHECK=1), where this provost has one.  Left to CI: the suite
-# under a real Python 3.6, under each of 3.9-3.13, under PyPI's provost
-# 2.1.0, and the rest of the installed wheel's smoke test.
+# under a real Python 3.6, under 3.9 and 3.13, under PyPI's provost 2.1.0
+# (pushes to main only), and the rest of the installed wheel's smoke test.
 
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
@@ -135,7 +135,7 @@ else
     # shellcheck disable=SC2086  # QD_PROVOST may be a command line
     if $provost batch --help > /dev/null 2>&1; then
         # every store a case leaves checked by `provost store check`,
-        # where this provost has one (2.16.0 on), as CI's store-check job
+        # where this provost has one (2.16.0 on), as CI's Python 3.13 jobs
         # does
         step "test suite (provost batch)" env QD_STORE_CHECK=1 bash tests/run_tests.sh
         step "test suite (one capture at a time)" env QD_PROVOST_BATCH=0 bash tests/run_tests.sh

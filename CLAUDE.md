@@ -67,13 +67,14 @@ bash tests/run_tests.sh --shard 2/3    # one of CI's three shares of the suites
 ```
 
 CI (`.github/workflows/ci.yml`) runs the whole suite on every pull request
-and every push to `main`, eight ways: Python 3.9 to 3.13, a real 3.6 in a
-container, PyPI's provost 2.1.0, and provost 2.28.0 from its repository
-with every store a case leaves checked by `provost store check`
-(`QD_STORE_CHECK=require`, QD-031; a case that makes a store by hand
-names it to `no_store_check`). Each of the seven is split over three
-runners by `run_tests.sh --shard K/3` (QD-024). The deal comes from `TIMES`
-in `tests/run_tests.sh`, every suite's measured seconds: **a new suite goes
+and every push to `main` three ways: Python 3.9 and 3.13, and a real 3.6
+in a container. On 3.13 every store a case leaves is checked by `provost
+store check` (`QD_STORE_CHECK=require`, QD-031; a case that makes a store
+by hand names it to `no_store_check`). A fourth way, PyPI's provost 2.1.0
+(one capture at a time, the slowest), runs on pushes to `main` only
+(QD-076, the owner's choice: fewer, shorter runs a push). Each is split
+over three runners by `run_tests.sh --shard K/3` (QD-024). The deal comes
+from `TIMES` in `tests/run_tests.sh`, every suite's measured seconds: **a new suite goes
 into `TIMES`** (a run's last line, `seconds:`, gives its number), and
 `tests/test_runner.sh` fails until it is there. `tests/check_shards.sh`
 fails CI when a suite is in no share or in two, or a job's matrix leaves a
